@@ -19,7 +19,7 @@ COMMAND := $(INSTALL_DIR)/qcodex
 OWNER_MARKER := $(INSTALL_DIR)/.qcodex-owner
 OWNER_ID := qcodex-repository=$(CURDIR)
 
-.PHONY: build lint lint-clippy lint-audit lint-memory lint-asan lint-miri lint-all install uninstall clean
+.PHONY: build lint lint-deps lint-clippy lint-audit lint-memory lint-asan lint-miri lint-all install uninstall clean
 
 build:
 	$(BUILD_SCRIPT)
@@ -27,21 +27,45 @@ build:
 
 # Run routine static and supply-chain checks. Use lint-memory for the slower
 # runtime checks that can expose memory-safety and undefined-behaviour issues.
-lint: lint-clippy lint-audit
+lint: lint-deps lint-clippy lint-audit
 
-lint-clippy:
+lint-deps:
+	@set -eu; \
+	if ! command -v cargo-audit >/dev/null 2>&1; then \
+		echo "[qcodex-lint] Installing cargo-audit..."; \
+		cargo install cargo-audit --locked; \
+	fi; \
+	cd $(RUST_WORKSPACE); \
+	project_toolchain="$$(rustup show active-toolchain | awk '{print $$1}')"; \
+	if ! rustup component list --toolchain "$$project_toolchain" | grep -q '^clippy-.*installed'; then \
+		echo "[qcodex-lint] Installing Clippy for $$project_toolchain..."; \
+		rustup component add clippy --toolchain "$$project_toolchain"; \
+	fi; \
+	if ! rustup run $(MIRI_TOOLCHAIN) rustc --version >/dev/null 2>&1; then \
+		echo "[qcodex-lint] Installing $(MIRI_TOOLCHAIN)..."; \
+		rustup toolchain install $(MIRI_TOOLCHAIN) --profile minimal; \
+	fi; \
+	if ! rustup component list --toolchain $(MIRI_TOOLCHAIN) | grep -q '^rust-src.*installed'; then \
+		echo "[qcodex-lint] Installing rust-src for $(MIRI_TOOLCHAIN)..."; \
+		rustup component add rust-src --toolchain $(MIRI_TOOLCHAIN); \
+	fi; \
+	if ! rustup component list --toolchain $(MIRI_TOOLCHAIN) | grep -q '^miri-.*installed'; then \
+		echo "[qcodex-lint] Installing Miri for $(MIRI_TOOLCHAIN)..."; \
+		rustup component add miri --toolchain $(MIRI_TOOLCHAIN); \
+	fi
+
+lint-clippy: lint-deps
 	cd $(RUST_WORKSPACE) && cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-lint-audit:
+lint-audit: lint-deps
 	cargo audit --file $(RUST_WORKSPACE)/Cargo.lock
 
-lint-memory: lint-asan lint-miri
+lint-memory: lint-deps lint-asan lint-miri
 
-lint-asan:
+lint-asan: lint-deps
 	cd $(RUST_WORKSPACE) && RUSTUP_TOOLCHAIN=$(ASAN_TOOLCHAIN) RUSTFLAGS="-Zsanitizer=address" ASAN_OPTIONS=detect_leaks=1 cargo test -p $(LINT_PACKAGE) -Zbuild-std --target $(ASAN_TARGET)
 
-lint-miri:
-	rustup +$(MIRI_TOOLCHAIN) component add miri
+lint-miri: lint-deps
 	cd $(RUST_WORKSPACE) && cargo +$(MIRI_TOOLCHAIN) miri test -p $(LINT_PACKAGE)
 
 lint-all: lint lint-memory
