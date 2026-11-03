@@ -30008,6 +30008,71 @@ Have we met every part of this goal and is there no further work to do?"#
         self.session_id
     }
 
+    pub(crate) fn handle_goal_command(&mut self, arguments: String) {
+        let Some(session_id) = self.session_id else {
+            self.history_push_plain_state(history_cell::new_error_event(
+                "Goals need a saved session. Wait for the session to start, then try again.".to_string(),
+            ));
+            return;
+        };
+        let code_home = &self.config.code_home;
+        let arguments = arguments.trim();
+        let starts_new_goal = !arguments.is_empty()
+            && !matches!(arguments, "clear" | "pause" | "resume" | "edit")
+            && !arguments.starts_with("edit ");
+        let result = if let Some(objective) = arguments.strip_prefix("edit ") {
+            crate::goal::load(code_home, session_id).and_then(|existing| {
+                let Some(mut goal) = existing else {
+                    return Err(std::io::Error::other("No current goal to edit."));
+                };
+                if objective.trim().is_empty() {
+                    return Err(std::io::Error::other("goal objective must not be empty"));
+                }
+                goal.objective = objective.trim().to_string();
+                crate::goal::save(code_home, session_id, &goal).map(|()| "Goal updated.".to_string())
+            })
+        } else { match arguments {
+            "" => crate::goal::load(code_home, session_id).map(|goal| match goal {
+                Some(goal) => format!("Goal ({:?}): {}", goal.status, goal.objective),
+                None => "No current goal. Usage: /goal <objective>".to_string(),
+            }),
+            "clear" => crate::goal::clear(code_home, session_id).map(|()| "Goal cleared.".to_string()),
+            "pause" | "resume" => crate::goal::load(code_home, session_id).and_then(|goal| {
+                let Some(mut goal) = goal else {
+                    return Err(std::io::Error::other("No current goal to update."));
+                };
+                goal.status = if arguments == "pause" { crate::goal::GoalStatus::Paused } else { crate::goal::GoalStatus::Active };
+                crate::goal::save(code_home, session_id, &goal).map(|()| format!("Goal {}.", arguments))
+            }),
+            "edit" => Ok("Usage: /goal edit <new objective>".to_string()),
+            objective => crate::goal::load(code_home, session_id).and_then(|existing| {
+                let goal = crate::goal::GoalRecord {
+                    objective: objective.to_string(),
+                    status: crate::goal::GoalStatus::Active,
+                    token_budget: None,
+                    blocker: None,
+                    blocker_count: 0,
+                };
+                let message = if existing.is_some() {
+                    "Goal replaced."
+                } else {
+                    "Goal saved."
+                };
+                crate::goal::save(code_home, session_id, &goal).map(|()| message.to_string())
+            }),
+        }};
+        match result {
+            Ok(message) => {
+                self.bottom_pane.flash_footer_notice(message.clone());
+                self.history_push_plain_paragraphs(PlainMessageKind::Notice, [message]);
+                if starts_new_goal {
+                    self.handle_auto_command(Some(arguments.to_string()));
+                }
+            }
+            Err(error) => self.history_push_plain_state(history_cell::new_error_event(format!("Goal error: {error}"))),
+        }
+    }
+
     fn insert_resume_placeholder(&mut self) {
         if self.resume_placeholder_visible {
             return;

@@ -164,6 +164,7 @@ pub enum ConfigShellToolType {
 pub struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
     pub plan_tool: bool,
+    pub goal_tools: bool,
     #[allow(dead_code)]
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_request: bool,
@@ -227,6 +228,7 @@ impl ToolsConfig {
         Self {
             shell_type,
             plan_tool: include_plan_tool,
+            goal_tools: true,
             apply_patch_tool_type,
             web_search_request: include_web_search_request,
             web_search_external: true,
@@ -1539,6 +1541,9 @@ pub fn get_openai_tools(
 
     if config.plan_tool {
         tools.push(PLAN_TOOL.clone());
+    }
+    if config.goal_tools {
+        tools.extend(crate::goal_tool::tools());
     }
 
     tools.push(create_request_user_input_tool());

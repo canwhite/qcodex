@@ -1267,6 +1267,11 @@ impl App<'_> {
                                 widget.handle_auto_command(goal);
                             }
                         }
+                        SlashCommand::Goal => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.handle_goal_command(command_args);
+                            }
+                        }
                         SlashCommand::Status => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.add_status_output();

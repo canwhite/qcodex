@@ -97,6 +97,7 @@ mod shimmer;
 mod slash_command;
 mod rate_limits_view;
 pub mod resume;
+mod goal;
 mod streaming;
 mod sanitize;
 mod layout_consts;

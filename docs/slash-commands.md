@@ -19,6 +19,10 @@ Notes
 - `/clear`: clear the terminal and start a new chat.
 - `/resume`: resume a past session for this folder.
 - `/rename <name>`: rename the current session (shown in the resume list).
+- `/goal [<objective>|clear|edit|pause|resume]`: store and manage one durable
+  objective for the saved session. Without arguments, shows the current goal.
+  A new objective replaces the current goal; `pause` and `resume` control its
+  lifecycle, and `clear` removes it.
 - `/quit`: exit Code.
 - `/exit`: exit Code.
 - `/logout`: log out of Code.

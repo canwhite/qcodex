@@ -88,6 +88,7 @@ pub enum SlashCommand {
     Resume,
     Rename,
     Login,
+    Goal,
     // Prompt-expanding commands
     Plan,
     Solve,
@@ -146,6 +147,7 @@ impl SlashCommand {
             SlashCommand::Perf => "performance tracing (on/off/show/reset)",
             SlashCommand::Demo => "populate history with demo cells (dev/perf only)",
             SlashCommand::Login => "manage Code sign-ins (add/select/disconnect)",
+            SlashCommand::Goal => "set, inspect, or manage the current session goal",
             SlashCommand::Logout => "log out of Code",
             #[cfg(debug_assertions)]
             SlashCommand::TestApproval => "test approval request",
@@ -367,6 +369,17 @@ mod tests {
                 }
                 other => panic!("expected RegularCommand for {input}, got {:?}", other),
             }
+        }
+    }
+
+    #[test]
+    fn goal_command_is_a_regular_command() {
+        match process_slash_command_message("/goal ship durable goals") {
+            ProcessedCommand::RegularCommand(command, command_text) => {
+                assert_eq!(command, SlashCommand::Goal);
+                assert_eq!(command_text, "/goal ship durable goals");
+            }
+            other => panic!("expected RegularCommand, got {:?}", other),
         }
     }
 }

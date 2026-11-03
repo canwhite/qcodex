@@ -555,6 +555,8 @@ impl ToolCallCtx {
 }
 
 impl Session {
+    pub(crate) fn id(&self) -> uuid::Uuid { self.id }
+
     pub(crate) fn client(&self) -> &crate::ModelClient {
         &self.client
     }

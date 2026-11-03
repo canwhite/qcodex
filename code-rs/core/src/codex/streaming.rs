@@ -5243,6 +5243,7 @@ async fn handle_function_call(
             .await
         }
         "update_plan" => handle_update_plan(sess, &ctx, arguments).await,
+        "create_goal" | "get_goal" | "update_goal" => crate::goal_tool::handle(sess, &ctx, &name, arguments).await,
         "request_user_input" => handle_request_user_input(sess, &ctx, arguments).await,
         // agent tool
         "agent" => handle_agent_tool(sess, &ctx, arguments).await,
