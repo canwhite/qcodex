@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::items_after_test_module))]
+
 use crate::util::buffer::fill_rect;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;

@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::items_after_test_module))]
+
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Margin, Rect};

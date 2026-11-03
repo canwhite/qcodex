@@ -355,7 +355,7 @@ mod tests {
                 assert!(prompt.contains("Build a release plan"));
                 assert!(prompt.contains("tighten scope"));
             }
-            other => panic!("expected ExpandedPrompt, got {:?}", other),
+            other => panic!("expected ExpandedPrompt, got {other:?}"),
         }
     }
 
@@ -366,7 +366,7 @@ mod tests {
             ProcessedCommand::RegularCommand(SlashCommand::Auto, command_text) => {
                 assert!(command_text.contains("inspect the failing build"));
             }
-            other => panic!("expected RegularCommand, got {:?}", other),
+            other => panic!("expected RegularCommand, got {other:?}"),
         }
     }
 
@@ -376,7 +376,7 @@ mod tests {
             ProcessedCommand::RegularCommand(SlashCommand::Fast, command_text) => {
                 assert_eq!(command_text, "/fast");
             }
-            other => panic!("expected RegularCommand, got {:?}", other),
+            other => panic!("expected RegularCommand, got {other:?}"),
         }
     }
 
@@ -392,7 +392,7 @@ mod tests {
                     assert_eq!(command, expected);
                     assert_eq!(command_text, input);
                 }
-                other => panic!("expected RegularCommand for {input}, got {:?}", other),
+                other => panic!("expected RegularCommand for {input}, got {other:?}"),
             }
         }
     }
@@ -404,7 +404,7 @@ mod tests {
                 assert_eq!(command, SlashCommand::Goal);
                 assert_eq!(command_text, "/goal ship durable goals");
             }
-            other => panic!("expected RegularCommand, got {:?}", other),
+            other => panic!("expected RegularCommand, got {other:?}"),
         }
     }
 

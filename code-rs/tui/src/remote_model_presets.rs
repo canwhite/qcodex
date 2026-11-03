@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::items_after_test_module))]
+
 use std::collections::HashSet;
 
 use code_common::model_presets::ModelPreset;

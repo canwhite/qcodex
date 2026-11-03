@@ -33350,6 +33350,10 @@ use code_core::protocol::OrderMeta;
         }
     }
 
+    #[cfg_attr(
+        any(test, feature = "test-helpers"),
+        allow(clippy::print_stdout, reason = "test helper logs history reset state")
+    )]
     fn reset_history(chat: &mut ChatWidget<'_>) {
         #[cfg(any(test, feature = "test-helpers"))]
         println!(
@@ -33994,8 +33998,8 @@ use code_core::protocol::OrderMeta;
             chat
                 .bottom_pane
                 .auto_view_model()
-                .and_then(|model| match model {
-                    AutoCoordinatorViewModel::Active(active) => Some(active.cli_running),
+                .map(|model| match model {
+                    AutoCoordinatorViewModel::Active(active) => active.cli_running,
                 })
                 .unwrap_or(false)
         });
@@ -34334,7 +34338,7 @@ use code_core::protocol::OrderMeta;
         chat.auto_state.set_phase(AutoRunPhase::Active);
         let call_id = ExecCallId("exec-1".to_string());
         chat.exec.running_commands.insert(
-            call_id.clone(),
+            call_id,
             RunningCommand {
                 command: vec!["echo".to_string()],
                 parsed: Vec::new(),
@@ -34630,8 +34634,8 @@ use code_core::protocol::OrderMeta;
             Ok(GhostCommit::new(final_for_capture.clone(), parent))
         });
 
-        let base_for_diff = base_id.clone();
-        let final_for_diff = final_id.clone();
+        let base_for_diff = base_id;
+        let final_for_diff = final_id;
         let _diff_guard = GitDiffStubGuard::install(move |base, head| {
             assert_eq!(base, base_for_diff);
             assert_eq!(head, final_for_diff);
@@ -34645,7 +34649,7 @@ use code_core::protocol::OrderMeta;
         );
 
         let descriptor_snapshot = chat.pending_turn_descriptor.clone();
-        chat.auto_handle_post_turn_review(turn_config.clone(), descriptor_snapshot.as_ref());
+        chat.auto_handle_post_turn_review(turn_config, descriptor_snapshot.as_ref());
 
         assert!(
             !chat.auto_state.awaiting_review(),
@@ -34714,8 +34718,8 @@ use code_core::protocol::OrderMeta;
             Ok(GhostCommit::new(final_for_capture.clone(), parent))
         });
 
-        let base_for_diff = base_id.clone();
-        let final_for_diff = final_id.clone();
+        let base_for_diff = base_id;
+        let final_for_diff = final_id;
         let _diff_guard = GitDiffStubGuard::install(move |base, head| {
             assert_eq!(base, base_for_diff);
             assert_eq!(head, final_for_diff);
@@ -34726,7 +34730,7 @@ use code_core::protocol::OrderMeta;
         assert!(chat.auto_state.awaiting_review(), "auto-resolve should block resume before skip");
 
         let descriptor_snapshot = chat.pending_turn_descriptor.clone();
-        chat.auto_handle_post_turn_review(turn_config.clone(), descriptor_snapshot.as_ref());
+        chat.auto_handle_post_turn_review(turn_config, descriptor_snapshot.as_ref());
 
         assert!(
             chat.auto_state.awaiting_review(),
@@ -34900,7 +34904,7 @@ use code_core::protocol::OrderMeta;
         assert!(matches!(state.phase, AutoResolvePhase::WaitingForReview));
 
         chat.auto_resolve_handle_review_enter();
-        chat.auto_resolve_handle_review_exit(Some(review.clone()));
+        chat.auto_resolve_handle_review_exit(Some(review));
 
         assert!(
             chat.auto_resolve_state.is_none(),
@@ -35393,8 +35397,8 @@ use code_core::protocol::OrderMeta;
             Ok(GhostCommit::new(final_for_capture.clone(), parent))
         });
 
-        let base_for_diff = base_id.clone();
-        let final_for_diff = final_id.clone();
+        let base_for_diff = base_id;
+        let final_for_diff = final_id;
         let _diff_guard = GitDiffStubGuard::install(move |base, head| {
             assert_eq!(base, base_for_diff);
             assert_eq!(head, final_for_diff);
@@ -35408,7 +35412,7 @@ use code_core::protocol::OrderMeta;
         );
 
         let descriptor_snapshot = chat.pending_turn_descriptor.clone();
-        chat.auto_handle_post_turn_review(turn_config.clone(), descriptor_snapshot.as_ref());
+        chat.auto_handle_post_turn_review(turn_config, descriptor_snapshot.as_ref());
 
         chat.handle_code_event(Event {
             id: "turn".to_string(),
@@ -35460,10 +35464,10 @@ use code_core::protocol::OrderMeta;
                     name: "foo.txt".to_string(),
                 }],
             }),
-            order: Some(order.clone()),
+            order: Some(order),
         });
 
-        let exec_call_id = ExecCallId(call_id.clone());
+        let exec_call_id = ExecCallId(call_id);
         let running = chat
             .exec
             .running_commands
@@ -35608,7 +35612,7 @@ use code_core::protocol::OrderMeta;
         assert_eq!(chat.overall_task_status, "running".to_string());
 
         chat.handle_code_event(Event {
-            id: turn_id.clone(),
+            id: turn_id,
             event_seq: 3,
             msg: EventMsg::TaskComplete(TaskCompleteEvent {
                 last_agent_message: None,
@@ -35708,7 +35712,7 @@ use code_core::protocol::OrderMeta;
         );
 
         chat.handle_code_event(Event {
-            id: turn_id.clone(),
+            id: turn_id,
             event_seq: 4,
             msg: EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent {
                 agents: vec![CoreAgentInfo {
@@ -35906,11 +35910,11 @@ use code_core::protocol::OrderMeta;
             msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
                 delta: "thinking about the change".to_string(),
             }),
-            order: Some(order.clone()),
+            order: Some(order),
         });
 
         harness.handle_event(Event {
-            id: turn_id.clone(),
+            id: turn_id,
             event_seq: 2,
             msg: EventMsg::AgentMessage(AgentMessageEvent {
                 message: "All done".to_string(),

@@ -643,6 +643,10 @@ fn popular_commands_lines(_latest_version: Option<&str>) -> Vec<Line<'static>> {
     lines
 }
 
+#[cfg_attr(
+    any(test, feature = "test-helpers"),
+    allow(clippy::print_stdout, reason = "test helper exposes the legacy command line")
+)]
 pub(crate) fn new_popular_commands_notice(
     _connecting_mcp: bool,
     latest_version: Option<&str>,

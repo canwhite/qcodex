@@ -14,6 +14,34 @@
     clippy::type_complexity,
     reason = "stable TUI event and rendering interfaces favor explicit domain signatures"
 )]
+#![expect(
+    clippy::collapsible_if,
+    clippy::collapsible_match,
+    clippy::eq_op,
+    clippy::explicit_counter_loop,
+    clippy::field_reassign_with_default,
+    clippy::if_same_then_else,
+    clippy::needless_bool,
+    clippy::needless_collect,
+    clippy::needless_range_loop,
+    clippy::never_loop,
+    clippy::nonminimal_bool,
+    clippy::redundant_locals,
+    clippy::skip_while_next,
+    clippy::vec_init_then_push,
+    clippy::while_let_loop,
+    reason = "legacy rendering control flow is kept stable while enforcing warning-free builds"
+)]
+#![expect(
+    clippy::expect_used,
+    clippy::unnecessary_unwrap,
+    clippy::unwrap_used,
+    reason = "remaining uses assert guarded UI state, static literals, or test-helper invariants"
+)]
+#![expect(
+    clippy::print_stderr,
+    reason = "terminal startup, shutdown, and smoke helpers intentionally report directly"
+)]
 use app::App;
 use code_common::model_presets::{
     all_model_presets,

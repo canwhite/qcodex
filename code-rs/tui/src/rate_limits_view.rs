@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::items_after_test_module))]
+
 #[cfg(feature = "code-fork")]
 use crate::foundation::palette as colors;
 #[cfg(not(feature = "code-fork"))]

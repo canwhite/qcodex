@@ -226,7 +226,7 @@ pub async fn run_main(cli: Cli, _code_linux_sandbox_exe: Option<PathBuf>) -> any
                             http = http.with_chatgpt_account_id(acc);
                         }
                         if auth.is_fedramp_account() {
-                            append_info_log("auth: set X-OpenAI-Fedramp header: true".to_string());
+                            append_info_log("auth: set X-OpenAI-Fedramp header: true");
                             http = http.with_fedramp_routing_header();
                         }
                         t
@@ -1217,7 +1217,7 @@ pub async fn run_main(cli: Cli, _code_linux_sandbox_exe: Option<PathBuf>) -> any
                                 }
                                 KeyCode::Backspace => {
                                     if let Some(m) = app.env_modal.as_mut() {
-                                        if let Some((idx, _)) = m.query.grapheme_indices(true).last() {
+                                        if let Some((idx, _)) = m.query.grapheme_indices(true).next_back() {
                                             m.query.truncate(idx);
                                         } else {
                                             m.query.clear();
@@ -1622,7 +1622,7 @@ async fn run_submit(args: crate::cli::SubmitArgs) -> anyhow::Result<()> {
         if text.messages.len() > seen_msgs {
             let new = text.messages.len() - seen_msgs;
             seen_msgs = text.messages.len();
-            eprintln!("progress: +{} message(s)", new);
+            eprintln!("progress: +{new} message(s)");
         }
 
         use code_cloud_tasks_client::AttemptStatus as S;
@@ -1654,13 +1654,13 @@ async fn run_submit(args: crate::cli::SubmitArgs) -> anyhow::Result<()> {
                     Some(diff) => {
                         out.push_str("Diff:\n");
                         out.push_str(&diff);
-                        out.push_str("\n");
+                        out.push('\n');
                     }
                     None => out.push_str("No diff available.\n"),
                 }
                 // Sanitize any embedded NULs that could corrupt downstream consumers.
                 let out = out.replace('\0', "");
-                print!("{}", out);
+                print!("{out}");
                 return Ok(());
             }
             S::Failed => {
