@@ -409,16 +409,24 @@ The change is complete when all of the following are true:
 | BUG-4 | High | Timing out `dispose_ephemeral_conversation` cancelled physical cleanup and consumed its only token. | Treat timeout as a UI-unblock notification while physical cleanup continues under app ownership. |
 | BUG-5 | High | `/jump-back` used the same temporary-runtime pattern and could create another dead long-lived conversation. | Move replacement-conversation creation onto the same app runtime. |
 | BUG-6 | Medium | Global side `Ctrl+C` overrode terminal overlays, modal views, and composer drafts. | Gate side return on an unobstructed, empty-composer view; otherwise the focused UI handles the key first. |
-| BUG-7 | High | `/btw` rejected an active `/goal`, and deferring hidden-parent events would stall Auto Drive waiting for coordinator ACK/countdown progress. | Remove all idle admission guards and route parent model/coordinator events to the retained parent widget in real time while the child remains visible. |
+| BUG-7 | High | `/btw` rejected an active `/goal`; parent progress also had to continue without contaminating the visible child. | Remove idle admission guards, keep draining parent events, buffer them under the retained parent lifecycle, and replay them immediately after return. |
+| BUG-8 | High | A reference-only developer boundary did not deactivate an already persisted, unfinished parent user turn. | Detect the latest persisted `task_started`/`task_complete` marker and truncate the unfinished user turn plus all following items before forking. |
+| BUG-9 | High | A side-command denylist allowed newly added parent-mutating slash commands by default. | Replace it with an explicit side-safe allowlist. |
+| BUG-10 | High | Background review, ghost snapshot, and Auto Drive events were globally scoped and could mutate whichever widget was visible. | Route parent-owned events through the retained parent lifecycle and disable unscoped ghost snapshot jobs in the child. |
+| BUG-11 | High | Cleanup could delete the child rollout before shutdown acknowledgement, while its event forwarder still consumed events. | Submit interrupt/shutdown, wait boundedly for `ShutdownComplete`, then abort/join the forwarder before artifact deletion. |
+| BUG-12 | High | Resume, jump-back, and working-directory navigation could replace the retained parent while side state still owned it. | Block parent-replacing navigation during fork/active/return and block `/btw` while jump-back is pending. |
+| BUG-13 | High | Cancelling a fork between temporary rollout creation and cleanup-token delivery leaked resumable side artifacts. | Add a synchronous drop guard that removes the rollout and snapshot unless ownership is explicitly transferred. |
+| BUG-14 | High | Auto Drive slash actions were globally re-dispatched and could execute against the visible child. | Apply coordinator slash actions directly to the owning parent widget. |
+| BUG-15 | High | Processing parent events against the retained widget still emitted second-order global UI events into the child. | Quarantine raw parent `CodexEvent` and coordinator events while side is active; replay them only after the parent is visible again. |
 
 ### Verification Evidence
 
-- Focused side regressions: 12 passed, including active-parent admission, runtime lifetime, fork panic/error/timeout, cleanup timeout continuation, one user turn with no hidden developer turn, key press/repeat/release routing, draft precedence, and parent double-`Ctrl+C` reset.
-- Required build: `./build-fast.sh` passed with zero warnings/errors.
-- Final binary: `.code/working/_target-cache/qcodex/main-0d6e4079e367-e484d8df0573/code-rs/dev-fast/code`, SHA-256 `91a6637ac3f3b55f265c082ea3343ddf38a65b4a0a0d70324598165fc792e56a`.
-- Runtime: `/btw 只回复 side-ok` returned `side-ok`; one `Ctrl+C` restored the retained parent; PID remained `22353`; the next parent `Ctrl+C` only armed the quit hint and the following press exited with status 0.
-- Active-parent runtime: started `/goal`, entered `/btw 只回复 side-ok` while Auto Drive was running, returned with one `Ctrl+C`, and observed the parent had advanced to 19 seconds with plan/tool events before exiting cleanly with status 0.
-- Cleanup/logs: child rollout id `2c6cebc7-3c08-40f9-bb9e-fb8aa80dea70` was absent after return; new logs contained no `InternalAgentDied`, `failed to submit op`, or cleanup timeout.
+- Focused TUI side regressions: 13 passed, covering one-press return, running-child return, runtime lifetime, fork panic/error/timeout, cleanup continuation, command policy, child event-forwarder ownership, ghost-snapshot isolation, one initial user turn, draft precedence, and parent quit-state reset.
+- Core fork regressions: 6 passed, including unfinished persisted-turn truncation, completed-turn preservation, boundary ordering, and cancellation-safe artifact cleanup.
+- Required build: `./build-fast.sh` passed with zero warnings/errors from an isolated worktree at commit `7f89ad059`; the main worktree's unrelated in-progress lint edits were left untouched.
+- Final binary: `.code/working/_target-cache/qcodex-btw-verify/main-0d6e4079e367-e484d8df0573/code-rs/dev-fast/code`, SHA-256 `a2801c201ffdaea8601d7f8ee669a4f092cbedc51443bef782812e4c53495df3`.
+- Active-parent runtime: started `/goal`, entered `/btw 只回复 side-ok` during Auto Drive planning, and the side screen showed only the side prompt and `side-ok`; no parent reasoning or tool output appeared there.
+- Return runtime: one `Ctrl+C` restored the still-running parent and replayed its accumulated planning output; two subsequent `Ctrl+C` presses exited the TUI cleanly.
 
 ### Residual Risk Gate
 
