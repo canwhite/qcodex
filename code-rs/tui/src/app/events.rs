@@ -136,6 +136,36 @@ fn apply_parent_event(widget: &mut ChatWidget<'_>, event: AppEvent) {
             turn_sequence,
             result,
         } => widget.handle_auto_review_baseline_captured(turn_sequence, result),
+        AppEvent::BackgroundReviewStarted {
+            worktree_path,
+            branch,
+            agent_id,
+            snapshot,
+        } => widget.on_background_review_started(worktree_path, branch, agent_id, snapshot),
+        AppEvent::BackgroundReviewFinished {
+            worktree_path,
+            branch,
+            has_findings,
+            findings,
+            summary,
+            error,
+            agent_id,
+            snapshot,
+        } => widget.on_background_review_finished(
+            worktree_path,
+            branch,
+            has_findings,
+            findings,
+            summary,
+            error,
+            agent_id,
+            snapshot,
+        ),
+        AppEvent::GhostSnapshotFinished {
+            job_id,
+            result,
+            elapsed,
+        } => widget.handle_ghost_snapshot_finished(job_id, result, elapsed),
         _ => unreachable!("unsupported parent event"),
     }
 }
@@ -180,11 +210,15 @@ impl App<'_> {
         request_id: u64,
         child_session_id: uuid::Uuid,
         child_cleanup: code_core::EphemeralConversationCleanup,
+        event_forwarder: Option<tokio::task::JoinHandle<()>>,
     ) {
         let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
         let server = self._server.clone();
         let app_event_tx = self.app_event_tx.clone();
         drop(spawn_runtime_task(&self.app_runtime, async move {
+            if let Some(event_forwarder) = event_forwarder {
+                let _ = event_forwarder.await;
+            }
             let cleanup = server.dispose_ephemeral_conversation(child_cleanup);
             supervise_side_cleanup(cleanup, SIDE_CLEANUP_TIMEOUT, |timed_out| {
                 app_event_tx.send(AppEvent::SideConversationCleanupFinished {
@@ -1064,7 +1098,10 @@ impl App<'_> {
                 | AppEvent::AutoCoordinatorCompactedHistory { .. }
                 | AppEvent::AutoCoordinatorCountdown { .. }
                 | AppEvent::AutoCoordinatorRestart { .. }
-                | AppEvent::AutoReviewBaselineCaptured { .. }) => {
+                | AppEvent::AutoReviewBaselineCaptured { .. }
+                | AppEvent::BackgroundReviewStarted { .. }
+                | AppEvent::BackgroundReviewFinished { .. }
+                | AppEvent::GhostSnapshotFinished { .. }) => {
                     if let SideConversationState::Active {
                         parent: Some(parent),
                         ..
@@ -1619,10 +1656,23 @@ impl App<'_> {
                     if !matches!(self.side_conversation, SideConversationState::Idle) {
                         continue;
                     }
-                    let Some((mut config, code_home)) = (match &mut self.app_state {
+                    if self.pending_jump_back_ghost_state.is_some() {
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            widget.debug_notice(
+                                "'/btw' is unavailable while jump-back is switching sessions."
+                                    .to_string(),
+                            );
+                        }
+                        continue;
+                    }
+                    let Some((mut config, code_home, parent_task_running)) = (match &mut self.app_state {
                         AppState::Chat { widget }
                             if widget.session_id() == Some(parent_session_id) => {
-                            Some((widget.config_ref().clone(), widget.config_ref().code_home.clone()))
+                            Some((
+                                widget.config_ref().clone(),
+                                widget.config_ref().code_home.clone(),
+                                widget.is_task_running(),
+                            ))
                         }
                         AppState::Chat { widget } => {
                             widget.debug_notice("'/btw' needs a saved parent session.".to_string());
@@ -1653,7 +1703,7 @@ impl App<'_> {
                                 .ok_or_else(|| "parent session is no longer available.".to_string())?;
                             server
                                 .fork_conversation(
-                                    0,
+                                    usize::from(parent_task_running),
                                     config,
                                     catalog.entry_rollout_path(&entry),
                                     Some(SIDE_CONTEXT_BOUNDARY),
@@ -1815,13 +1865,16 @@ impl App<'_> {
                     };
                     if let AppState::Chat { widget } = &mut self.app_state {
                         debug_assert!(!side_return_requires_idle(widget.is_task_running()));
+                        let event_forwarder = widget.stop_conversation_event_forwarder();
                         parent.prepare_for_side_return();
                         parent.debug_notice("Returned from side conversation.".to_string());
-                        let _child = std::mem::replace(widget, parent);
+                        let child = std::mem::replace(widget, parent);
+                        drop(child);
                         self.begin_side_cleanup(
                             request_id,
                             child_session_id,
                             child_cleanup,
+                            event_forwarder,
                         );
                         self.side_conversation = SideConversationState::Returning {
                             request_id,
@@ -1872,6 +1925,9 @@ impl App<'_> {
                     }
                 }
                 AppEvent::ResumePickerLoaded { cwd, candidates } => {
+                    if !matches!(self.side_conversation, SideConversationState::Idle) {
+                        continue;
+                    }
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.present_resume_picker(cwd, candidates);
                     }
@@ -1887,6 +1943,15 @@ impl App<'_> {
                     }
                 }
                 AppEvent::ResumeFrom(path) => {
+                    if !matches!(self.side_conversation, SideConversationState::Idle) {
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            widget.debug_notice(
+                                "Resume is unavailable during a side conversation. Press Ctrl+C to return."
+                                    .to_string(),
+                            );
+                        }
+                        continue;
+                    }
                     // Replace the current chat widget with a new one configured to resume
                     let mut cfg = self.config.clone();
                     cfg.experimental_resume = Some(path);
@@ -2182,25 +2247,6 @@ impl App<'_> {
                             preparation_label,
                             metadata,
                             auto_resolve,
-                        );
-                    }
-                }
-                AppEvent::BackgroundReviewStarted { worktree_path, branch, agent_id, snapshot } => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.on_background_review_started(worktree_path, branch, agent_id, snapshot);
-                    }
-                }
-                AppEvent::BackgroundReviewFinished { worktree_path, branch, has_findings, findings, summary, error, agent_id, snapshot } => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.on_background_review_finished(
-                            worktree_path,
-                            branch,
-                            has_findings,
-                            findings,
-                            summary.clone(),
-                            error.clone(),
-                            agent_id.clone(),
-                            snapshot.clone(),
                         );
                     }
                 }
@@ -2712,6 +2758,15 @@ impl App<'_> {
                     prefill,
                     history_snapshot,
                 } => {
+                    if !matches!(self.side_conversation, SideConversationState::Idle) {
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            widget.debug_notice(
+                                "Jump-back is unavailable during a side conversation. Press Ctrl+C to return."
+                                    .to_string(),
+                            );
+                        }
+                        continue;
+                    }
                     if let AppState::Chat { widget } = &mut self.app_state {
                         let ghost_state = widget.snapshot_ghost_state();
                         // Build response items from current UI history
@@ -2849,13 +2904,19 @@ impl App<'_> {
                     // Schedule the next redraw with the requested duration
                     self.schedule_redraw_in(duration);
                 }
-                AppEvent::GhostSnapshotFinished { job_id, result, elapsed } => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.handle_ghost_snapshot_finished(job_id, result, elapsed);
-                    }
-                }
             }
         }
+        let side_event_forwarder = if matches!(
+            self.side_conversation,
+            SideConversationState::Active { .. }
+        ) {
+            match &mut self.app_state {
+                AppState::Chat { widget } => widget.stop_conversation_event_forwarder(),
+                AppState::Onboarding { .. } => None,
+            }
+        } else {
+            None
+        };
         let side_state = std::mem::replace(
             &mut self.side_conversation,
             SideConversationState::Idle,
@@ -2868,7 +2929,12 @@ impl App<'_> {
                 ..
             } => {
                 if let Some(child_cleanup) = child_cleanup {
-                    self.begin_side_cleanup(request_id, child_session_id, child_cleanup);
+                    self.begin_side_cleanup(
+                        request_id,
+                        child_session_id,
+                        child_cleanup,
+                        side_event_forwarder,
+                    );
                 }
             }
             SideConversationState::Returning { .. } => {}

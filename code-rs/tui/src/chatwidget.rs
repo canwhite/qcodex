@@ -1850,6 +1850,7 @@ struct RenderRequestSeed {
 pub(crate) struct ChatWidget<'a> {
     app_event_tx: AppEventSender,
     code_op_tx: UnboundedSender<Op>,
+    conversation_event_forwarder: Option<tokio::task::JoinHandle<()>>,
     bottom_pane: BottomPane<'a>,
     auth_manager: Arc<AuthManager>,
     login_view_state: Option<Weak<RefCell<LoginAccountsState>>>,
@@ -6975,6 +6976,7 @@ impl ChatWidget<'_> {
         let mut new_widget = Self {
             app_event_tx: app_event_tx.clone(),
             code_op_tx,
+            conversation_event_forwarder: None,
             bottom_pane,
             auth_manager: auth_manager.clone(),
             login_view_state: None,
@@ -7326,6 +7328,7 @@ impl ChatWidget<'_> {
         let mut w = Self {
             app_event_tx: app_event_tx.clone(),
             code_op_tx,
+            conversation_event_forwarder: None,
             bottom_pane,
             auth_manager: auth_manager.clone(),
             login_view_state: None,
@@ -7620,7 +7623,7 @@ impl ChatWidget<'_> {
         // Start forwarding only after the widget owns its initial message; SessionConfigured
         // consumes that message synchronously when the app processes the event.
         let app_event_tx_clone = app_event_tx.clone();
-        tokio::spawn(async move {
+        let event_forwarder = tokio::spawn(async move {
             let child_session_id = session_configured.session_id;
             app_event_tx_clone.send(AppEvent::CodexEventForConversation {
                 session_id: child_session_id,
@@ -7646,6 +7649,7 @@ impl ChatWidget<'_> {
                 });
             }
         });
+        w.conversation_event_forwarder = Some(event_forwarder);
         w.maybe_start_auto_upgrade_task();
         w
     }
@@ -19952,8 +19956,7 @@ Have we met every part of this goal and is there no further work to do?"#
 
         if let Some(command) = cli_command {
             if command.trim_start().starts_with('/') {
-                self.app_event_tx
-                    .send(AppEvent::DispatchCommand(SlashCommand::Auto, command));
+                self.handle_auto_command(Some(command));
             } else {
                 let mut message: UserMessage = command.into();
                 message.suppress_persistence = true;
@@ -25834,6 +25837,14 @@ Have we met every part of this goal and is there no further work to do?"#
         self.bottom_pane.clear_ctrl_c_quit_hint();
     }
 
+    pub(crate) fn stop_conversation_event_forwarder(
+        &mut self,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let forwarder = self.conversation_event_forwarder.take()?;
+        forwarder.abort();
+        Some(forwarder)
+    }
+
     pub(crate) fn side_return_shortcut_available(&self) -> bool {
         !self.terminal_overlay_active()
             && !self.bottom_pane.has_active_modal_view()
@@ -31290,6 +31301,23 @@ use code_core::protocol::OrderMeta;
                 .map(|reason| reason.message.as_str()),
             Some("temporary side conversation")
         );
+    }
+
+    #[tokio::test]
+    async fn side_event_forwarder_is_joinable_after_return_abort() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        chat.conversation_event_forwarder = Some(tokio::spawn(std::future::pending()));
+
+        let forwarder = chat
+            .stop_conversation_event_forwarder()
+            .expect("side forwarder should be owned by the widget");
+
+        let error = forwarder
+            .await
+            .expect_err("aborted side forwarder should not complete normally");
+        assert!(error.is_cancelled());
+        assert!(chat.conversation_event_forwarder.is_none());
     }
 
     fn history_contains_text(chat: &ChatWidget<'_>, needle: &str) -> bool {

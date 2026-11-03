@@ -20,7 +20,10 @@ use code_protocol::protocol::RolloutItem;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
+
+const EPHEMERAL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// Represents a newly created Codex conversation, including the first event
 /// (which is [`EventMsg::SessionConfigured`]).
@@ -41,6 +44,29 @@ pub struct EphemeralConversationCleanup {
 pub struct EphemeralConversation {
     pub conversation: NewConversation,
     pub cleanup: EphemeralConversationCleanup,
+}
+
+struct EphemeralRolloutGuard {
+    path: Option<PathBuf>,
+}
+
+impl EphemeralRolloutGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    fn disarm(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for EphemeralRolloutGuard {
+    fn drop(&mut self) {
+        let Some(path) = self.path.take() else {
+            return;
+        };
+        remove_ephemeral_rollout_sync(&path);
+    }
 }
 
 /// [`ConversationManager`] is responsible for creating conversations and
@@ -197,6 +223,7 @@ impl ConversationManager {
         // Otherwise, create a temporary rollout with the truncated items and resume from it.
         let convo_id = code_protocol::ConversationId::new();
         let instructions = config.user_instructions.clone();
+        let mut rollout_guard: EphemeralRolloutGuard;
         let recorder = RolloutRecorder::new(
             &config,
             crate::rollout::recorder::RolloutRecorderParams::new(
@@ -207,6 +234,8 @@ impl ConversationManager {
         )
         .await
         .map_err(CodexErr::Io)?;
+        let rollout_path = recorder.rollout_path.clone();
+        rollout_guard = EphemeralRolloutGuard::new(rollout_path.clone());
 
         // Persist rollout items to seed the resumed conversation.
         let rollout_items =
@@ -221,7 +250,6 @@ impl ConversationManager {
         recorder.shutdown().await.map_err(CodexErr::Io)?;
 
         // Now spawn a conversation resuming from the newly created rollout.
-        let rollout_path = recorder.rollout_path.clone();
         config.experimental_resume = Some(rollout_path.clone());
         let CodexSpawnOk {
             codex,
@@ -230,6 +258,7 @@ impl ConversationManager {
         } = match Codex::spawn_with_auth_manager(config, Some(self.auth_manager.clone())).await {
             Ok(spawned) => spawned,
             Err(error) => {
+                rollout_guard.disarm();
                 remove_ephemeral_rollout(&rollout_path).await;
                 return Err(error);
             }
@@ -238,10 +267,12 @@ impl ConversationManager {
         let conversation = match self.finalize_spawn(codex, conversation_id).await {
             Ok(conversation) => conversation,
             Err(error) => {
+                rollout_guard.disarm();
                 remove_ephemeral_rollout(&rollout_path).await;
                 return Err(error);
             }
         };
+        rollout_guard.disarm();
         Ok(EphemeralConversation {
             cleanup: EphemeralConversationCleanup {
                 conversation_id,
@@ -261,6 +292,23 @@ impl ConversationManager {
         if let Some(conversation) = self.remove_conversation(&cleanup.conversation_id).await {
             let _ = conversation.submit(crate::protocol::Op::Interrupt).await;
             let _ = conversation.submit(crate::protocol::Op::Shutdown).await;
+            let shutdown_complete = tokio::time::timeout(EPHEMERAL_SHUTDOWN_TIMEOUT, async {
+                loop {
+                    match conversation.next_event().await {
+                        Ok(event) if matches!(event.msg, EventMsg::ShutdownComplete) => break true,
+                        Ok(_) => {}
+                        Err(_) => break false,
+                    }
+                }
+            })
+            .await
+            .unwrap_or(false);
+            if !shutdown_complete {
+                tracing::warn!(
+                    conversation_id = %cleanup.conversation_id,
+                    "timed out waiting for ephemeral side conversation shutdown"
+                );
+            }
         }
         if let Some(path) = cleanup.rollout_path {
             remove_ephemeral_rollout(&path).await;
@@ -275,6 +323,17 @@ async fn remove_ephemeral_rollout(path: &PathBuf) {
             && error.kind() != std::io::ErrorKind::NotFound
         {
             tracing::warn!(?path, ?error, "failed to remove ephemeral side rollout");
+        }
+    }
+}
+
+fn remove_ephemeral_rollout_sync(path: &PathBuf) {
+    let snapshot = path.with_extension("snapshot.json");
+    for path in [path, &snapshot] {
+        if let Err(error) = std::fs::remove_file(path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(?path, ?error, "failed to remove cancelled side rollout");
         }
     }
 }
@@ -425,5 +484,58 @@ mod tests {
                         ContentItem::InputText { text } if text == "parent work is inactive"
                     ))
         ));
+    }
+
+    #[test]
+    fn active_parent_turn_is_not_inherited_by_side_fork() {
+        let history = InitialHistory::Forked(vec![
+            RolloutItem::ResponseItem(user_msg("completed parent question")),
+            RolloutItem::ResponseItem(assistant_msg("completed parent answer")),
+            RolloutItem::ResponseItem(user_msg("unfinished parent goal")),
+        ]);
+
+        let history = truncate_after_dropping_last_messages(history, 1);
+        let items = rollout_items_for_fork(history, Some("answer only the side request"));
+
+        assert!(!items.iter().any(|item| matches!(
+            item,
+            RolloutItem::ResponseItem(ResponseItem::Message { content, .. })
+                if content.iter().any(|part| matches!(
+                    part,
+                    ContentItem::InputText { text } | ContentItem::OutputText { text }
+                        if text == "unfinished parent goal"
+                ))
+        )));
+        assert!(items.iter().any(|item| matches!(
+            item,
+            RolloutItem::ResponseItem(ResponseItem::Message { content, .. })
+                if content.iter().any(|part| matches!(
+                    part,
+                    ContentItem::OutputText { text } if text == "completed parent answer"
+                ))
+        )));
+    }
+
+    #[tokio::test]
+    async fn cancelled_side_fork_guard_removes_temporary_rollout() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let rollout_path = directory.path().join("side-rollout.jsonl");
+        let snapshot_path = rollout_path.with_extension("snapshot.json");
+        tokio::fs::write(&rollout_path, b"rollout")
+            .await
+            .expect("write rollout fixture");
+        tokio::fs::write(&snapshot_path, b"snapshot")
+            .await
+            .expect("write snapshot fixture");
+
+        drop(EphemeralRolloutGuard::new(rollout_path.clone()));
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while rollout_path.exists() || snapshot_path.exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled fork artifacts should be removed");
     }
 }
