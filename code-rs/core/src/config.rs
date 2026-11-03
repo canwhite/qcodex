@@ -1276,8 +1276,8 @@ impl Config {
         let history = cfg.history.unwrap_or_default();
 
         let mut always_allow_commands: Vec<ApprovedCommandPattern> = Vec::new();
-        if let Some(project_cfg) = project_override {
-            if let Some(commands) = &project_cfg.always_allow_commands {
+        if let Some(project_cfg) = project_override
+            && let Some(commands) = &project_cfg.always_allow_commands {
                 for cmd in commands {
                     if cmd.argv.is_empty() {
                         continue;
@@ -1298,7 +1298,6 @@ impl Config {
                     ));
                 }
             }
-        }
 
         let project_hooks = project_override
             .map(|cfg| ProjectHooks::from_configs(&cfg.hooks, &resolved_cwd))
@@ -1468,7 +1467,7 @@ impl Config {
 
         let responses_originator_header: String = cfg
             .responses_originator_header_internal_override
-            .unwrap_or_else(|| default_responses_originator());
+            .unwrap_or_else(default_responses_originator);
 
         let agents: Vec<AgentConfig> = merge_with_default_agents(cfg.agents);
 
@@ -1490,7 +1489,7 @@ impl Config {
 
         let mut confirm_guard = ConfirmGuardConfig::default();
         if let Some(mut user_guard) = cfg.confirm_guard {
-            confirm_guard.patterns.extend(user_guard.patterns.drain(..));
+            confirm_guard.patterns.append(&mut user_guard.patterns);
         }
         for pattern in &confirm_guard.patterns {
             if let Err(err) = regex_lite::Regex::new(&pattern.regex) {
@@ -1676,11 +1675,9 @@ impl Config {
                 .model_routing_entries
                 .iter()
                 .any(|entry| entry.enabled)
-        {
-            if let Some(first_entry) = auto_drive.model_routing_entries.first_mut() {
+            && let Some(first_entry) = auto_drive.model_routing_entries.first_mut() {
                 first_entry.enabled = true;
             }
-        }
         if auto_drive_use_chat_model {
             auto_drive.model = model.clone();
             auto_drive.model_reasoning_effort = chat_reasoning_effort;

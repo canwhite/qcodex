@@ -66,16 +66,14 @@ impl SessionCatalog {
             if !query.include_deleted && entry.deleted {
                 continue;
             }
-            if let Some(cwd) = &query.cwd {
-                if &entry.cwd_real != cwd {
+            if let Some(cwd) = &query.cwd
+                && &entry.cwd_real != cwd {
                     continue;
                 }
-            }
-            if let Some(git_root) = &query.git_root {
-                if entry.git_project_root.as_ref() != Some(git_root) {
+            if let Some(git_root) = &query.git_root
+                && entry.git_project_root.as_ref() != Some(git_root) {
                     continue;
                 }
-            }
             if !query.sources.is_empty() && !query.sources.contains(&entry.session_source) {
                 continue;
             }
@@ -85,11 +83,10 @@ impl SessionCatalog {
 
             rows.push(entry.clone());
 
-            if let Some(limit) = query.limit {
-                if rows.len() >= limit {
+            if let Some(limit) = query.limit
+                && rows.len() >= limit {
                     break;
                 }
-            }
         }
 
         Ok(rows)
@@ -225,7 +222,7 @@ impl SessionCatalog {
                 snapshot_new_abs
                     .strip_prefix(code_home)
                     .ok()
-                    .map(|p| p.to_path_buf())
+                    .map(std::path::Path::to_path_buf)
             })
             .flatten();
 

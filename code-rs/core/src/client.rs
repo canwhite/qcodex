@@ -207,7 +207,7 @@ fn try_parse_retry_after(err: &Error, now: DateTime<Utc>) -> Option<RetryAfter> 
 
 fn is_quota_exceeded_error(error: &Error) -> bool {
     matches!(
-        error.code.as_deref().or_else(|| error.r#type.as_deref()),
+        error.code.as_deref().or(error.r#type.as_deref()),
         Some(
             "insufficient_quota"
                 | "credit_balance_exhausted"
@@ -671,7 +671,7 @@ impl ModelClient {
                 .map(|spec| spec.slug.to_string())
                 .collect();
         }
-        agent_models.sort_by(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()));
+        agent_models.sort_by_key(|a| a.to_ascii_lowercase());
         agent_models.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
         tools_config.set_agent_models(agent_models);
 
@@ -683,10 +683,10 @@ impl ModelClient {
                 | ConfigShellToolType::ShellCommand { .. }
         );
 
-        tools_config.shell_type = match sandbox_policy.clone() {
+        tools_config.shell_type = match sandbox_policy {
             SandboxPolicy::ReadOnly => {
                 if base_uses_native_shell {
-                    base_shell_type.clone()
+                    base_shell_type
                 } else {
                     ConfigShellToolType::ShellWithRequest {
                         sandbox_policy: SandboxPolicy::ReadOnly,
@@ -695,7 +695,7 @@ impl ModelClient {
             }
             sp @ SandboxPolicy::WorkspaceWrite { .. } => {
                 if base_uses_native_shell {
-                    base_shell_type.clone()
+                    base_shell_type
                 } else {
                     ConfigShellToolType::ShellWithRequest { sandbox_policy: sp }
                 }
@@ -980,8 +980,8 @@ impl ModelClient {
             if let Some(model_value) = payload_json.get_mut("model") {
                 *model_value = serde_json::Value::String(model_slug.to_string());
             }
-            if let Some(openrouter_cfg) = self.provider.openrouter_config() {
-                if let Some(obj) = payload_json.as_object_mut() {
+            if let Some(openrouter_cfg) = self.provider.openrouter_config()
+                && let Some(obj) = payload_json.as_object_mut() {
                     if let Some(provider) = &openrouter_cfg.provider {
                         obj.insert("provider".to_string(), serde_json::to_value(provider)?);
                     }
@@ -992,7 +992,6 @@ impl ModelClient {
                         obj.entry(key.clone()).or_insert(value.clone());
                     }
                 }
-            }
 
             let base_auth = auth_manager.as_ref().and_then(|m| m.auth());
             let auth = self.provider.effective_auth(&base_auth).await?;
@@ -1030,7 +1029,7 @@ impl ModelClient {
             let has_beta_header = req_builder
                 .try_clone()
                 .and_then(|builder| builder.build().ok())
-                .map_or(false, |req| req.headers().contains_key("OpenAI-Beta"));
+                .is_some_and(|req| req.headers().contains_key("OpenAI-Beta"));
 
             if !has_beta_header {
                 let beta_value = if self.provider.is_public_openai_responses_endpoint() {
@@ -1065,13 +1064,12 @@ impl ModelClient {
                 .and_then(|builder| builder.build().ok())
                 .map(|req| header_map_to_json(req.headers()));
 
-            if request_id.is_empty() {
-                if let Ok(logger) = self.debug_logger.lock() {
+            if request_id.is_empty()
+                && let Ok(logger) = self.debug_logger.lock() {
                     request_id = logger
                         .start_request_log(&endpoint, &payload_json, header_snapshot.as_ref(), log_tag)
                         .unwrap_or_default();
                 }
-            }
 
             let ws_headers = req_builder
                 .try_clone()
@@ -1167,25 +1165,23 @@ impl ModelClient {
                         .get("X-Models-Etag")
                         .and_then(|value| value.to_str().ok())
                         .map(ToString::to_string);
-                    if let Some(etag) = models_etag {
-                        if tx_event
+                    if let Some(etag) = models_etag
+                        && tx_event
                             .send(Ok(ResponseEvent::ModelsEtag(etag)))
                             .await
                             .is_err()
                         {
                             debug!("receiver dropped models etag event");
                         }
-                    }
 
-                    if response.headers().contains_key("x-reasoning-included") {
-                        if tx_event
+                    if response.headers().contains_key("x-reasoning-included")
+                        && tx_event
                             .send(Ok(ResponseEvent::ServerReasoningIncluded(true)))
                             .await
                             .is_err()
                         {
                             debug!("receiver dropped server reasoning included event");
                         }
-                    }
 
                     ws_stream
                         .send(Message::Text(ws_payload_text))
@@ -1482,8 +1478,8 @@ impl ModelClient {
             if let Some(model_value) = payload_json.get_mut("model") {
                 *model_value = serde_json::Value::String(model_slug.to_string());
             }
-            if let Some(openrouter_cfg) = self.provider.openrouter_config() {
-                if let Some(obj) = payload_json.as_object_mut() {
+            if let Some(openrouter_cfg) = self.provider.openrouter_config()
+                && let Some(obj) = payload_json.as_object_mut() {
                     if let Some(provider) = &openrouter_cfg.provider {
                         obj.insert(
                             "provider".to_string(),
@@ -1497,7 +1493,6 @@ impl ModelClient {
                         obj.entry(key.clone()).or_insert(value.clone());
                     }
                 }
-            }
             let payload_body = serde_json::to_string(&payload_json)?;
 
             let mut auth_refresh_error: Option<RefreshTokenError> = None;
@@ -1526,7 +1521,7 @@ impl ModelClient {
             let has_beta_header = req_builder
                 .try_clone()
                 .and_then(|builder| builder.build().ok())
-                .map_or(false, |req| req.headers().contains_key("OpenAI-Beta"));
+                .is_some_and(|req| req.headers().contains_key("OpenAI-Beta"));
 
             if !has_beta_header {
                 let beta_value = if self.provider.is_public_openai_responses_endpoint() {
@@ -1662,15 +1657,14 @@ impl ModelClient {
                         .get("X-Models-Etag")
                         .and_then(|value| value.to_str().ok())
                         .map(ToString::to_string);
-                    if let Some(etag) = models_etag {
-                        if tx_event
+                    if let Some(etag) = models_etag
+                        && tx_event
                             .send(Ok(ResponseEvent::ModelsEtag(etag)))
                             .await
                             .is_err()
                         {
                             debug!("receiver dropped models etag event");
                         }
-                    }
 
                     // spawn task to process SSE
                     let stream = resp.bytes_stream().map_err(CodexErr::Reqwest);
@@ -1712,7 +1706,7 @@ impl ModelClient {
                     let x_request_id = headers
                         .get("x-request-id")
                         .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string());
+                        .map(std::string::ToString::to_string);
                     let now = Utc::now();
 
                     // Pull out Retry‑After header if present.
@@ -1747,8 +1741,8 @@ impl ModelClient {
                     let body_text = res.text().await.unwrap_or_default();
                     let body = serde_json::from_str::<ErrorResponse>(&body_text).ok();
 
-                    if status == StatusCode::TOO_MANY_REQUESTS {
-                        if let Some(model) = headers
+                    if status == StatusCode::TOO_MANY_REQUESTS
+                        && let Some(model) = headers
                             .get(MODEL_CAP_MODEL_HEADER)
                             .and_then(|value| value.to_str().ok())
                             .map(str::to_string)
@@ -1762,7 +1756,6 @@ impl ModelClient {
                                 reset_after_seconds,
                             }));
                         }
-                    }
 
                     if status == StatusCode::TOO_MANY_REQUESTS
                         && self.config.auto_switch_accounts_on_rate_limit
@@ -1771,7 +1764,7 @@ impl ModelClient {
                     {
                         let current_account_id = auth
                             .as_ref()
-                            .and_then(|current| current.get_account_id())
+                            .and_then(super::auth::CodexAuth::get_account_id)
                             .or_else(|| {
                                 auth_accounts::get_active_account_id(self.code_home())
                                     .ok()
@@ -1779,11 +1772,10 @@ impl ModelClient {
                             });
                         if let Some(current_account_id) = current_account_id {
                             let mut retry_after_delay = retry_after_hint.clone();
-                            if retry_after_delay.is_none() {
-                                if let Some(ErrorResponse { ref error }) = body {
+                            if retry_after_delay.is_none()
+                                && let Some(ErrorResponse { ref error }) = body {
                                     retry_after_delay = try_parse_retry_after(error, now);
                                 }
-                            }
 
                             let current_auth_mode = auth
                                 .as_ref()
@@ -1832,7 +1824,7 @@ impl ModelClient {
                                     let plan_type = body
                                         .as_ref()
                                         .and_then(|err| err.error.plan_type.as_deref())
-                                        .map(|s| s.to_string());
+                                        .map(std::string::ToString::to_string);
                                     let resets_in_seconds =
                                         body.as_ref().and_then(|err| err.error.resets_in_seconds);
                                     let code_home = self.code_home().to_path_buf();
@@ -1891,9 +1883,9 @@ impl ModelClient {
                         }
                     }
 
-                    if status == StatusCode::BAD_REQUEST {
-                        if let Some(ErrorResponse { ref error }) = body {
-                            if !self.reasoning_summary_disabled.load(Ordering::Relaxed)
+                    if status == StatusCode::BAD_REQUEST
+                        && let Some(ErrorResponse { ref error }) = body
+                            && !self.reasoning_summary_disabled.load(Ordering::Relaxed)
                                 && is_reasoning_summary_rejected(error)
                             {
                                 self.disable_reasoning_summary();
@@ -1915,8 +1907,6 @@ impl ModelClient {
                                 attempt = 0;
                                 continue;
                             }
-                        }
-                    }
 
                     // The OpenAI Responses endpoint returns structured JSON bodies even for 4xx/5xx
                     // errors. When we bubble early with only the HTTP status the caller sees an opaque
@@ -1949,22 +1939,20 @@ impl ModelClient {
                         }));
                     }
 
-                    if let Some(ErrorResponse { ref error }) = body {
-                        if is_quota_exceeded_http_error(status, error) {
+                    if let Some(ErrorResponse { ref error }) = body
+                        && is_quota_exceeded_http_error(status, error) {
                             return Err(CodexErr::QuotaExceeded);
                         }
-                    }
 
-                    if status == StatusCode::UNAUTHORIZED {
-                        if let Some(error) =
+                    if status == StatusCode::UNAUTHORIZED
+                        && let Some(error) =
                             map_unauthorized_outcome(auth.is_some(), auth_refresh_error.as_ref())
                         {
                             return Err(error);
                         }
-                    }
 
-                    if status == StatusCode::TOO_MANY_REQUESTS {
-                        if let Some(ErrorResponse { ref error }) = body {
+                    if status == StatusCode::TOO_MANY_REQUESTS
+                        && let Some(ErrorResponse { ref error }) = body {
                             if error.r#type.as_deref() == Some("usage_limit_reached") {
                                 // Prefer the plan_type provided in the error message if present
                                 // because it's more up to date than the one encoded in the auth
@@ -1982,7 +1970,6 @@ impl ModelClient {
                                 return Err(CodexErr::UsageNotIncluded);
                             }
                         }
-                    }
 
                     if attempt > max_retries {
                         // On final attempt, surface rich diagnostics for server errors.
@@ -2048,11 +2035,10 @@ impl ModelClient {
                     }
 
                     let mut retry_after_delay = retry_after_hint;
-                    if retry_after_delay.is_none() {
-                        if let Some(ErrorResponse { ref error }) = body {
+                    if retry_after_delay.is_none()
+                        && let Some(ErrorResponse { ref error }) = body {
                             retry_after_delay = try_parse_retry_after(error, now);
                         }
-                    }
 
                     let delay = retry_after_delay
                         .as_ref()
@@ -2065,7 +2051,7 @@ impl ModelClient {
                     if attempt > max_retries {
                         // Log network error before surfacing.
                         if let Ok(logger) = self.debug_logger.lock() {
-                            let _ = logger.log_error(&endpoint, &format!("Network error: {}", e), log_tag);
+                            let _ = logger.log_error(&endpoint, &format!("Network error: {e}"), log_tag);
                         }
                         if is_connectivity {
                             let req_id = (!request_id.is_empty()).then(|| request_id.clone());
@@ -2175,7 +2161,7 @@ impl ModelClient {
             let has_beta_header = request
                 .try_clone()
                 .and_then(|builder| builder.build().ok())
-                .map_or(false, |req| req.headers().contains_key("OpenAI-Beta"));
+                .is_some_and(|req| req.headers().contains_key("OpenAI-Beta"));
 
             if !has_beta_header {
                 let beta_value = if self.provider.is_public_openai_responses_endpoint() {
@@ -2212,8 +2198,8 @@ impl ModelClient {
                 .and_then(|builder| builder.build().ok())
                 .map(|req| header_map_to_json(req.headers()));
 
-            if request_id.is_empty() {
-                if let Ok(logger) = self.debug_logger.lock() {
+            if request_id.is_empty()
+                && let Ok(logger) = self.debug_logger.lock() {
                     let endpoint = self
                         .provider
                         .get_compact_url(&auth)
@@ -2227,7 +2213,6 @@ impl ModelClient {
                         )
                         .unwrap_or_default();
                 }
-            }
 
             let response = request.send().await?;
             let status = response.status();
@@ -2258,7 +2243,7 @@ impl ModelClient {
                 let now = Utc::now();
                 let current_account_id = auth
                     .as_ref()
-                    .and_then(|current| current.get_account_id())
+                    .and_then(super::auth::CodexAuth::get_account_id)
                     .or_else(|| {
                         auth_accounts::get_active_account_id(self.code_home())
                             .ok()
@@ -2344,7 +2329,7 @@ fn attach_codex_beta_features_header(
     let has_header = builder
         .try_clone()
         .and_then(|builder| builder.build().ok())
-        .map_or(false, |req| req.headers().contains_key("x-codex-beta-features"));
+        .is_some_and(|req| req.headers().contains_key("x-codex-beta-features"));
     if has_header {
         return builder;
     }
@@ -2475,7 +2460,7 @@ fn attach_openai_subagent_header(builder: reqwest::RequestBuilder) -> reqwest::R
     let has_header = builder
         .try_clone()
         .and_then(|builder| builder.build().ok())
-        .map_or(false, |req| req.headers().contains_key("x-openai-subagent"));
+        .is_some_and(|req| req.headers().contains_key("x-openai-subagent"));
     if has_header {
         return builder;
     }
@@ -2658,7 +2643,7 @@ fn format_rate_limit_headers(headers: &HeaderMap) -> String {
         .iter()
         .map(|(name, value)| {
             let value_str = value.to_str().unwrap_or("<invalid>");
-            format!("{}: {}", name, value_str)
+            format!("{name}: {value_str}")
         })
         .collect();
     pairs.sort();
@@ -2695,11 +2680,10 @@ fn parse_retry_after_header(value: &str, now: DateTime<Utc>) -> Option<RetryAfte
     if let Ok(secs) = normalized.parse::<u64>() {
         return Some(RetryAfter::from_duration(Duration::from_secs(secs), now));
     }
-    if let Ok(float_secs) = normalized.parse::<f64>() {
-        if !float_secs.is_sign_negative() {
+    if let Ok(float_secs) = normalized.parse::<f64>()
+        && !float_secs.is_sign_negative() {
             return Some(RetryAfter::from_duration(Duration::from_secs_f64(float_secs), now));
         }
-    }
     if let Ok(system_time) = parse_http_date(normalized) {
         let resume_at: DateTime<Utc> = system_time.into();
         return Some(RetryAfter::from_resume_at(resume_at, now));
@@ -2855,11 +2839,10 @@ async fn process_sse<S>(
         trace!("SSE event: {}", raw);
 
         // Log the raw SSE event data
-        if let Ok(logger) = debug_logger.lock() {
-            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&sse.data) {
+        if let Ok(logger) = debug_logger.lock()
+            && let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&sse.data) {
                 let _ = logger.append_response_event(&request_id, "sse_event", &json_value);
             }
-        }
 
         let event: SseEvent = match serde_json::from_str(&sse.data) {
             Ok(event) => event,
@@ -2886,11 +2869,10 @@ async fn process_sse<S>(
         };
 
         if let Some(seq) = event.sequence_number {
-            if let Some(last) = global_last_seq {
-                if seq <= last {
+            if let Some(last) = global_last_seq
+                && seq <= last {
                     continue;
                 }
-            }
             global_last_seq = Some(seq);
             if let Ok(mut guard) = checkpoint.write() {
                 guard.last_sequence = Some(seq);
@@ -2933,7 +2915,7 @@ async fn process_sse<S>(
                         .get("action")
                         .and_then(|a| a.get("query"))
                         .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
+                        .map(std::string::ToString::to_string);
                     let ev = ResponseEvent::WebSearchCallCompleted { call_id, query };
                     if tx_event.send(Ok(ev)).await.is_err() {
                         return;
@@ -3018,7 +3000,7 @@ async fn process_sse<S>(
                         } else {
                             // Best-effort: drop exact duplicate text for same key when seq is missing
                             let key = (id.clone(), out_idx, sum_idx);
-                            if last_text_reasoning_summary.get(&key).map_or(false, |prev| prev == &delta) {
+                            if last_text_reasoning_summary.get(&key) == Some(&delta) {
                                 continue;
                             }
                             last_text_reasoning_summary.insert(key, delta.clone());
@@ -3059,7 +3041,7 @@ async fn process_sse<S>(
                         } else {
                             // Best-effort: drop exact duplicate text for same key when seq is missing
                             let key = (id.clone(), out_idx, content_idx);
-                            if last_text_reasoning_content.get(&key).map_or(false, |prev| prev == &delta) {
+                            if last_text_reasoning_content.get(&key) == Some(&delta) {
                                 continue;
                             }
                             last_text_reasoning_content.insert(key, delta.clone());
@@ -3251,11 +3233,11 @@ async fn process_sse<S>(
             | "response.in_progress"
             | "response.output_item.added"
             | "response.output_text.done" => {
-                if event.kind == "response.output_item.added" {
-                    if let Some(item) = event.item.as_ref() {
+                if event.kind == "response.output_item.added"
+                    && let Some(item) = event.item.as_ref() {
                         // Detect web_search_call begin and forward a synthetic event upstream.
-                        if let Some(ty) = item.get("type").and_then(|v| v.as_str()) {
-                            if ty == "web_search_call" {
+                        if let Some(ty) = item.get("type").and_then(|v| v.as_str())
+                            && ty == "web_search_call" {
                                 let call_id = item
                                     .get("id")
                                     .and_then(|v| v.as_str())
@@ -3266,9 +3248,7 @@ async fn process_sse<S>(
                                     return;
                                 }
                             }
-                        }
                     }
-                }
             }
             "response.reasoning_summary_part.added" => {
                 // Boundary between reasoning summary sections (e.g., titles).
@@ -3345,11 +3325,10 @@ mod tests {
             CodexErr::AuthRefreshPermanent(msg) => {
                 assert!(
                     msg.contains("token revoked"),
-                    "unexpected message: {}",
-                    msg
+                    "unexpected message: {msg}"
                 );
             }
-            other => panic!("unexpected outcome: {:?}", other),
+            other => panic!("unexpected outcome: {other:?}"),
         }
     }
 
@@ -3361,7 +3340,7 @@ mod tests {
             CodexErr::AuthRefreshPermanent(msg) => {
                 assert_eq!(msg, AUTH_REQUIRED_MESSAGE);
             }
-            other => panic!("unexpected outcome: {:?}", other),
+            other => panic!("unexpected outcome: {other:?}"),
         }
     }
 
@@ -3544,7 +3523,7 @@ mod tests {
         let has_beta = builder
             .try_clone()
             .and_then(|b| b.build().ok())
-            .map_or(false, |req| req.headers().contains_key("OpenAI-Beta"));
+            .is_some_and(|req| req.headers().contains_key("OpenAI-Beta"));
         if !has_beta {
             builder = builder.header("OpenAI-Beta", RESPONSES_BETA_HEADER_V1);
         }
@@ -3595,7 +3574,7 @@ mod tests {
         let has_beta = builder
             .try_clone()
             .and_then(|b| b.build().ok())
-            .map_or(false, |req| req.headers().contains_key("OpenAI-Beta"));
+            .is_some_and(|req| req.headers().contains_key("OpenAI-Beta"));
         if !has_beta {
             builder = builder.header("OpenAI-Beta", RESPONSES_BETA_HEADER_EXPERIMENTAL);
         }
@@ -4345,7 +4324,7 @@ mod tests {
     fn retry_after_prefers_header_over_body_hint() {
         let now = fixed_now();
         let header_retry = parse_retry_after_header("5", now);
-        let mut chosen = header_retry.clone();
+        let mut chosen = header_retry;
         if chosen.is_none() {
             let err = Error {
                 r#type: None,

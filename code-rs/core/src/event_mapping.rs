@@ -62,7 +62,7 @@ pub(crate) fn map_response_item_to_event_messages(
                             let base_fingerprint = delta
                                 .get("base_fingerprint")
                                 .and_then(|value| value.as_str())
-                                .map(|value| value.to_string());
+                                .map(std::string::ToString::to_string);
                             events.push(EventMsg::EnvironmentContextDelta(
                                 EnvironmentContextDeltaEvent {
                                     base_fingerprint,
@@ -83,11 +83,11 @@ pub(crate) fn map_response_item_to_event_messages(
                             let url = snapshot
                                 .get("url")
                                 .and_then(|value| value.as_str())
-                                .map(|value| value.to_string());
+                                .map(std::string::ToString::to_string);
                             let captured_at = snapshot
                                 .get("captured_at")
                                 .and_then(|value| value.as_str())
-                                .map(|value| value.to_string());
+                                .map(std::string::ToString::to_string);
                             events.push(EventMsg::BrowserSnapshot(BrowserSnapshotEvent {
                                 snapshot,
                                 url,
@@ -223,10 +223,10 @@ mod tests {
                     text: "Hello world".to_string(),
                 },
                 ContentItem::InputImage {
-                    image_url: img1.clone(),
+                    image_url: img1,
                 },
                 ContentItem::InputImage {
-                    image_url: img2.clone(),
+                    image_url: img2,
                 },
             ], end_turn: None, phase: None};
 

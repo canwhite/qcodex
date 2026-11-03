@@ -372,7 +372,7 @@ fn set_project_trusted_inner(doc: &mut DocumentMut, project_path: &Path) -> anyh
         .get_mut(project_key.as_str())
         .and_then(|i| i.as_table_mut())
     else {
-        return Err(anyhow::anyhow!("project table missing for {}", project_key));
+        return Err(anyhow::anyhow!("project table missing for {project_key}"));
     };
     proj_tbl.set_implicit(false);
     proj_tbl["trust_level"] = toml_edit::value("trusted");
@@ -1151,16 +1151,16 @@ pub fn set_project_access_mode(
     let proj_tbl = projects_tbl
         .get_mut(project_key.as_str())
         .and_then(|i| i.as_table_mut())
-        .ok_or_else(|| anyhow::anyhow!(format!("failed to create projects.{} table", project_key)))?;
+        .ok_or_else(|| anyhow::anyhow!(format!("failed to create projects.{project_key} table")))?;
 
     // Write fields
     proj_tbl.insert(
         "approval_policy",
-        TomlItem::Value(toml_edit::Value::from(format!("{}", approval))),
+        TomlItem::Value(toml_edit::Value::from(format!("{approval}"))),
     );
     proj_tbl.insert(
         "sandbox_mode",
-        TomlItem::Value(toml_edit::Value::from(format!("{}", sandbox_mode))),
+        TomlItem::Value(toml_edit::Value::from(format!("{sandbox_mode}"))),
     );
 
     // Harmonize trust_level with selected access mode:
@@ -1229,7 +1229,7 @@ pub fn add_project_allowed_command(
     let project_tbl = projects_tbl
         .get_mut(project_key.as_str())
         .and_then(|i| i.as_table_mut())
-        .ok_or_else(|| anyhow::anyhow!(format!("failed to create projects.{} table", project_key)))?;
+        .ok_or_else(|| anyhow::anyhow!(format!("failed to create projects.{project_key} table")))?;
 
     let mut argv_array = TomlArray::new();
     for arg in command {
@@ -1303,7 +1303,7 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
                         value.as_array().map(|items| {
                             items
                                 .iter()
-                                .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                                .filter_map(|item| item.as_str().map(std::string::ToString::to_string))
                                 .collect::<Vec<_>>()
                         })
                     })
@@ -1314,7 +1314,7 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
                         .and_then(|v| v.as_array())
                         .map(|arr| {
                             arr.iter()
-                                .filter_map(|i| i.as_str().map(|s| s.to_string()))
+                                .filter_map(|i| i.as_str().map(std::string::ToString::to_string))
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -1329,18 +1329,12 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
                                         })
                                         .collect::<HashMap<_, _>>(),
                                 )
-                            } else if let Some(table) = v.as_table() {
-                                Some(
-                                    table
+                            } else { v.as_table().map(|table| table
                                         .iter()
                                         .filter_map(|(k, v)| {
                                             v.as_str().map(|s| (k.to_string(), s.to_string()))
                                         })
-                                        .collect::<HashMap<_, _>>(),
-                                )
-                            } else {
-                                None
-                            }
+                                        .collect::<HashMap<_, _>>()) }
                         });
 
                     McpServerTransportConfig::Stdio {
@@ -1352,11 +1346,11 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
                     let bearer_token = t
                         .get("bearer_token")
                         .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
+                        .map(std::string::ToString::to_string);
                     let bearer_token_env_var = t
                         .get("bearer_token_env_var")
                         .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
+                        .map(std::string::ToString::to_string);
                     let http_headers = t.get("http_headers").and_then(|v| {
                         v.as_table()
                             .map(|table| {
@@ -1406,7 +1400,7 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
                     let oauth_resource = t
                         .get("oauth_resource")
                         .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
+                        .map(std::string::ToString::to_string);
 
                     McpServerTransportConfig::StreamableHttp {
                         url: url.to_string(),
@@ -1432,7 +1426,7 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
                     .flatten()
                     .or_else(|| {
                         t.get("startup_timeout_ms")
-                            .and_then(|v| v.as_integer())
+                            .and_then(toml_edit::Item::as_integer)
                             .map(|ms| Duration::from_millis(ms as u64))
                     });
 
@@ -1489,8 +1483,7 @@ pub fn add_mcp_server(
     // Validate server name for safety and compatibility with MCP tool naming.
     if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
         return Err(anyhow::anyhow!(
-            "invalid server name '{}': must match ^[a-zA-Z0-9_-]+$",
-            name
+            "invalid server name '{name}': must match ^[a-zA-Z0-9_-]+$"
         ));
     }
 
@@ -1720,7 +1713,7 @@ fn compute_legacy_code_home_dir() -> Option<PathBuf> {
 fn legacy_code_home_dir() -> Option<PathBuf> {
     #[cfg(test)]
     {
-        return compute_legacy_code_home_dir();
+        compute_legacy_code_home_dir()
     }
 
     #[cfg(not(test))]
@@ -1749,11 +1742,10 @@ pub fn resolve_code_path_for_read(code_home: &Path, relative: &Path) -> PathBuf 
         return default_path;
     }
 
-    if let Some(default_home) = default_code_home_dir() {
-        if default_home != code_home {
+    if let Some(default_home) = default_code_home_dir()
+        && default_home != code_home {
             return default_path;
         }
-    }
 
     if let Some(legacy) = legacy_code_home_dir() {
         let candidate = legacy.join(relative);

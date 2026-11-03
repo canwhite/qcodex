@@ -881,7 +881,7 @@ impl CodexMessageProcessor {
         let next_cursor = page.next_cursor.and_then(|cursor| {
             serde_json::to_value(cursor)
                 .ok()
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                .and_then(|v| v.as_str().map(std::string::ToString::to_string))
         });
 
         self.outgoing
@@ -1111,17 +1111,15 @@ impl CodexMessageProcessor {
 
         if !requires_openai_auth {
             auth_method = None;
-        } else if include_token {
-            if let Some(auth) = auth.as_ref() {
+        } else if include_token
+            && let Some(auth) = auth.as_ref() {
                 let permanent_refresh_failure =
                     self.auth_manager.refresh_failure_for_auth(auth).is_some();
-                if !permanent_refresh_failure && let Ok(token) = auth.get_token().await {
-                    if !token.trim().is_empty() {
+                if !permanent_refresh_failure && let Ok(token) = auth.get_token().await
+                    && !token.trim().is_empty() {
                         auth_token = Some(token);
                     }
-                }
             }
-        }
 
         self.outgoing
             .send_response(
@@ -1255,15 +1253,14 @@ impl CodexMessageProcessor {
 
     async fn user_info(&self, request_id: RequestId) {
         let mut alleged_user_email = None;
-        if let Some(auth) = self.auth_manager.auth() {
-            if auth.mode.is_chatgpt() {
+        if let Some(auth) = self.auth_manager.auth()
+            && auth.mode.is_chatgpt() {
                 alleged_user_email = auth
                     .get_token_data()
                     .await
                     .ok()
                     .and_then(|t| t.id_token.email);
             }
-        }
         self.outgoing
             .send_response(request_id, UserInfoResponse { alleged_user_email })
             .await;
@@ -1916,6 +1913,208 @@ impl IntoWireAuthMode for code_app_server_protocol::AuthMode {
     }
 }
 
+impl IntoWireAuthMode for code_protocol::mcp_protocol::AuthMode {
+    fn into_wire(self) -> code_protocol::mcp_protocol::AuthMode {
+        self
+    }
+}
+
+fn map_auth_mode_to_wire<M: IntoWireAuthMode>(mode: M) -> code_protocol::mcp_protocol::AuthMode {
+    mode.into_wire()
+}
+
+fn map_ask_for_approval_from_wire(a: code_protocol::protocol::AskForApproval) -> core_protocol::AskForApproval {
+    match a {
+        code_protocol::protocol::AskForApproval::UnlessTrusted => core_protocol::AskForApproval::UnlessTrusted,
+        code_protocol::protocol::AskForApproval::OnFailure => core_protocol::AskForApproval::OnFailure,
+        code_protocol::protocol::AskForApproval::OnRequest => core_protocol::AskForApproval::OnRequest,
+        code_protocol::protocol::AskForApproval::Reject(config) => {
+            core_protocol::AskForApproval::Reject(core_protocol::RejectConfig {
+                sandbox_approval: config.sandbox_approval,
+                rules: config.rules,
+                skill_approval: config.skill_approval,
+                request_permissions: config.request_permissions,
+                mcp_elicitations: config.mcp_elicitations,
+            })
+        }
+        code_protocol::protocol::AskForApproval::Never => core_protocol::AskForApproval::Never,
+    }
+}
+
+fn map_ask_for_approval_to_wire(a: core_protocol::AskForApproval) -> code_protocol::protocol::AskForApproval {
+    match a {
+        core_protocol::AskForApproval::UnlessTrusted => code_protocol::protocol::AskForApproval::UnlessTrusted,
+        core_protocol::AskForApproval::OnFailure => code_protocol::protocol::AskForApproval::OnFailure,
+        core_protocol::AskForApproval::OnRequest => code_protocol::protocol::AskForApproval::OnRequest,
+        core_protocol::AskForApproval::Reject(config) => {
+            code_protocol::protocol::AskForApproval::Reject(code_protocol::protocol::RejectConfig {
+                sandbox_approval: config.sandbox_approval,
+                rules: config.rules,
+                skill_approval: config.skill_approval,
+                request_permissions: config.request_permissions,
+                mcp_elicitations: config.mcp_elicitations,
+            })
+        }
+        core_protocol::AskForApproval::Never => code_protocol::protocol::AskForApproval::Never,
+    }
+}
+
+fn map_reasoning_effort_to_wire(
+    effort: code_core::config_types::ReasoningEffort,
+) -> code_protocol::config_types::ReasoningEffort {
+    match effort {
+        code_core::config_types::ReasoningEffort::Minimal => {
+            code_protocol::config_types::ReasoningEffort::Minimal
+        }
+        code_core::config_types::ReasoningEffort::Low => code_protocol::config_types::ReasoningEffort::Low,
+        code_core::config_types::ReasoningEffort::Medium => {
+            code_protocol::config_types::ReasoningEffort::Medium
+        }
+        code_core::config_types::ReasoningEffort::High => code_protocol::config_types::ReasoningEffort::High,
+        code_core::config_types::ReasoningEffort::XHigh => {
+            code_protocol::config_types::ReasoningEffort::XHigh
+        }
+        code_core::config_types::ReasoningEffort::None => {
+            code_protocol::config_types::ReasoningEffort::Minimal
+        }
+    }
+}
+
+fn map_reasoning_summary_to_wire(
+    summary: code_core::config_types::ReasoningSummary,
+) -> code_protocol::config_types::ReasoningSummary {
+    match summary {
+        code_core::config_types::ReasoningSummary::Auto => code_protocol::config_types::ReasoningSummary::Auto,
+        code_core::config_types::ReasoningSummary::Concise => {
+            code_protocol::config_types::ReasoningSummary::Concise
+        }
+        code_core::config_types::ReasoningSummary::Detailed => {
+            code_protocol::config_types::ReasoningSummary::Detailed
+        }
+        code_core::config_types::ReasoningSummary::None => code_protocol::config_types::ReasoningSummary::None,
+    }
+}
+
+fn map_verbosity_to_wire(
+    verbosity: code_core::config_types::TextVerbosity,
+) -> code_protocol::config_types::Verbosity {
+    match verbosity {
+        code_core::config_types::TextVerbosity::Low => code_protocol::config_types::Verbosity::Low,
+        code_core::config_types::TextVerbosity::Medium => {
+            code_protocol::config_types::Verbosity::Medium
+        }
+        code_core::config_types::TextVerbosity::High => code_protocol::config_types::Verbosity::High,
+    }
+}
+
+fn parse_plan_type(plan: Option<String>) -> PlanType {
+    let Some(plan) = plan else {
+        return PlanType::Unknown;
+    };
+
+    match plan.trim().to_ascii_lowercase().as_str() {
+        "free" => PlanType::Free,
+        "go" => PlanType::Go,
+        "plus" => PlanType::Plus,
+        "pro" => PlanType::Pro,
+        "prolite" => PlanType::ProLite,
+        "promax" => PlanType::ProMax,
+        "team" => PlanType::Team,
+        "self_serve_business_prolite" => PlanType::SelfServeBusinessProLite,
+        "self_serve_business_usage_based" => PlanType::SelfServeBusinessUsageBased,
+        "business" => PlanType::Business,
+        "ent26" => PlanType::Ent26,
+        "enterprise" => PlanType::Enterprise,
+        "edu" => PlanType::Edu,
+        _ => PlanType::Unknown,
+    }
+}
+
+fn select_rate_limit_snapshot(
+    account_id: Option<String>,
+    snapshots: Vec<code_core::account_usage::StoredRateLimitSnapshot>,
+) -> Option<code_core::account_usage::StoredRateLimitSnapshot> {
+    if snapshots.is_empty() {
+        return None;
+    }
+
+    if let Some(account_id) = account_id
+        && let Some(snapshot) = snapshots
+            .iter()
+            .find(|snapshot| snapshot.account_id == account_id)
+    {
+        return Some(snapshot.clone());
+    }
+
+    snapshots.into_iter().next()
+}
+
+fn rate_limit_snapshot_from_event(
+    snapshot: &code_core::protocol::RateLimitSnapshotEvent,
+    plan_type: Option<PlanType>,
+) -> CoreRateLimitSnapshot {
+    let primary = CoreRateLimitWindow {
+        used_percent: snapshot.primary_used_percent,
+        window_minutes: Some(snapshot.primary_window_minutes),
+        resets_in_seconds: snapshot.primary_reset_after_seconds,
+        resets_at: None,
+    };
+    let secondary = CoreRateLimitWindow {
+        used_percent: snapshot.secondary_used_percent,
+        window_minutes: Some(snapshot.secondary_window_minutes),
+        resets_in_seconds: snapshot.secondary_reset_after_seconds,
+        resets_at: None,
+    };
+
+    CoreRateLimitSnapshot {
+        limit_id: None,
+        limit_name: None,
+        primary: Some(primary),
+        secondary: Some(secondary),
+        credits: None,
+        plan_type,
+    }
+}
+
+fn conversation_id_from_rollout_path(path: &std::path::Path) -> Option<ConversationId> {
+    let stem = path.file_stem()?.to_str()?;
+    let (_, id) = stem.rsplit_once('-')?;
+    ConversationId::from_string(id).ok()
+}
+
+fn snippet_from_rollout_tail(tail: &[serde_json::Value]) -> Option<String> {
+    for value in tail.iter().rev() {
+        let item = match serde_json::from_value::<code_protocol::protocol::RolloutItem>(value.clone()) {
+            Ok(item) => item,
+            Err(_) => continue,
+        };
+        if let code_protocol::protocol::RolloutItem::ResponseItem(
+            code_protocol::models::ResponseItem::Message { role, content, .. },
+        ) = item
+            && role.eq_ignore_ascii_case("user")
+            && let Some(snippet) = snippet_from_content(&content)
+                && !snippet.starts_with("== System Status ==")
+            {
+                return Some(snippet);
+            }
+    }
+    None
+}
+
+fn snippet_from_content(content: &[code_protocol::models::ContentItem]) -> Option<String> {
+    content.iter().find_map(|item| match item {
+        code_protocol::models::ContentItem::InputText { text }
+        | code_protocol::models::ContentItem::OutputText { text } => {
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text.chars().take(100).collect())
+            }
+        }
+        _ => None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2184,210 +2383,6 @@ mod tests {
             vec!["selected".to_string()]
         );
     }
-}
-
-impl IntoWireAuthMode for code_protocol::mcp_protocol::AuthMode {
-    fn into_wire(self) -> code_protocol::mcp_protocol::AuthMode {
-        self
-    }
-}
-
-fn map_auth_mode_to_wire<M: IntoWireAuthMode>(mode: M) -> code_protocol::mcp_protocol::AuthMode {
-    mode.into_wire()
-}
-
-fn map_ask_for_approval_from_wire(a: code_protocol::protocol::AskForApproval) -> core_protocol::AskForApproval {
-    match a {
-        code_protocol::protocol::AskForApproval::UnlessTrusted => core_protocol::AskForApproval::UnlessTrusted,
-        code_protocol::protocol::AskForApproval::OnFailure => core_protocol::AskForApproval::OnFailure,
-        code_protocol::protocol::AskForApproval::OnRequest => core_protocol::AskForApproval::OnRequest,
-        code_protocol::protocol::AskForApproval::Reject(config) => {
-            core_protocol::AskForApproval::Reject(core_protocol::RejectConfig {
-                sandbox_approval: config.sandbox_approval,
-                rules: config.rules,
-                skill_approval: config.skill_approval,
-                request_permissions: config.request_permissions,
-                mcp_elicitations: config.mcp_elicitations,
-            })
-        }
-        code_protocol::protocol::AskForApproval::Never => core_protocol::AskForApproval::Never,
-    }
-}
-
-fn map_ask_for_approval_to_wire(a: core_protocol::AskForApproval) -> code_protocol::protocol::AskForApproval {
-    match a {
-        core_protocol::AskForApproval::UnlessTrusted => code_protocol::protocol::AskForApproval::UnlessTrusted,
-        core_protocol::AskForApproval::OnFailure => code_protocol::protocol::AskForApproval::OnFailure,
-        core_protocol::AskForApproval::OnRequest => code_protocol::protocol::AskForApproval::OnRequest,
-        core_protocol::AskForApproval::Reject(config) => {
-            code_protocol::protocol::AskForApproval::Reject(code_protocol::protocol::RejectConfig {
-                sandbox_approval: config.sandbox_approval,
-                rules: config.rules,
-                skill_approval: config.skill_approval,
-                request_permissions: config.request_permissions,
-                mcp_elicitations: config.mcp_elicitations,
-            })
-        }
-        core_protocol::AskForApproval::Never => code_protocol::protocol::AskForApproval::Never,
-    }
-}
-
-fn map_reasoning_effort_to_wire(
-    effort: code_core::config_types::ReasoningEffort,
-) -> code_protocol::config_types::ReasoningEffort {
-    match effort {
-        code_core::config_types::ReasoningEffort::Minimal => {
-            code_protocol::config_types::ReasoningEffort::Minimal
-        }
-        code_core::config_types::ReasoningEffort::Low => code_protocol::config_types::ReasoningEffort::Low,
-        code_core::config_types::ReasoningEffort::Medium => {
-            code_protocol::config_types::ReasoningEffort::Medium
-        }
-        code_core::config_types::ReasoningEffort::High => code_protocol::config_types::ReasoningEffort::High,
-        code_core::config_types::ReasoningEffort::XHigh => {
-            code_protocol::config_types::ReasoningEffort::XHigh
-        }
-        code_core::config_types::ReasoningEffort::None => {
-            code_protocol::config_types::ReasoningEffort::Minimal
-        }
-    }
-}
-
-fn map_reasoning_summary_to_wire(
-    summary: code_core::config_types::ReasoningSummary,
-) -> code_protocol::config_types::ReasoningSummary {
-    match summary {
-        code_core::config_types::ReasoningSummary::Auto => code_protocol::config_types::ReasoningSummary::Auto,
-        code_core::config_types::ReasoningSummary::Concise => {
-            code_protocol::config_types::ReasoningSummary::Concise
-        }
-        code_core::config_types::ReasoningSummary::Detailed => {
-            code_protocol::config_types::ReasoningSummary::Detailed
-        }
-        code_core::config_types::ReasoningSummary::None => code_protocol::config_types::ReasoningSummary::None,
-    }
-}
-
-fn map_verbosity_to_wire(
-    verbosity: code_core::config_types::TextVerbosity,
-) -> code_protocol::config_types::Verbosity {
-    match verbosity {
-        code_core::config_types::TextVerbosity::Low => code_protocol::config_types::Verbosity::Low,
-        code_core::config_types::TextVerbosity::Medium => {
-            code_protocol::config_types::Verbosity::Medium
-        }
-        code_core::config_types::TextVerbosity::High => code_protocol::config_types::Verbosity::High,
-    }
-}
-
-fn parse_plan_type(plan: Option<String>) -> PlanType {
-    let Some(plan) = plan else {
-        return PlanType::Unknown;
-    };
-
-    match plan.trim().to_ascii_lowercase().as_str() {
-        "free" => PlanType::Free,
-        "go" => PlanType::Go,
-        "plus" => PlanType::Plus,
-        "pro" => PlanType::Pro,
-        "prolite" => PlanType::ProLite,
-        "promax" => PlanType::ProMax,
-        "team" => PlanType::Team,
-        "self_serve_business_prolite" => PlanType::SelfServeBusinessProLite,
-        "self_serve_business_usage_based" => PlanType::SelfServeBusinessUsageBased,
-        "business" => PlanType::Business,
-        "ent26" => PlanType::Ent26,
-        "enterprise" => PlanType::Enterprise,
-        "edu" => PlanType::Edu,
-        _ => PlanType::Unknown,
-    }
-}
-
-fn select_rate_limit_snapshot(
-    account_id: Option<String>,
-    snapshots: Vec<code_core::account_usage::StoredRateLimitSnapshot>,
-) -> Option<code_core::account_usage::StoredRateLimitSnapshot> {
-    if snapshots.is_empty() {
-        return None;
-    }
-
-    if let Some(account_id) = account_id
-        && let Some(snapshot) = snapshots
-            .iter()
-            .find(|snapshot| snapshot.account_id == account_id)
-    {
-        return Some(snapshot.clone());
-    }
-
-    snapshots.into_iter().next()
-}
-
-fn rate_limit_snapshot_from_event(
-    snapshot: &code_core::protocol::RateLimitSnapshotEvent,
-    plan_type: Option<PlanType>,
-) -> CoreRateLimitSnapshot {
-    let primary = CoreRateLimitWindow {
-        used_percent: snapshot.primary_used_percent,
-        window_minutes: Some(snapshot.primary_window_minutes),
-        resets_in_seconds: snapshot.primary_reset_after_seconds,
-        resets_at: None,
-    };
-    let secondary = CoreRateLimitWindow {
-        used_percent: snapshot.secondary_used_percent,
-        window_minutes: Some(snapshot.secondary_window_minutes),
-        resets_in_seconds: snapshot.secondary_reset_after_seconds,
-        resets_at: None,
-    };
-
-    CoreRateLimitSnapshot {
-        limit_id: None,
-        limit_name: None,
-        primary: Some(primary),
-        secondary: Some(secondary),
-        credits: None,
-        plan_type,
-    }
-}
-
-fn conversation_id_from_rollout_path(path: &std::path::Path) -> Option<ConversationId> {
-    let stem = path.file_stem()?.to_str()?;
-    let (_, id) = stem.rsplit_once('-')?;
-    ConversationId::from_string(id).ok()
-}
-
-fn snippet_from_rollout_tail(tail: &[serde_json::Value]) -> Option<String> {
-    for value in tail.iter().rev() {
-        let item = match serde_json::from_value::<code_protocol::protocol::RolloutItem>(value.clone()) {
-            Ok(item) => item,
-            Err(_) => continue,
-        };
-        if let code_protocol::protocol::RolloutItem::ResponseItem(
-            code_protocol::models::ResponseItem::Message { role, content, .. },
-        ) = item
-            && role.eq_ignore_ascii_case("user")
-        {
-            if let Some(snippet) = snippet_from_content(&content)
-                && !snippet.starts_with("== System Status ==")
-            {
-                return Some(snippet);
-            }
-        }
-    }
-    None
-}
-
-fn snippet_from_content(content: &[code_protocol::models::ContentItem]) -> Option<String> {
-    content.iter().find_map(|item| match item {
-        code_protocol::models::ContentItem::InputText { text }
-        | code_protocol::models::ContentItem::OutputText { text } => {
-            if text.trim().is_empty() {
-                None
-            } else {
-                Some(text.chars().take(100).collect())
-            }
-        }
-        _ => None,
-    })
 }
 
 // Unused legacy mappers removed to avoid warnings.

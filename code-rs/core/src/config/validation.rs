@@ -125,8 +125,8 @@ pub(crate) fn deserialize_config_toml_with_cli_warnings(
 
 pub(crate) fn upgrade_legacy_model_slugs(cfg: &mut ConfigToml) {
     fn maybe_upgrade(field: &mut Option<String>) {
-        if let Some(old) = field.clone() {
-            if let Some(new) = upgrade_legacy_model_slug(&old) {
+        if let Some(old) = field.clone()
+            && let Some(new) = upgrade_legacy_model_slug(&old) {
                 tracing::info!(
                     target: "code.config",
                     old,
@@ -135,7 +135,6 @@ pub(crate) fn upgrade_legacy_model_slugs(cfg: &mut ConfigToml) {
                 );
                 *field = Some(new);
             }
-        }
     }
 
     maybe_upgrade(&mut cfg.model);
@@ -160,7 +159,7 @@ fn upgrade_legacy_model_slug(slug: &str) -> Option<String> {
                 continue;
             };
 
-            let minor: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            let minor: String = rest.chars().take_while(char::is_ascii_digit).collect();
             if minor.is_empty() {
                 continue;
             }

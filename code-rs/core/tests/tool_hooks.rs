@@ -651,12 +651,10 @@ async fn session_start_and_stop_hooks_include_session_metadata() {
     File::create(&log_path).unwrap();
 
     let session_cmd = format!(
-        "python3 - <<'PY'\nimport json, os\np=json.loads(os.environ['CODE_HOOK_PAYLOAD'])\nwith open({:?}, 'a', encoding='utf-8') as f:\n    f.write('session_start|{{}}|{{}}|{{}}\\n'.format(bool(p.get('session_id')), bool(p.get('transcript_path')), bool(p.get('model'))))\nPY",
-        log_path
+        "python3 - <<'PY'\nimport json, os\np=json.loads(os.environ['CODE_HOOK_PAYLOAD'])\nwith open({log_path:?}, 'a', encoding='utf-8') as f:\n    f.write('session_start|{{}}|{{}}|{{}}\\n'.format(bool(p.get('session_id')), bool(p.get('transcript_path')), bool(p.get('model'))))\nPY"
     );
     let stop_cmd = format!(
-        "python3 - <<'PY'\nimport json, os\np=json.loads(os.environ['CODE_HOOK_PAYLOAD'])\nwith open({:?}, 'a', encoding='utf-8') as f:\n    f.write('stop|{{}}|{{}}|{{}}|{{}}\\n'.format(bool(p.get('session_id')), bool(p.get('transcript_path')), bool(p.get('model')), bool(p.get('turn_id'))))\nPY",
-        log_path
+        "python3 - <<'PY'\nimport json, os\np=json.loads(os.environ['CODE_HOOK_PAYLOAD'])\nwith open({log_path:?}, 'a', encoding='utf-8') as f:\n    f.write('stop|{{}}|{{}}|{{}}|{{}}\\n'.format(bool(p.get('session_id')), bool(p.get('transcript_path')), bool(p.get('model')), bool(p.get('turn_id'))))\nPY"
     );
 
     let hook_configs = vec![

@@ -151,11 +151,10 @@ pub fn make_compaction_summary_message(
 /// Empty strings are treated as missing so we always fall back to the embedded
 /// template instead of sending a blank developer message.
 pub fn resolve_compact_prompt_text(override_prompt: Option<&str>) -> String {
-    if let Some(text) = override_prompt {
-        if !text.trim().is_empty() {
+    if let Some(text) = override_prompt
+        && !text.trim().is_empty() {
             return text.to_string();
         }
-    }
     SUMMARIZATION_PROMPT.to_string()
 }
 
@@ -339,8 +338,7 @@ pub(super) async fn perform_compaction(
 
                 let reason = if truncated_count >= MAX_COMPACT_CONTEXT_OVERFLOW_TRIMS {
                     format!(
-                        "Compaction trimmed {} items but still exceeded the context window.",
-                        truncated_count
+                        "Compaction trimmed {truncated_count} items but still exceeded the context window."
                     )
                 } else {
                     "Compaction failed: context overflow even with minimal input.".to_string()
@@ -508,8 +506,7 @@ async fn run_compact_task_inner_inline(
 
                 let reason = if truncated_count >= MAX_COMPACT_CONTEXT_OVERFLOW_TRIMS {
                     format!(
-                        "Compaction trimmed {} items but still exceeded the context window.",
-                        truncated_count
+                        "Compaction trimmed {truncated_count} items but still exceeded the context window."
                     )
                 } else {
                     "Compaction failed: context overflow even with minimal input.".to_string()
@@ -938,7 +935,7 @@ pub(super) fn response_input_from_core_items(items: Vec<InputItem>) -> ResponseI
             InputItem::EphemeralImage { path, metadata } => {
                 if let Some(meta) = metadata {
                     content_items.push(ContentItem::InputText {
-                        text: format!("[EPHEMERAL:{}]", meta),
+                        text: format!("[EPHEMERAL:{meta}]"),
                     });
                 }
                 match std::fs::read(&path) {

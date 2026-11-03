@@ -24,16 +24,10 @@ pub fn ansi_escape(s: &str) -> Text<'static> {
     match s.into_text() {
         Ok(text) => text,
         Err(err) => match err {
-            Error::NomError(message) => {
-                tracing::error!(
-                    "ansi_to_tui NomError docs claim should never happen when parsing `{s}`: {message}"
-                );
-                panic!();
-            }
-            Error::Utf8Error(utf8error) => {
-                tracing::error!("Utf8Error: {utf8error}");
-                panic!();
-            }
+            Error::NomError(message) => panic!(
+                "ansi_to_tui NomError docs claim should never happen when parsing `{s}`: {message}"
+            ),
+            Error::Utf8Error(utf8error) => panic!("Utf8Error: {utf8error}"),
         },
     }
 }

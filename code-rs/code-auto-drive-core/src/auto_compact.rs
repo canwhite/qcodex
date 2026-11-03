@@ -123,7 +123,7 @@ pub(crate) fn compute_slice_bounds(conversation: &[ResponseItem]) -> Option<(usi
     let mut midpoint = goal_idx + 1;
 
     if total_tokens > 0 {
-        let target = (total_tokens + 1) / 2;
+        let target = total_tokens.div_ceil(2);
         let mut running = 0usize;
         for (offset, count) in token_counts.iter().enumerate() {
             running = running.saturating_add(*count);
@@ -133,7 +133,7 @@ pub(crate) fn compute_slice_bounds(conversation: &[ResponseItem]) -> Option<(usi
             }
         }
     } else {
-        midpoint = goal_idx + 1 + (after_goal.len() + 1) / 2;
+        midpoint = goal_idx + 1 + after_goal.len().div_ceil(2);
     }
 
     let slice_start = goal_idx + 1;
@@ -215,7 +215,7 @@ fn summarize_with_model(
 ) -> Result<String> {
     let mut aggregate_summary = prev_summary
         .filter(|text| !text.trim().is_empty())
-        .map(|text| text.to_string());
+        .map(std::string::ToString::to_string);
 
     let flattened = flatten_items(items);
     let chunks = chunk_text(&flattened);
@@ -332,12 +332,11 @@ fn deterministic_summary(items: &[ResponseItem], prev_summary: Option<&str>) -> 
                 if text.is_empty() {
                     continue;
                 }
-                actions.push(format!("{}: {}", role, text));
-                if role == "assistant" {
-                    if let Some(cmd) = text.lines().find(|line| line.trim_start().starts_with('$')) {
+                actions.push(format!("{role}: {text}"));
+                if role == "assistant"
+                    && let Some(cmd) = text.lines().find(|line| line.trim_start().starts_with('$')) {
                         commands.push(cmd.trim().to_string());
                     }
-                }
             }
             ResponseItem::FunctionCall { name, .. } => {
                 actions.push(format!("Tool call: {name}"));
@@ -353,7 +352,7 @@ fn deterministic_summary(items: &[ResponseItem], prev_summary: Option<&str>) -> 
 
     let mut lines = Vec::new();
     if let Some(prev) = prev_summary.filter(|text| !text.trim().is_empty()) {
-        lines.push(format!("Building on previous checkpoint: {}", prev));
+        lines.push(format!("Building on previous checkpoint: {prev}"));
     }
     lines.push(format!(
         "Checkpoint covers {} exchanges and {} tool events.",
@@ -366,7 +365,7 @@ fn deterministic_summary(items: &[ResponseItem], prev_summary: Option<&str>) -> 
             .take(MAX_COMMANDS_IN_SUMMARY)
             .collect::<Vec<_>>()
             .join(" | ");
-        lines.push(format!("Key commands: {}", display));
+        lines.push(format!("Key commands: {display}"));
     }
     if !actions.is_empty() {
         let display = actions
@@ -411,7 +410,7 @@ fn flatten_items(items: &[ResponseItem]) -> String {
                 buf.push_str(&format!("custom_tool {name}: {input}\n"));
             }
             ResponseItem::CustomToolCallOutput { output, .. } => {
-                buf.push_str(&format!("custom_tool_output: {}\n", output));
+                buf.push_str(&format!("custom_tool_output: {output}\n"));
             }
             ResponseItem::Reasoning { summary, .. } => {
                 for item in summary {
@@ -448,7 +447,7 @@ fn chunk_text(text: &str) -> Vec<String> {
                     + text[start..]
                         .chars()
                         .next()
-                        .map(|c| c.len_utf8())
+                        .map(char::len_utf8)
                         .unwrap_or(len - start);
             }
         }
@@ -633,7 +632,7 @@ mod tests {
         let goal = user_message("Rewrite parser");
         let mut compacted = vec![assistant_message("Checkpoint summary")];
 
-        ensure_goal_is_present(&mut compacted, goal.clone(), 1);
+        ensure_goal_is_present(&mut compacted, goal, 1);
 
         let goal_count = compacted
             .iter()
@@ -647,7 +646,7 @@ mod tests {
         let goal = user_message("Rewrite parser");
         let mut compacted = vec![goal.clone(), assistant_message("Checkpoint summary")];
 
-        ensure_goal_is_present(&mut compacted, goal.clone(), 0);
+        ensure_goal_is_present(&mut compacted, goal, 0);
 
         let goal_count = compacted
             .iter()

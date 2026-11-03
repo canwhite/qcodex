@@ -579,6 +579,63 @@ fn supports_image_generation(model_info: &ModelInfo) -> bool {
     model_info.input_modalities.contains(&InputModality::Image)
 }
 
+impl ModelFamily {
+    /// Token limit at which we should automatically compact, if known.
+    pub fn auto_compact_token_limit(&self) -> Option<i64> {
+        self.auto_compact_token_limit
+            .or(self.context_window.map(Self::default_auto_compact_limit))
+    }
+
+    pub fn set_auto_compact_token_limit(&mut self, limit: Option<i64>) {
+        self.auto_compact_token_limit = limit;
+    }
+
+    pub fn tool_output_max_bytes(&self) -> usize {
+        match self.truncation_policy {
+            TruncationPolicy::Bytes(limit) => limit,
+            TruncationPolicy::Tokens(limit) => limit.saturating_mul(4),
+        }
+    }
+
+    pub fn set_truncation_policy(&mut self, policy: TruncationPolicy) {
+        self.truncation_policy = policy;
+    }
+
+    const fn default_auto_compact_limit(context_window: u64) -> i64 {
+        // Match upstream behaviour: 90% of the context window.
+        ((context_window as i64) * 9) / 10
+    }
+}
+
+pub const fn default_auto_compact_limit_for_context_window(context_window: u64) -> i64 {
+    ((context_window as i64) * 9) / 10
+}
+
+pub fn supports_extended_context(model: &str) -> bool {
+    ["gpt-5.4", "gpt-5.6-luna", "gpt-5.6-sol"]
+        .iter()
+        .any(|supported| model.eq_ignore_ascii_case(supported))
+}
+
+pub fn resolve_context_mode_limits(
+    model: &str,
+    mode: Option<ContextMode>,
+    family: &ModelFamily,
+) -> (Option<u64>, Option<i64>) {
+    match mode {
+        Some(ContextMode::OneM | ContextMode::Auto) if supports_extended_context(model) => (
+            Some(EXTENDED_CONTEXT_WINDOW_1M),
+            Some(default_auto_compact_limit_for_context_window(
+                EXTENDED_CONTEXT_WINDOW_1M,
+            )),
+        ),
+        Some(ContextMode::Disabled) => {
+            (family.context_window, family.auto_compact_token_limit())
+        }
+        _ => (family.context_window, family.auto_compact_token_limit()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::config_types::ReasoningEffort;
@@ -645,62 +702,5 @@ mod tests {
         assert_eq!(family.context_window, Some(262_144));
         assert_eq!(family.max_output_tokens, Some(65_536));
         assert!(family.uses_shell_command_tool);
-    }
-}
-
-impl ModelFamily {
-    /// Token limit at which we should automatically compact, if known.
-    pub fn auto_compact_token_limit(&self) -> Option<i64> {
-        self.auto_compact_token_limit
-            .or(self.context_window.map(Self::default_auto_compact_limit))
-    }
-
-    pub fn set_auto_compact_token_limit(&mut self, limit: Option<i64>) {
-        self.auto_compact_token_limit = limit;
-    }
-
-    pub fn tool_output_max_bytes(&self) -> usize {
-        match self.truncation_policy {
-            TruncationPolicy::Bytes(limit) => limit,
-            TruncationPolicy::Tokens(limit) => limit.saturating_mul(4),
-        }
-    }
-
-    pub fn set_truncation_policy(&mut self, policy: TruncationPolicy) {
-        self.truncation_policy = policy;
-    }
-
-    const fn default_auto_compact_limit(context_window: u64) -> i64 {
-        // Match upstream behaviour: 90% of the context window.
-        ((context_window as i64) * 9) / 10
-    }
-}
-
-pub const fn default_auto_compact_limit_for_context_window(context_window: u64) -> i64 {
-    ((context_window as i64) * 9) / 10
-}
-
-pub fn supports_extended_context(model: &str) -> bool {
-    ["gpt-5.4", "gpt-5.6-luna", "gpt-5.6-sol"]
-        .iter()
-        .any(|supported| model.eq_ignore_ascii_case(supported))
-}
-
-pub fn resolve_context_mode_limits(
-    model: &str,
-    mode: Option<ContextMode>,
-    family: &ModelFamily,
-) -> (Option<u64>, Option<i64>) {
-    match mode {
-        Some(ContextMode::OneM | ContextMode::Auto) if supports_extended_context(model) => (
-            Some(EXTENDED_CONTEXT_WINDOW_1M),
-            Some(default_auto_compact_limit_for_context_window(
-                EXTENDED_CONTEXT_WINDOW_1M,
-            )),
-        ),
-        Some(ContextMode::Disabled) => {
-            (family.context_window, family.auto_compact_token_limit())
-        }
-        _ => (family.context_window, family.auto_compact_token_limit()),
     }
 }

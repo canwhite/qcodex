@@ -861,7 +861,7 @@ async fn merge_usage_metadata_from_persisted(
             continue;
         };
         output.usage_count = output.usage_count.max(*usage_count);
-        output.last_usage = max_optional_datetime(output.last_usage.clone(), last_usage.clone());
+        output.last_usage = max_optional_datetime(output.last_usage, *last_usage);
     }
 
     Ok(())

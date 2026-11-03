@@ -468,11 +468,10 @@ pub(crate) async fn persist_tokens_async(
     let code_home = code_home.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let auth_file = get_auth_file(&code_home);
-        if let Some(parent) = auth_file.parent() {
-            if !parent.exists() {
+        if let Some(parent) = auth_file.parent()
+            && !parent.exists() {
                 std::fs::create_dir_all(parent).map_err(io::Error::other)?;
             }
-        }
 
         let mut tokens = TokenData {
             id_token: parse_id_token(&id_token).map_err(io::Error::other)?,
@@ -645,7 +644,7 @@ mod tests {
         let params = parsed.query_pairs().collect::<std::collections::HashMap<_, _>>();
 
         assert_eq!(
-            params.get("codex_cli_simplified_flow").map(|value| value.as_ref()),
+            params.get("codex_cli_simplified_flow").map(std::convert::AsRef::as_ref),
             Some("true")
         );
         assert!(

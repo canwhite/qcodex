@@ -146,8 +146,8 @@ mod tests {
 
         // Helper to check if an item is detected as legacy env context
         let is_legacy_env_context = |item: &ResponseItem| -> bool {
-            if let ResponseItem::Message { role, content, .. } = item {
-                if role == "user" {
+            if let ResponseItem::Message { role, content, .. } = item
+                && role == "user" {
                     return content.iter().any(|c| {
                         if let ContentItem::InputText { text } = c {
                             text.contains("<environment_context>")
@@ -156,7 +156,6 @@ mod tests {
                         }
                     });
                 }
-            }
             false
         };
 
@@ -190,8 +189,8 @@ mod tests {
         let env_ctx_v2_enabled = true;
 
         let is_legacy_env_context = |item: &ResponseItem| -> bool {
-            if let ResponseItem::Message { role, content, .. } = item {
-                if role == "user" {
+            if let ResponseItem::Message { role, content, .. } = item
+                && role == "user" {
                     return content.iter().any(|c| {
                         if let ContentItem::InputText { text } = c {
                             text.contains("<environment_context>")
@@ -200,7 +199,6 @@ mod tests {
                         }
                     });
                 }
-            }
             false
         };
 
@@ -245,8 +243,8 @@ mod tests {
         let env_ctx_v2_enabled = false;
 
         let is_legacy_env_context = |item: &ResponseItem| -> bool {
-            if let ResponseItem::Message { role, content, .. } = item {
-                if role == "user" {
+            if let ResponseItem::Message { role, content, .. } = item
+                && role == "user" {
                     return content.iter().any(|c| {
                         if let ContentItem::InputText { text } = c {
                             text.contains("<environment_context>")
@@ -255,7 +253,6 @@ mod tests {
                         }
                     });
                 }
-            }
             false
         };
 

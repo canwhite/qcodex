@@ -140,7 +140,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     } = cli;
 
     let run_deadline = max_seconds.map(|seconds| Instant::now() + Duration::from_secs(seconds));
-    let run_deadline_std = run_deadline.map(|deadline| deadline.into_std());
+    let run_deadline_std = run_deadline.map(tokio::time::Instant::into_std);
 
     // Determine the prompt source (parent or subcommand) and read from stdin if needed.
     let prompt_arg = match &command {
@@ -196,7 +196,7 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         }
         if auto_drive_goal
             .as_ref()
-            .is_some_and(|goal| goal.is_empty())
+            .is_some_and(std::string::String::is_empty)
         {
             auto_drive_goal = Some(trimmed_prompt.to_string());
         } else if auto_drive_goal.is_none() {
@@ -213,11 +213,10 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
     }
 
     let timeboxed_auto_exec = auto_drive_goal.is_some() && max_seconds.is_some();
-    if timeboxed_auto_exec {
-        if let Some(goal) = auto_drive_goal.as_mut() {
+    if timeboxed_auto_exec
+        && let Some(goal) = auto_drive_goal.as_mut() {
             *goal = append_timeboxed_auto_drive_goal(goal);
         }
-    }
 
     let mut prompt_to_send = prompt.clone();
     let mut summary_prompt = if let Some(goal) = auto_drive_goal.as_ref() {
@@ -331,11 +330,12 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             None
         }
     };
+    #[allow(clippy::redundant_closure_for_method_calls)]
     let otel_logger_layer = otel.as_ref().map(|provider| provider.logger_layer());
 
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_ansi(stderr_with_ansi)
-        .with_writer(|| std::io::stderr())
+        .with_writer(std::io::stderr)
         .with_filter(env_filter);
 
     let _ = tracing_subscriber::registry()
@@ -713,8 +713,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                 }
             }
 
-            if let Some(base) = auto_resolve_base_snapshot.as_ref() {
-                if let Some((snap, diff_paths)) = capture_snapshot_against_base(&config.cwd, base, "auto-resolve working snapshot") {
+            if let Some(base) = auto_resolve_base_snapshot.as_ref()
+                && let Some((snap, diff_paths)) = capture_snapshot_against_base(&config.cwd, base, "auto-resolve working snapshot") {
                     review_request = apply_commit_scope_to_review_request(
                         review_request,
                         snap.id(),
@@ -725,7 +725,6 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                         state.last_reviewed_commit = Some(snap.id().to_string());
                     }
                 }
-            }
         }
 
         // Capture baseline epoch after any snapshot creation so we don't trip on our own bumps.
@@ -969,9 +968,9 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                     continue;
                                 }
                                 // stale epoch check
-                                if let Some(state) = auto_resolve_state.as_ref() {
-                                    if let Some(baseline) = state.snapshot_epoch {
-                                        if current_epoch > baseline {
+                                if let Some(state) = auto_resolve_state.as_ref()
+                                    && let Some(baseline) = state.snapshot_epoch
+                                        && current_epoch > baseline {
                                             eprintln!("Auto-resolve: snapshot epoch advanced; aborting follow-up review.");
                                             auto_resolve_state = None;
                                             auto_resolve_base_snapshot = None;
@@ -988,8 +987,6 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
                                             .await?;
                                             continue;
                                         }
-                                    }
-                                }
                                 match capture_snapshot_against_base(
                                     &config.cwd,
                                     base,
@@ -1201,11 +1198,10 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             }
         }
     }
-    if let Some(path) = review_output_json {
-        if !review_outputs.is_empty() {
+    if let Some(path) = review_output_json
+        && !review_outputs.is_empty() {
             let _ = write_review_json(path, &review_outputs, final_review_snapshot.as_ref());
         }
-    }
     if review_runs > 0 {
         eprintln!("Review runs: {} (auto_resolve={} max_attempts={})", review_runs, config.tui.review_auto_resolve, max_auto_resolve_attempts);
     }
@@ -1824,14 +1820,13 @@ fn parse_auto_review_summary(raw: &str) -> AutoReviewSummary {
         return summary_from_output(&output);
     }
 
-    if let Some(start) = trimmed.find("```") {
-        if let Some((body, _)) = trimmed[start + 3..].split_once("```") {
+    if let Some(start) = trimmed.find("```")
+        && let Some((body, _)) = trimmed[start + 3..].split_once("```") {
             let candidate = body.trim_start_matches("json").trim();
             if let Ok(output) = serde_json::from_str::<ReviewOutputEvent>(candidate) {
                 return summary_from_output(&output);
             }
         }
-    }
 
     let lowered = trimmed.to_ascii_lowercase();
     let clean_phrases = [
@@ -2037,11 +2032,10 @@ fn shutdown_state_after_request(
         return (false, true, Some(deadline));
     }
 
-    if let Some(deadline) = shutdown_deadline {
-        if deadline > now {
+    if let Some(deadline) = shutdown_deadline
+        && deadline > now {
             return (false, true, Some(deadline));
         }
-    }
 
     (true, true, None)
 }
@@ -2166,7 +2160,7 @@ fn snapshot_parent_diff_paths(cwd: &Path, parent: &str, head: &str) -> Option<Ve
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .map(|line| line.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
 
     Some(paths)
@@ -2195,8 +2189,8 @@ fn apply_commit_scope_to_review_request(
     prompt.push(')');
     prompt.push('.');
 
-    if let Some(paths) = paths {
-        if !paths.is_empty() {
+    if let Some(paths) = paths
+        && !paths.is_empty() {
             let mut listed_paths: Vec<&str> = Vec::new();
             let mut seen_paths: HashSet<&str> = HashSet::new();
             let mut excluded_count = 0usize;
@@ -2244,7 +2238,6 @@ fn apply_commit_scope_to_review_request(
                 ));
             }
         }
-    }
 
     request.prompt = prompt;
     request.user_facing_hint = Some(format!("commit {short_commit} (parent {short_parent})"));
@@ -2425,8 +2418,7 @@ fn format_review_findings(output: &code_core::protocol::ReviewOutputEvent) -> St
             "path: {}:{}-{}",
             f.code_location
                 .absolute_file_path
-                .to_string_lossy()
-                .to_string(),
+                .to_string_lossy(),
             f.code_location.line_range.start,
             f.code_location.line_range.end
         );
@@ -2531,7 +2523,7 @@ fn write_review_json(
         snapshot,
     };
     let json = serde_json::to_string_pretty(&payload)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     std::fs::write(path, json)
 }
 

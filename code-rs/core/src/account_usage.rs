@@ -153,11 +153,10 @@ impl AccountUsageData {
     }
 
     fn apply_plan(&mut self, plan: Option<&str>) {
-        if let Some(plan) = plan {
-            if self.plan.as_deref() != Some(plan) {
+        if let Some(plan) = plan
+            && self.plan.as_deref() != Some(plan) {
                 self.plan = Some(plan.to_string());
             }
-        }
     }
 
     fn update_last_hour(&mut self, now: DateTime<Utc>) {
@@ -189,7 +188,7 @@ impl AccountUsageData {
                 let bucket = truncate_to_hour(entry.timestamp);
                 rollover
                     .entry(bucket)
-                    .or_insert_with(TokenTotals::default)
+                    .or_default()
                     .add_totals(&entry.tokens);
             }
         }
@@ -240,7 +239,7 @@ impl AccountUsageData {
                 let month_key = truncate_to_month(entry.period_start);
                 monthly_rollover
                     .entry(month_key)
-                    .or_insert_with(TokenTotals::default)
+                    .or_default()
                     .add_totals(&entry.tokens);
             } else {
                 remaining.push(entry);
@@ -895,8 +894,8 @@ mod tests {
 
         // Only the most recent entry should remain in the sliding hourly window.
         assert_eq!(summary.hourly_entries.len(), 1);
-        assert!(summary.hourly_buckets.len() >= 1, "older usage should compact into buckets");
-        assert!(summary.daily_buckets.len() >= 1, "hourly buckets roll into daily aggregates");
+        assert!(!summary.hourly_buckets.is_empty(), "older usage should compact into buckets");
+        assert!(!summary.daily_buckets.is_empty(), "hourly buckets roll into daily aggregates");
     }
 
     #[test]

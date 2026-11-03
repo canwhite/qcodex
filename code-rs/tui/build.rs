@@ -46,8 +46,8 @@ fn main() {
 
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let path = PathBuf::from(manifest_dir).join("src").join("assets").join("spinners.json");
-    if let Ok(text) = fs::read_to_string(&path) {
-        if let Ok(src) = serde_json::from_str::<BTreeMap<String, serde_json::Value>>(&text) {
+    if let Ok(text) = fs::read_to_string(&path)
+        && let Ok(src) = serde_json::from_str::<BTreeMap<String, serde_json::Value>>(&text) {
             let mut changed = false;
             let mut out: BTreeMap<String, Dest> = BTreeMap::new();
             for (name, v) in src.into_iter() {
@@ -65,5 +65,4 @@ fn main() {
                 println!("cargo:rerun-if-changed={}", path.display());
             }
         }
-    }
 }

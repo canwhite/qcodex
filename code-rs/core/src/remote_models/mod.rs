@@ -484,7 +484,7 @@ fn apply_model_info_overrides_with_personality(
 
     if let Some(context_window) = info
         .context_window
-        .and_then(|value| (value > 0).then(|| value as u64))
+        .and_then(|value| (value > 0).then_some(value as u64))
     {
         family.context_window = Some(context_window);
     }
@@ -514,6 +514,70 @@ fn apply_model_info_overrides_with_personality(
     }
     family.default_reasoning_summary = map_reasoning_summary(info.default_reasoning_summary);
     family
+}
+
+fn map_web_search_tool_type(tool_type: WebSearchToolType) -> WebSearchToolType {
+    tool_type
+}
+
+fn supports_image_generation(info: &ModelInfo) -> bool {
+    info.input_modalities.contains(&InputModality::Image)
+}
+
+fn map_personality(personality: ConfigPersonality) -> ProtocolPersonality {
+    match personality {
+        ConfigPersonality::None => ProtocolPersonality::None,
+        ConfigPersonality::Friendly => ProtocolPersonality::Friendly,
+        ConfigPersonality::Pragmatic => ProtocolPersonality::Pragmatic,
+    }
+}
+
+fn map_apply_patch_tool_type(tool_type: &ProtocolApplyPatchToolType) -> ApplyPatchToolType {
+    match tool_type {
+        ProtocolApplyPatchToolType::Freeform => ApplyPatchToolType::Freeform,
+        ProtocolApplyPatchToolType::Function => ApplyPatchToolType::Function,
+    }
+}
+
+fn map_reasoning_effort(effort: &ProtocolReasoningEffort) -> crate::config_types::ReasoningEffort {
+    use crate::config_types::ReasoningEffort as LocalEffort;
+
+    match effort {
+        ProtocolReasoningEffort::None => LocalEffort::None,
+        ProtocolReasoningEffort::Minimal => LocalEffort::Minimal,
+        ProtocolReasoningEffort::Low => LocalEffort::Low,
+        ProtocolReasoningEffort::Medium => LocalEffort::Medium,
+        ProtocolReasoningEffort::High => LocalEffort::High,
+        ProtocolReasoningEffort::XHigh
+        | ProtocolReasoningEffort::Max
+        | ProtocolReasoningEffort::Ultra
+        | ProtocolReasoningEffort::Persistent => LocalEffort::XHigh,
+        ProtocolReasoningEffort::Custom(_) => LocalEffort::Medium,
+    }
+}
+
+fn map_reasoning_summary(summary: ProtocolReasoningSummary) -> ConfigReasoningSummary {
+    match summary {
+        ProtocolReasoningSummary::Auto => ConfigReasoningSummary::Auto,
+        ProtocolReasoningSummary::Concise => ConfigReasoningSummary::Concise,
+        ProtocolReasoningSummary::Detailed => ConfigReasoningSummary::Detailed,
+        ProtocolReasoningSummary::None => ConfigReasoningSummary::None,
+    }
+}
+
+fn map_truncation_policy(
+    policy: &code_protocol::openai_models::TruncationPolicyConfig,
+) -> code_protocol::protocol::TruncationPolicy {
+    let limit = usize::try_from(policy.limit).unwrap_or(usize::MAX);
+    match policy.mode {
+        ProtocolTruncationMode::Bytes => code_protocol::protocol::TruncationPolicy::Bytes(limit),
+        ProtocolTruncationMode::Tokens => code_protocol::protocol::TruncationPolicy::Tokens(limit),
+    }
+}
+
+/// Build a client version string that remains wire-compatible with hosted models.
+fn format_client_version_to_whole() -> String {
+    code_version::wire_compatible_version().to_string()
 }
 
 #[cfg(test)]
@@ -626,71 +690,4 @@ mod tests {
 
         assert!(!text_only_family.supports_image_generation);
     }
-}
-
-fn map_web_search_tool_type(tool_type: WebSearchToolType) -> WebSearchToolType {
-    match tool_type {
-        WebSearchToolType::Text => WebSearchToolType::Text,
-        WebSearchToolType::TextAndImage => WebSearchToolType::TextAndImage,
-    }
-}
-
-fn supports_image_generation(info: &ModelInfo) -> bool {
-    info.input_modalities.contains(&InputModality::Image)
-}
-
-fn map_personality(personality: ConfigPersonality) -> ProtocolPersonality {
-    match personality {
-        ConfigPersonality::None => ProtocolPersonality::None,
-        ConfigPersonality::Friendly => ProtocolPersonality::Friendly,
-        ConfigPersonality::Pragmatic => ProtocolPersonality::Pragmatic,
-    }
-}
-
-fn map_apply_patch_tool_type(tool_type: &ProtocolApplyPatchToolType) -> ApplyPatchToolType {
-    match tool_type {
-        ProtocolApplyPatchToolType::Freeform => ApplyPatchToolType::Freeform,
-        ProtocolApplyPatchToolType::Function => ApplyPatchToolType::Function,
-    }
-}
-
-fn map_reasoning_effort(effort: &ProtocolReasoningEffort) -> crate::config_types::ReasoningEffort {
-    use crate::config_types::ReasoningEffort as LocalEffort;
-
-    match effort {
-        ProtocolReasoningEffort::None => LocalEffort::None,
-        ProtocolReasoningEffort::Minimal => LocalEffort::Minimal,
-        ProtocolReasoningEffort::Low => LocalEffort::Low,
-        ProtocolReasoningEffort::Medium => LocalEffort::Medium,
-        ProtocolReasoningEffort::High => LocalEffort::High,
-        ProtocolReasoningEffort::XHigh
-        | ProtocolReasoningEffort::Max
-        | ProtocolReasoningEffort::Ultra
-        | ProtocolReasoningEffort::Persistent => LocalEffort::XHigh,
-        ProtocolReasoningEffort::Custom(_) => LocalEffort::Medium,
-    }
-}
-
-fn map_reasoning_summary(summary: ProtocolReasoningSummary) -> ConfigReasoningSummary {
-    match summary {
-        ProtocolReasoningSummary::Auto => ConfigReasoningSummary::Auto,
-        ProtocolReasoningSummary::Concise => ConfigReasoningSummary::Concise,
-        ProtocolReasoningSummary::Detailed => ConfigReasoningSummary::Detailed,
-        ProtocolReasoningSummary::None => ConfigReasoningSummary::None,
-    }
-}
-
-fn map_truncation_policy(
-    policy: &code_protocol::openai_models::TruncationPolicyConfig,
-) -> code_protocol::protocol::TruncationPolicy {
-    let limit = usize::try_from(policy.limit).unwrap_or(usize::MAX);
-    match policy.mode {
-        ProtocolTruncationMode::Bytes => code_protocol::protocol::TruncationPolicy::Bytes(limit),
-        ProtocolTruncationMode::Tokens => code_protocol::protocol::TruncationPolicy::Tokens(limit),
-    }
-}
-
-/// Build a client version string that remains wire-compatible with hosted models.
-fn format_client_version_to_whole() -> String {
-    code_version::wire_compatible_version().to_string()
 }

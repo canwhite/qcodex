@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
@@ -39,6 +40,34 @@ use super::state::{
     BACKPRESSURE_FORCED_DRAW_SKIPS,
     HIGH_EVENT_BURST_MAX,
 };
+
+fn side_return_key_event(key_event: KeyEvent) -> bool {
+    matches!(
+        key_event,
+        KeyEvent {
+            code: KeyCode::Char('\\'),
+            modifiers: crossterm::event::KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press | KeyEventKind::Repeat,
+            ..
+        }
+    )
+}
+
+fn spawn_side_task<F>(future: F) -> std::io::Result<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name("side-conversation-fork".to_string())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("side conversation runtime");
+            runtime.block_on(future);
+        })?;
+    Ok(())
+}
 
 impl App<'_> {
     fn handle_login_mode_change(&mut self, using_chatgpt_auth: bool) {
@@ -424,12 +453,9 @@ impl App<'_> {
                             }
                             // Otherwise fall through
                         }
-                        KeyEvent {
-                            code: KeyCode::Char('\\'),
-                            modifiers: crossterm::event::KeyModifiers::CONTROL,
-                            kind: KeyEventKind::Press | KeyEventKind::Repeat,
-                            ..
-                        } if matches!(self.side_conversation, SideConversationState::Active { .. }) => {
+                        key_event
+                            if side_return_key_event(key_event)
+                                && matches!(self.side_conversation, SideConversationState::Active { .. }) => {
                             self.app_event_tx.send(AppEvent::ReturnFromSide);
                         }
                         // Explicit image paste shortcut fallback.
@@ -1535,25 +1561,20 @@ impl App<'_> {
                     };
                     let server = self._server.clone();
                     let tx = self.app_event_tx.clone();
-                    if let Err(err) = std::thread::Builder::new()
-                        .name("side-conversation-fork".to_string())
-                        .spawn(move || {
-                            let result = tokio::runtime::Builder::new_multi_thread()
-                                .enable_all()
-                                .build()
-                                .map_err(|err| format!("failed to start side conversation: {err}"))
-                                .and_then(|runtime| runtime.block_on(async move {
-                                    let catalog = SessionCatalog::new(code_home);
-                                    let entry = catalog
-                                        .find_by_id(&parent_session_id.to_string())
-                                        .await
-                                        .map_err(|err| format!("failed to find parent session: {err}"))?
-                                        .ok_or_else(|| "parent session is no longer available.".to_string())?;
-                                    server
-                                        .fork_conversation(0, config, catalog.entry_rollout_path(&entry))
-                                        .await
-                                        .map_err(|err| format!("failed to fork side conversation: {err}"))
-                                }));
+                    if let Err(err) = spawn_side_task(async move {
+                            let result = async {
+                                let catalog = SessionCatalog::new(code_home);
+                                let entry = catalog
+                                    .find_by_id(&parent_session_id.to_string())
+                                    .await
+                                    .map_err(|err| format!("failed to find parent session: {err}"))?
+                                    .ok_or_else(|| "parent session is no longer available.".to_string())?;
+                                server
+                                    .fork_conversation(0, config, catalog.entry_rollout_path(&entry))
+                                    .await
+                                    .map_err(|err| format!("failed to fork side conversation: {err}"))
+                            }
+                            .await;
                             match result {
                                 Ok(new_conv) => tx.send(AppEvent::SideConversationForked {
                                     parent_session_id,
@@ -1567,8 +1588,7 @@ impl App<'_> {
                                     message,
                                 }),
                             }
-                        })
-                    {
+                        }) {
                         self.side_conversation = SideConversationState::Idle;
                         if let AppState::Chat { widget } = &mut self.app_state {
                             widget.debug_notice(format!("Failed to start side conversation: {err}"));
@@ -2825,6 +2845,51 @@ fn next_event_priority_impl(
 mod next_event_priority_tests {
     use super::*;
     use std::sync::mpsc::channel;
+
+    #[test]
+    fn side_return_uses_one_ctrl_c_press_only() {
+        assert!(side_return_key_event(KeyEvent::new(
+            KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )));
+        assert!(!side_return_key_event(KeyEvent::new_with_kind(
+            KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+            KeyEventKind::Repeat,
+        )));
+        assert!(!side_return_key_event(KeyEvent::new(
+            KeyCode::Char('\\'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )));
+    }
+
+    #[tokio::test]
+    async fn side_task_keeps_child_agent_loop_alive_after_fork_finishes() {
+        let (handoff_tx, handoff_rx) = tokio::sync::oneshot::channel();
+        let (processed_tx, processed_rx) = tokio::sync::oneshot::channel();
+
+        spawn_side_task(async move {
+            let (op_tx, mut op_rx) = tokio::sync::mpsc::unbounded_channel();
+            tokio::spawn(async move {
+                if op_rx.recv().await.is_some() {
+                    let _ = processed_tx.send(());
+                }
+            });
+            handoff_tx.send(op_tx).expect("hand off op sender");
+        })
+        .expect("spawn side task");
+
+        let op_tx = tokio::time::timeout(Duration::from_secs(1), handoff_rx)
+            .await
+            .expect("receive op sender")
+            .expect("side task should hand off op sender");
+        std::thread::sleep(Duration::from_millis(50));
+        op_tx.send(()).expect("child agent loop should still be alive");
+        tokio::time::timeout(Duration::from_secs(1), processed_rx)
+            .await
+            .expect("child agent loop should process the op")
+            .expect("child agent loop should report processing");
+    }
 
     #[test]
     fn next_event_priority_serves_bulk_amid_high_burst() {

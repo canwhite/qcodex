@@ -1,7 +1,7 @@
 #![cfg(feature = "dev-faults")]
 
 use anyhow::anyhow;
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::Duration as ChronoDuration;
 use code_core::error::{CodexErr, UnexpectedResponseError, UsageLimitReachedError};
 use once_cell::sync::OnceCell;
 use rand::Rng;
@@ -41,7 +41,7 @@ fn parse_fault_scope() -> Option<FaultScope> {
 }
 
 fn parse_reset_hint() -> Option<FaultReset> {
-    if let Some(seconds) = std::env::var("CODEX_FAULTS_429_RESET").ok() {
+    if let Ok(seconds) = std::env::var("CODEX_FAULTS_429_RESET") {
         if let Ok(value) = seconds.parse::<u64>() {
             return Some(FaultReset::Seconds(value));
         }
@@ -50,35 +50,32 @@ fn parse_reset_hint() -> Option<FaultReset> {
                 + Duration::from_secs(parsed.signed_duration_since(chrono::Utc::now()).num_seconds().clamp(0, i64::MAX) as u64);
             return Some(FaultReset::Timestamp(instant));
         }
-        if let Some(stripped) = seconds.strip_prefix("now+") {
-            if let Ok(value) = stripped.trim_end_matches('s').parse::<u64>() {
+        if let Some(stripped) = seconds.strip_prefix("now+")
+            && let Ok(value) = stripped.trim_end_matches('s').parse::<u64>() {
                 return Some(FaultReset::Seconds(value));
             }
-        }
     }
     None
 }
 
 fn init_config() -> HashMap<FaultScope, FaultConfig> {
     let mut map = HashMap::new();
-    if let Some(scope) = parse_fault_scope() {
-        if let Ok(spec) = std::env::var("CODEX_FAULTS") {
+    if let Some(scope) = parse_fault_scope()
+        && let Ok(spec) = std::env::var("CODEX_FAULTS") {
             let cfg = FaultConfig::default();
             for entry in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                if let Some((label, count)) = entry.split_once(':') {
-                    if let Ok(num) = count.parse::<usize>() {
+                if let Some((label, count)) = entry.split_once(':')
+                    && let Ok(num) = count.parse::<usize>() {
                         match label {
                             "disconnect" => cfg.disconnect.store(num, Ordering::Relaxed),
                             "429" => cfg.rate_limit.store(num, Ordering::Relaxed),
                             _ => {}
                         }
                     }
-                }
             }
             *cfg.rate_limit_reset.lock().unwrap() = parse_reset_hint();
             map.insert(scope, cfg);
         }
-    }
     map
 }
 

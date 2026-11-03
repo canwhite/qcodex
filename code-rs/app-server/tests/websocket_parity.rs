@@ -35,7 +35,7 @@ async fn send_request(
     ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     request: Value,
 ) {
-    ws.send(Message::Text(request.to_string().into()))
+    ws.send(Message::Text(request.to_string()))
         .await
         .expect("request should send");
 }

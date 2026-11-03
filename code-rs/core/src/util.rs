@@ -44,7 +44,7 @@ pub(crate) async fn wait_for_connectivity(probe_url: &str) {
 }
 
 pub fn escape_command(command: &[String]) -> String {
-    try_join(command.iter().map(|s| s.as_str())).unwrap_or_else(|_| command.join(" "))
+    try_join(command.iter().map(std::string::String::as_str)).unwrap_or_else(|_| command.join(" "))
 }
 
 pub fn extract_shell_script(command: &[String]) -> Option<(usize, &str)> {

@@ -436,14 +436,14 @@ mod tests {
 
         TokenData {
             id_token: IdTokenInfo {
-                email: email.map(|s| s.to_string()),
+                email: email.map(std::string::ToString::to_string),
                 chatgpt_plan_type: None,
                 chatgpt_account_is_fedramp: false,
                 raw_jwt: fake_jwt(account_id, email, "pro"),
             },
             access_token: "secret-access-token".to_string(),
             refresh_token: "secret-refresh-token".to_string(),
-            account_id: account_id.map(|s| s.to_string()),
+            account_id: account_id.map(std::string::ToString::to_string),
         }
     }
 
@@ -521,7 +521,7 @@ mod tests {
         let tokens = make_chatgpt_tokens(Some("acct-1"), Some("user@example.com"));
         let stored = upsert_chatgpt_account(
             home.path(),
-            tokens.clone(),
+            tokens,
             Utc::now(),
             None,
             true,
