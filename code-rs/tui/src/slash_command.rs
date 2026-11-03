@@ -89,6 +89,7 @@ pub enum SlashCommand {
     Rename,
     Login,
     Goal,
+    Btw,
     // Prompt-expanding commands
     Plan,
     Solve,
@@ -148,6 +149,7 @@ impl SlashCommand {
             SlashCommand::Demo => "populate history with demo cells (dev/perf only)",
             SlashCommand::Login => "manage Code sign-ins (add/select/disconnect)",
             SlashCommand::Goal => "set, inspect, or manage the current session goal",
+            SlashCommand::Btw => "start a temporary side conversation from this session",
             SlashCommand::Logout => "log out of Code",
             #[cfg(debug_assertions)]
             SlashCommand::TestApproval => "test approval request",

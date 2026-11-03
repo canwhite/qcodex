@@ -1,1 +1,1 @@
-从桌面上'/Users/doing/Desktop/codex'的学习拓展，让项目能通过$my-skill去快速调用skill
+从桌面上'/Users/doing/Desktop/codex'的学习拓展，让项目能通过prompt输入框中/my-skill就可以执行，就ok

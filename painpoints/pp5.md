@@ -1,0 +1,1 @@
+在权限赋予的时候给个Yes, always allow in this session，让后他能bypass现有询问，在当前session里直接往后执行，不再询问

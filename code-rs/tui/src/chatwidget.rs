@@ -82,7 +82,7 @@ mod settings_overlay;
 mod limits_overlay;
 mod interrupts;
 mod layout_scroll;
-mod message;
+pub(crate) mod message;
 mod perf;
 mod rate_limit_refresh;
 mod streaming;
@@ -7303,38 +7303,12 @@ impl ChatWidget<'_> {
         latest_upgrade_version: Option<String>,
         auth_manager: Arc<AuthManager>,
         show_welcome: bool,
+        initial_user_message: Option<UserMessage>,
     ) -> Self {
         remember_cwd_history(&config.cwd);
         let (code_op_tx, mut code_op_rx) = unbounded_channel::<Op>();
 
         let auto_drive_variant = AutoDriveVariant::from_env();
-
-        // Forward events from existing conversation
-        let app_event_tx_clone = app_event_tx.clone();
-        tokio::spawn(async move {
-            // Send the provided SessionConfigured to the UI first
-            let event = Event {
-                id: "fork".to_string(),
-                event_seq: 0,
-                msg: EventMsg::SessionConfigured(session_configured),
-                order: None,
-            };
-            app_event_tx_clone.send(AppEvent::CodexEvent(event));
-
-            let conversation_clone = conversation.clone();
-            tokio::spawn(async move {
-                while let Some(op) = code_op_rx.recv().await {
-                    let id = conversation_clone.submit(op).await;
-                    if let Err(e) = id {
-                        tracing::error!("failed to submit op: {e}");
-                    }
-                }
-            });
-
-            while let Ok(event) = conversation.next_event().await {
-                app_event_tx_clone.send(AppEvent::CodexEvent(event));
-            }
-        });
 
         // Basic widget state mirrors `new`
         let history_cells: Vec<Box<dyn HistoryCell>> = Vec::new();
@@ -7371,7 +7345,7 @@ impl ChatWidget<'_> {
             },
             latest_upgrade_version: latest_upgrade_version.clone(),
             reconnect_notice_active: false,
-            initial_user_message: None,
+            initial_user_message,
             total_token_usage: TokenUsage::default(),
             last_token_usage: TokenUsage::default(),
             session_requested_model: None,
@@ -7441,7 +7415,9 @@ impl ChatWidget<'_> {
             browser_overlay_visible: false,
             browser_overlay_state: BrowserOverlayState::default(),
             pending_images: HashMap::new(),
-            welcome_shown: false,
+            // A resumed/forked widget with no welcome animation must not treat its
+            // SessionConfigured event as a fresh-session prelude.
+            welcome_shown: !show_welcome,
             test_mode: is_test_mode(),
             latest_browser_screenshot: Arc::new(Mutex::new(None)),
             browser_autofix_requested: Arc::new(AtomicBool::new(false)),
@@ -7638,6 +7614,28 @@ impl ChatWidget<'_> {
             #[cfg(any(test, feature = "test-helpers"))]
             w.seed_test_mode_greeting();
         }
+        // Start forwarding only after the widget owns its initial message; SessionConfigured
+        // consumes that message synchronously when the app processes the event.
+        let app_event_tx_clone = app_event_tx.clone();
+        tokio::spawn(async move {
+            app_event_tx_clone.send(AppEvent::CodexEvent(Event {
+                id: "fork".to_string(),
+                event_seq: 0,
+                msg: EventMsg::SessionConfigured(session_configured),
+                order: None,
+            }));
+            let conversation_clone = conversation.clone();
+            tokio::spawn(async move {
+                while let Some(op) = code_op_rx.recv().await {
+                    if let Err(err) = conversation_clone.submit(op).await {
+                        tracing::error!("failed to submit op: {err}");
+                    }
+                }
+            });
+            while let Ok(event) = conversation.next_event().await {
+                app_event_tx_clone.send(AppEvent::CodexEvent(event));
+            }
+        });
         w.maybe_start_auto_upgrade_task();
         w
     }
@@ -12135,6 +12133,25 @@ impl ChatWidget<'_> {
             crate::slash_command::ProcessedCommand::RegularCommand(cmd, command_text) => {
                 if cmd == SlashCommand::Undo {
                     self.handle_undo_command();
+                    return;
+                }
+                if cmd == SlashCommand::Btw {
+                    let Some(parent_session_id) = self.session_id else {
+                        self.history_push_plain_state(history_cell::new_error_event(
+                            "'/btw' is unavailable before the session starts.".to_string(),
+                        ));
+                        return;
+                    };
+                    if self.is_task_running() {
+                        self.history_push_plain_state(history_cell::new_error_event(
+                            "'/btw' is unavailable while a task is in progress.".to_string(),
+                        ));
+                        return;
+                    }
+                    self.app_event_tx.send(AppEvent::StartSide {
+                        parent_session_id,
+                        initial_message: Self::side_initial_message(message),
+                    });
                     return;
                 }
                 // This is a regular slash command, dispatch it normally
@@ -30006,6 +30023,25 @@ Have we met every part of this goal and is there no further work to do?"#
 
     pub(crate) fn session_id(&self) -> Option<uuid::Uuid> {
         self.session_id
+    }
+
+    fn side_initial_message(mut message: UserMessage) -> Option<UserMessage> {
+        let Some(InputItem::Text { text }) = message.ordered_items.first_mut() else {
+            return Some(message);
+        };
+        let trimmed = text.trim_start();
+        let Some(rest) = trimmed.strip_prefix('/') else {
+            return Some(message);
+        };
+        let Some(separator) = rest.find(char::is_whitespace) else {
+            message.display_text.clear();
+            message.ordered_items.clear();
+            return None;
+        };
+        let initial_text = rest[separator..].trim_start().to_string();
+        *text = initial_text.clone();
+        message.display_text = initial_text;
+        Some(message)
     }
 
     pub(crate) fn handle_goal_command(&mut self, arguments: String) {

@@ -46,7 +46,7 @@ os_info = { workspace = true }
 fs2 = "0.4"
 htmd = "0.1"
 httpdate = "1"
-img_hash = "3"
+image = { workspace = true }
 once_cell = { workspace = true }
 portable-pty = { workspace = true }
 rand = { workspace = true }

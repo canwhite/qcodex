@@ -321,6 +321,8 @@ impl App<'_> {
             app_event_rx_bulk,
             consecutive_high_events: 0,
             app_state,
+            side_conversation: super::state::SideConversationState::Idle,
+            next_side_request_id: 0,
             config,
             latest_upgrade_version,
             file_search,

@@ -1,25 +1,43 @@
-// Use img_hash's re-exported image module for compatibility
-use img_hash::image::{DynamicImage, io::Reader as ImageReader};
-use img_hash::{HashAlg, HasherConfig, ImageHash};
+use image::imageops::FilterType;
+use image::{DynamicImage, ImageReader};
 use std::path::Path;
 
-fn phash_256(img: &DynamicImage) -> ImageHash<[u8; 32]> {
-    // "Classic" pHash ≈ Mean + DCT, larger hash for sensitivity
-    HasherConfig::with_bytes_type::<[u8; 32]>()
-        .hash_size(16, 16)
-        .hash_alg(HashAlg::Mean)
-        .preproc_dct()
-        .to_hasher()
-        .hash_image(img)
+const HASH_WIDTH: u32 = 16;
+const HASH_BITS: usize = (HASH_WIDTH * HASH_WIDTH) as usize;
+
+fn pack_bits<I>(bits: I) -> Vec<u8>
+where
+    I: IntoIterator<Item = bool>,
+{
+    let mut hash = vec![0; HASH_BITS / 8];
+    for (index, bit) in bits.into_iter().enumerate() {
+        if bit {
+            hash[index / 8] |= 1 << (7 - index % 8);
+        }
+    }
+    hash
 }
 
-fn dhash_256(img: &DynamicImage) -> ImageHash<[u8; 32]> {
-    // Gradient (dHash); good at catching small edge changes
-    HasherConfig::with_bytes_type::<[u8; 32]>()
-        .hash_size(16, 16)
-        .hash_alg(HashAlg::Gradient)
-        .to_hasher()
-        .hash_image(img)
+fn phash_256(img: &DynamicImage) -> Vec<u8> {
+    let pixels = img
+        .resize_exact(HASH_WIDTH, HASH_WIDTH, FilterType::Lanczos3)
+        .to_luma8();
+    let mean = pixels.pixels().map(|pixel| u32::from(pixel[0])).sum::<u32>()
+        / HASH_BITS as u32;
+    pack_bits(pixels.pixels().map(|pixel| u32::from(pixel[0]) >= mean))
+}
+
+fn dhash_256(img: &DynamicImage) -> Vec<u8> {
+    let pixels = img
+        .resize_exact(HASH_WIDTH + 1, HASH_WIDTH, FilterType::Lanczos3)
+        .to_luma8();
+    let mut bits = Vec::with_capacity(HASH_BITS);
+    for y in 0..HASH_WIDTH {
+        for x in 0..HASH_WIDTH {
+            bits.push(pixels.get_pixel(x, y)[0] > pixels.get_pixel(x + 1, y)[0]);
+        }
+    }
+    pack_bits(bits)
 }
 
 /// Compute a hash for an image that can be stored and compared later
@@ -28,7 +46,7 @@ pub fn compute_image_hash<P: AsRef<Path>>(path: P) -> anyhow::Result<(Vec<u8>, V
     let phash = phash_256(&img);
     let dhash = dhash_256(&img);
 
-    Ok((phash.as_bytes().to_vec(), dhash.as_bytes().to_vec()))
+    Ok((phash, dhash))
 }
 
 /// Compare image hashes to determine if images are similar
@@ -52,4 +70,24 @@ pub fn are_hashes_similar(phash1: &[u8], dhash1: &[u8], phash2: &[u8], dhash2: &
 
     // 256 bits → ~5% tolerance (≈13 bits)
     phash_dist <= 13 && dhash_dist <= 13
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{GrayImage, Luma};
+
+    #[test]
+    fn computed_hashes_are_256_bits_and_match_the_same_image() {
+        let image = DynamicImage::ImageLuma8(GrayImage::from_fn(32, 32, |x, y| {
+            Luma([u8::try_from(x + y).unwrap()])
+        }));
+
+        let phash = phash_256(&image);
+        let dhash = dhash_256(&image);
+
+        assert_eq!(phash.len(), 32);
+        assert_eq!(dhash.len(), 32);
+        assert!(are_hashes_similar(&phash, &dhash, &phash, &dhash));
+    }
 }

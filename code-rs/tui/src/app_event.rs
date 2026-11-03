@@ -45,6 +45,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender as StdSender;
 use strum_macros::AsRefStr;
 use crate::cloud_tasks_service::CloudEnvironment;
+use crate::chatwidget::message::UserMessage;
 use crate::resume::discovery::ResumeCandidate;
 
 /// Wrapper to allow including non-Debug types in Debug enums without leaking internals.
@@ -253,6 +254,30 @@ pub(crate) enum AppEvent {
     /// Dispatch a recognized slash command from the UI (composer) to the app
     /// layer so it can be handled centrally. Includes the full command text.
     DispatchCommand(SlashCommand, String),
+
+    /// Request an isolated, temporary fork of the current saved conversation.
+    StartSide {
+        parent_session_id: Uuid,
+        initial_message: Option<UserMessage>,
+    },
+
+    /// A background side-conversation fork completed.
+    SideConversationForked {
+        parent_session_id: Uuid,
+        request_id: u64,
+        new_conv: Redacted<code_core::NewConversation>,
+        initial_message: Option<UserMessage>,
+    },
+
+    /// A side-conversation fork could not be created.
+    SideConversationForkFailed {
+        parent_session_id: Uuid,
+        request_id: u64,
+        message: String,
+    },
+
+    /// Return from the active temporary side conversation to its parent.
+    ReturnFromSide,
 
     /// Restore workspace state according to the chosen undo scope.
     PerformUndoRestore {

@@ -188,6 +188,21 @@ pub(super) struct LoginFlowState {
     pub(super) join_handle: JoinHandle<()>,
 }
 
+/// Owns the temporary side-conversation lifecycle.  Keeping these states
+/// together makes it impossible for a fork result to be treated as active
+/// before its parent is retained.
+pub(super) enum SideConversationState<'a> {
+    Idle,
+    Forking {
+        parent_session_id: uuid::Uuid,
+        request_id: u64,
+    },
+    Active {
+        parent: Box<ChatWidget<'a>>,
+        child_session_id: uuid::Uuid,
+    },
+}
+
 pub(crate) struct App<'a> {
     pub(super) _server: Arc<ConversationManager>,
     pub(super) app_event_tx: AppEventSender,
@@ -196,6 +211,8 @@ pub(crate) struct App<'a> {
     pub(super) app_event_rx_bulk: Receiver<AppEvent>,
     pub(super) consecutive_high_events: u32,
     pub(super) app_state: AppState<'a>,
+    pub(super) side_conversation: SideConversationState<'a>,
+    pub(super) next_side_request_id: u64,
 
     /// Config is stored here so we can recreate ChatWidgets as needed.
     pub(super) config: Config,

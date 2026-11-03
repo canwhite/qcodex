@@ -35,6 +35,7 @@ use super::state::{
     AppState,
     ChatWidgetArgs,
     LoginFlowState,
+    SideConversationState,
     BACKPRESSURE_FORCED_DRAW_SKIPS,
     HIGH_EVENT_BURST_MAX,
 };
@@ -422,6 +423,14 @@ impl App<'_> {
                                 }
                             }
                             // Otherwise fall through
+                        }
+                        KeyEvent {
+                            code: KeyCode::Char('\\'),
+                            modifiers: crossterm::event::KeyModifiers::CONTROL,
+                            kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                            ..
+                        } if matches!(self.side_conversation, SideConversationState::Active { .. }) => {
+                            self.app_event_tx.send(AppEvent::ReturnFromSide);
                         }
                         // Explicit image paste shortcut fallback.
                         //
@@ -1046,10 +1055,25 @@ impl App<'_> {
                     }
                 }
                 AppEvent::DispatchCommand(command, command_text) => {
+                    let side_command_blocked = matches!(self.side_conversation, SideConversationState::Active { .. })
+                        && matches!(
+                            command,
+                            SlashCommand::New
+                                | SlashCommand::Clear
+                                | SlashCommand::Resume
+                                | SlashCommand::Rename
+                                | SlashCommand::Goal
+                                | SlashCommand::Branch
+                                | SlashCommand::Merge
+                                | SlashCommand::Push
+                                | SlashCommand::Auto
+                                | SlashCommand::Review
+                                | SlashCommand::Cloud
+                        );
                     // Persist UI-only slash commands to cross-session history.
                     // For prompt-expanding commands (/plan, /solve, /code) we let the
                     // expanded prompt be recorded by the normal submission path.
-                    if !command.is_prompt_expanding() {
+                    if !command.is_prompt_expanding() && !side_command_blocked {
                         let _ = self
                             .app_event_tx
                             .send(AppEvent::CodexOp(Op::AddToHistory { text: command_text.clone() }));
@@ -1065,6 +1089,16 @@ impl App<'_> {
                             command_text.clone()
                         }
                     };
+
+                    if side_command_blocked {
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            widget.debug_notice(format!(
+                                "'/{}' is unavailable in a side conversation. Press Ctrl+\\ to return.",
+                                command.command()
+                            ));
+                        }
+                        continue;
+                    }
 
                     match command {
                         SlashCommand::Undo => {
@@ -1272,6 +1306,34 @@ impl App<'_> {
                                 widget.handle_goal_command(command_args);
                             }
                         }
+                        SlashCommand::Btw => {
+                            if !matches!(self.side_conversation, SideConversationState::Idle) {
+                                if let AppState::Chat { widget } = &mut self.app_state {
+                                    widget.debug_notice(
+                                        "A side conversation is already starting or active. Press Ctrl+\\ to return."
+                                            .to_string(),
+                                    );
+                                }
+                            } else if let AppState::Chat { widget } = &mut self.app_state {
+                                let Some(parent_session_id) = widget.session_id() else {
+                                    widget.debug_notice(
+                                        "'/btw' is unavailable before the session starts.".to_string(),
+                                    );
+                                    continue;
+                                };
+                                if widget.is_task_running() {
+                                    widget.debug_notice(
+                                        "'/btw' is unavailable while a task is in progress.".to_string(),
+                                    );
+                                    continue;
+                                }
+                                self.app_event_tx.send(AppEvent::StartSide {
+                                    parent_session_id,
+                                    initial_message: (!command_args.trim().is_empty())
+                                        .then(|| command_args.into()),
+                                });
+                            }
+                        }
                         SlashCommand::Status => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.add_status_output();
@@ -1437,6 +1499,181 @@ impl App<'_> {
                                 order: None,
                             }));
                         }
+                    }
+                }
+                AppEvent::StartSide {
+                    parent_session_id,
+                    initial_message,
+                } => {
+                    if !matches!(self.side_conversation, SideConversationState::Idle) {
+                        continue;
+                    }
+                    let Some((config, code_home)) = (match &mut self.app_state {
+                        AppState::Chat { widget }
+                            if widget.session_id() == Some(parent_session_id)
+                                && !widget.is_task_running() =>
+                        {
+                            Some((widget.config_ref().clone(), widget.config_ref().code_home.clone()))
+                        }
+                        AppState::Chat { widget } => {
+                            widget.debug_notice("'/btw' needs an idle, saved parent session.".to_string());
+                            None
+                        }
+                        AppState::Onboarding { .. } => None,
+                    }) else {
+                        continue;
+                    };
+                    self.next_side_request_id = self.next_side_request_id.wrapping_add(1);
+                    let request_id = self.next_side_request_id;
+                    self.side_conversation = SideConversationState::Forking {
+                        parent_session_id,
+                        request_id,
+                    };
+                    let server = self._server.clone();
+                    let tx = self.app_event_tx.clone();
+                    if let Err(err) = std::thread::Builder::new()
+                        .name("side-conversation-fork".to_string())
+                        .spawn(move || {
+                            let result = tokio::runtime::Builder::new_multi_thread()
+                                .enable_all()
+                                .build()
+                                .map_err(|err| format!("failed to start side conversation: {err}"))
+                                .and_then(|runtime| runtime.block_on(async move {
+                                    let catalog = SessionCatalog::new(code_home);
+                                    let entry = catalog
+                                        .find_by_id(&parent_session_id.to_string())
+                                        .await
+                                        .map_err(|err| format!("failed to find parent session: {err}"))?
+                                        .ok_or_else(|| "parent session is no longer available.".to_string())?;
+                                    server
+                                        .fork_conversation(0, config, catalog.entry_rollout_path(&entry))
+                                        .await
+                                        .map_err(|err| format!("failed to fork side conversation: {err}"))
+                                }));
+                            match result {
+                                Ok(new_conv) => tx.send(AppEvent::SideConversationForked {
+                                    parent_session_id,
+                                    request_id,
+                                    new_conv: crate::app_event::Redacted(new_conv),
+                                    initial_message,
+                                }),
+                                Err(message) => tx.send(AppEvent::SideConversationForkFailed {
+                                    parent_session_id,
+                                    request_id,
+                                    message,
+                                }),
+                            }
+                        })
+                    {
+                        self.side_conversation = SideConversationState::Idle;
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            widget.debug_notice(format!("Failed to start side conversation: {err}"));
+                        }
+                    }
+                }
+                AppEvent::SideConversationForked {
+                    parent_session_id,
+                    request_id,
+                    new_conv,
+                    initial_message,
+                } => {
+                    let child_session_id = new_conv.0.session_configured.session_id;
+                    if !matches!(
+                        self.side_conversation,
+                        SideConversationState::Forking {
+                            parent_session_id: expected_parent,
+                            request_id: expected_request,
+                        } if expected_parent == parent_session_id && expected_request == request_id
+                    ) {
+                        let server = self._server.clone();
+                        tokio::spawn(async move {
+                            let conversation_id = child_session_id.into();
+                            server.remove_conversation(&conversation_id).await;
+                        });
+                        continue;
+                    }
+                    self.side_conversation = SideConversationState::Idle;
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        if widget.session_id() != Some(parent_session_id) || widget.is_task_running() {
+                            let server = self._server.clone();
+                            tokio::spawn(async move {
+                                let conversation_id = child_session_id.into();
+                                server.remove_conversation(&conversation_id).await;
+                            });
+                            continue;
+                        }
+                        let mut side_widget = ChatWidget::new_from_existing(
+                            widget.config_ref().clone(),
+                            new_conv.0.conversation.clone(),
+                            new_conv.0.session_configured.clone(),
+                            self.app_event_tx.clone(),
+                            self.enhanced_keys_supported,
+                            self.terminal_info.clone(),
+                            self.show_order_overlay,
+                            self.latest_upgrade_version.clone(),
+                            widget.auth_manager(),
+                            false,
+                            initial_message,
+                        );
+                        side_widget.enable_perf(self.timing_enabled);
+                        side_widget.check_for_initial_animations();
+                        let parent = std::mem::replace(widget, Box::new(side_widget));
+                        self.side_conversation = SideConversationState::Active {
+                            parent,
+                            child_session_id,
+                        };
+                        self.terminal_runs.clear();
+                        self.clear_on_first_frame = true;
+                        self.app_event_tx.send(AppEvent::RequestRedraw);
+                    }
+                }
+                AppEvent::SideConversationForkFailed {
+                    parent_session_id,
+                    request_id,
+                    message,
+                } => {
+                    if !matches!(
+                        self.side_conversation,
+                        SideConversationState::Forking {
+                            parent_session_id: expected_parent,
+                            request_id: expected_request,
+                        } if expected_parent == parent_session_id && expected_request == request_id
+                    ) {
+                        continue;
+                    }
+                    self.side_conversation = SideConversationState::Idle;
+                    if let AppState::Chat { widget } = &mut self.app_state
+                        && widget.session_id() == Some(parent_session_id)
+                    {
+                        widget.debug_notice(message);
+                    }
+                }
+                AppEvent::ReturnFromSide => {
+                    let SideConversationState::Active {
+                        mut parent,
+                        child_session_id,
+                    } = std::mem::replace(&mut self.side_conversation, SideConversationState::Idle) else {
+                        continue;
+                    };
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        if widget.is_task_running() {
+                            widget.debug_notice("Stop the side conversation task before returning.".to_string());
+                            self.side_conversation = SideConversationState::Active {
+                                parent,
+                                child_session_id,
+                            };
+                            continue;
+                        }
+                        parent.debug_notice("Returned from side conversation.".to_string());
+                        let _child = std::mem::replace(widget, parent);
+                        let server = self._server.clone();
+                        tokio::spawn(async move {
+                            let conversation_id = child_session_id.into();
+                            server.remove_conversation(&conversation_id).await;
+                        });
+                        self.terminal_runs.clear();
+                        self.clear_on_first_frame = true;
+                        self.app_event_tx.send(AppEvent::RequestRedraw);
                     }
                 }
                 AppEvent::SwitchCwd(new_cwd, initial_prompt) => {
@@ -2361,6 +2598,7 @@ impl App<'_> {
                             self.latest_upgrade_version.clone(),
                             auth_manager,
                             false,
+                            None,
                         );
                         if let Some(state) = ghost_state.take() {
                             new_widget.adopt_ghost_state(state);
@@ -2390,6 +2628,7 @@ impl App<'_> {
                             self.latest_upgrade_version.clone(),
                             auth_manager,
                             false,
+                            None,
                         );
                         if let Some(state) = ghost_state.take() {
                             new_widget.adopt_ghost_state(state);
