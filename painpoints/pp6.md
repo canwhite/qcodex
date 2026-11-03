@@ -1,0 +1,1 @@
+内部加上computer-use和playwright的mcp支持
