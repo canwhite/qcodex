@@ -320,11 +320,15 @@ cd code
 npm install
 
 # Build (use fast build for development)
-./build-fast.sh
+make
 
-# Run locally
-./code-rs/target/dev-fast/code
+# Run from any directory
+qcodex
 ```
+
+`make` prefers `~/.local/bin` (then `~/bin`) when it is on your `PATH`; otherwise
+it chooses the first writable user-owned PATH directory. To use a specific
+directory already on `PATH`, run `make INSTALL_DIR=/path/to/bin`.
 
 #### Git hooks
 
