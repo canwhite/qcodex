@@ -202,21 +202,11 @@ impl SlashCommand {
     pub fn available_in_side_conversation(self) -> bool {
         matches!(
             self,
-            Self::Browser
-                | Self::Chrome
-                | Self::Init
-                | Self::Compact
-                | Self::Copy
+            Self::Copy
                 | Self::Diff
                 | Self::Mention
-                | Self::Cmd
                 | Self::Status
                 | Self::Perf
-                | Self::Plan
-                | Self::Solve
-                | Self::Code
-                | Self::Quit
-                | Self::Exit
         )
     }
 
@@ -430,7 +420,16 @@ mod tests {
         assert!(!SlashCommand::Settings.available_in_side_conversation());
         assert!(!SlashCommand::Login.available_in_side_conversation());
         assert!(!SlashCommand::Mcp.available_in_side_conversation());
+        assert!(!SlashCommand::Browser.available_in_side_conversation());
+        assert!(!SlashCommand::Chrome.available_in_side_conversation());
+        assert!(!SlashCommand::Init.available_in_side_conversation());
+        assert!(!SlashCommand::Compact.available_in_side_conversation());
+        assert!(!SlashCommand::Cmd.available_in_side_conversation());
+        assert!(!SlashCommand::Plan.available_in_side_conversation());
+        assert!(!SlashCommand::Solve.available_in_side_conversation());
+        assert!(!SlashCommand::Code.available_in_side_conversation());
         assert!(SlashCommand::Status.available_in_side_conversation());
-        assert!(SlashCommand::Plan.available_in_side_conversation());
+        assert!(SlashCommand::Copy.available_in_side_conversation());
+        assert!(SlashCommand::Diff.available_in_side_conversation());
     }
 }

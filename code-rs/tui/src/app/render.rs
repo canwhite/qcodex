@@ -8,8 +8,27 @@ use crossterm::SynchronizedUpdate;
 use crate::app_event::AppEvent;
 use crate::thread_spawner;
 use crate::tui;
+#[cfg(feature = "tui_workspace")]
+use ratatui::layout::{Constraint, Layout, Rect};
 
 use super::state::{App, AppState, REDRAW_DEBOUNCE};
+#[cfg(feature = "tui_workspace")]
+use super::state::{SideConversationFocus, SideConversationState};
+
+#[cfg(feature = "tui_workspace")]
+fn side_pane_areas(area: Rect) -> Option<(Rect, Rect)> {
+    if area.width < 100 {
+        return None;
+    }
+    let side_width = (area.width / 3).max(36);
+    let [parent, side] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(side_width),
+    ])
+    .spacing(2)
+    .areas(area);
+    Some((parent, side))
+}
 
 impl App<'_> {
     /// Schedule a redraw immediately and open a short debounce window to coalesce
@@ -127,6 +146,37 @@ impl App<'_> {
         let completed_frame = terminal.draw(|frame| {
             match &mut self.app_state {
                 AppState::Chat { widget } => {
+                    #[cfg(feature = "tui_workspace")]
+                    if let Some((parent_area, side_area)) = side_pane_areas(frame.area())
+                        && let SideConversationState::Active {
+                            parent,
+                            child,
+                            focused,
+                            ..
+                        } = &mut self.side_conversation
+                    {
+                        match focused {
+                            SideConversationFocus::Side => {
+                                if let Some(parent) = parent.as_ref() {
+                                    frame.render_widget_ref(&**parent, parent_area);
+                                }
+                                if let Some((x, y)) = widget.cursor_pos(side_area) {
+                                    frame.set_cursor_position((x, y));
+                                }
+                                frame.render_widget_ref(&**widget, side_area);
+                            }
+                            SideConversationFocus::Parent => {
+                                if let Some((x, y)) = widget.cursor_pos(parent_area) {
+                                    frame.set_cursor_position((x, y));
+                                }
+                                frame.render_widget_ref(&**widget, parent_area);
+                                if let Some(child) = child.as_ref() {
+                                    frame.render_widget_ref(&**child, side_area);
+                                }
+                            }
+                        }
+                        return;
+                    }
                     if let Some((x, y)) = widget.cursor_pos(frame.area()) {
                         frame.set_cursor_position((x, y));
                     }
@@ -137,6 +187,19 @@ impl App<'_> {
         })?;
         self.buffer_diff_profiler.record(&completed_frame);
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "tui_workspace"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn side_pane_requires_wide_terminal_and_preserves_minimum_side_width() {
+        assert!(side_pane_areas(Rect::new(0, 0, 99, 24)).is_none());
+        let (parent, side) = side_pane_areas(Rect::new(0, 0, 100, 24)).expect("wide layout");
+        assert_eq!(side.width, 36);
+        assert_eq!(parent.width + side.width + 2, 100);
     }
 }
 

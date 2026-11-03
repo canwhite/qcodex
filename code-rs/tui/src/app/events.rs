@@ -38,6 +38,7 @@ use super::state::{
     AppState,
     ChatWidgetArgs,
     LoginFlowState,
+    SideConversationFocus,
     SideConversationState,
     BACKPRESSURE_FORCED_DRAW_SKIPS,
     HIGH_EVENT_BURST_MAX,
@@ -71,9 +72,35 @@ fn side_return_key_event(key_event: KeyEvent) -> bool {
     )
 }
 
+fn side_toggle_key_event(key_event: KeyEvent) -> bool {
+    matches!(
+        key_event,
+        KeyEvent {
+            code: KeyCode::Char('/' | '7'),
+            modifiers: crossterm::event::KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            ..
+        }
+    )
+}
+
+fn side_parent_status(event: &code_core::protocol::EventMsg) -> Option<&'static str> {
+    use code_core::protocol::EventMsg;
+
+    match event {
+        EventMsg::RequestUserInput(_) => Some("needs input"),
+        EventMsg::ExecApprovalRequest(_) | EventMsg::ApplyPatchApprovalRequest(_) => {
+            Some("needs approval")
+        }
+        EventMsg::TaskStarted => Some("working"),
+        EventMsg::TaskComplete(_) => Some("finished"),
+        EventMsg::Error(_) => Some("failed"),
+        _ => None,
+    }
+}
+
 fn apply_parent_event(widget: &mut ChatWidget<'_>, event: AppEvent) {
     match event {
-        AppEvent::CodexEvent(event) => widget.handle_code_event(event),
         AppEvent::StartAutoDriveCelebration { message } => {
             widget.start_auto_drive_card_celebration(message);
         }
@@ -198,10 +225,10 @@ where
         () = &mut cleanup => false,
         () = tokio::time::sleep(deadline) => true,
     };
-    notify(timed_out);
     if timed_out {
         cleanup.await;
     }
+    notify(timed_out);
 }
 
 impl App<'_> {
@@ -629,8 +656,24 @@ impl App<'_> {
                             // Otherwise fall through
                         }
                         key_event
-                            if side_return_key_event(key_event)
+                            if side_toggle_key_event(key_event)
                                 && matches!(self.side_conversation, SideConversationState::Active { .. })
+                                && matches!(
+                                    &self.app_state,
+                                    AppState::Chat { widget }
+                                        if widget.side_return_shortcut_available()
+                                ) => {
+                            self.app_event_tx.send(AppEvent::ToggleSideConversation);
+                        }
+                        key_event
+                            if side_return_key_event(key_event)
+                                && matches!(
+                                    self.side_conversation,
+                                    SideConversationState::Active {
+                                        focused: SideConversationFocus::Side,
+                                        ..
+                                    }
+                                )
                                 && matches!(
                                     &self.app_state,
                                     AppState::Chat { widget }
@@ -821,30 +864,88 @@ impl App<'_> {
                         widget.register_pasted_image(placeholder, path);
                     }
                 }
-                AppEvent::CodexEvent(event) => {
-                    if let SideConversationState::Active {
-                        pending_parent_events,
-                        ..
-                    } = &mut self.side_conversation
-                    {
-                        pending_parent_events.push(AppEvent::CodexEvent(event));
-                    } else {
-                        self.dispatch_code_event(event);
-                    }
-                }
                 AppEvent::CodexEventForConversation { session_id, event } => {
-                    let is_active_child = matches!(
-                        self.side_conversation,
-                        SideConversationState::Active { child_session_id, .. }
-                            if child_session_id == session_id
-                    );
-                    if is_active_child {
-                        self.dispatch_code_event(event);
-                    } else if matches!(self.side_conversation, SideConversationState::Forking { .. }) {
-                        self.pending_side_events
-                            .entry(session_id)
-                            .or_default()
-                            .push(event);
+                    match &mut self.side_conversation {
+                        SideConversationState::Active {
+                            child_session_id,
+                            child,
+                            focused,
+                            ..
+                        } if *child_session_id == session_id => {
+                            match focused {
+                                SideConversationFocus::Side => self.dispatch_code_event(event),
+                                SideConversationFocus::Parent => {
+                                    if let Some(child) = child.as_mut() {
+                                        child.handle_code_event(event);
+                                    }
+                                }
+                            }
+                        }
+                        SideConversationState::Active {
+                            parent,
+                            child,
+                            focused,
+                            parent_status,
+                            ..
+                        } => {
+                            let parent_matches = match focused {
+                                SideConversationFocus::Side => parent
+                                    .as_ref()
+                                    .is_some_and(|widget| widget.session_id() == Some(session_id)),
+                                SideConversationFocus::Parent => matches!(
+                                    &self.app_state,
+                                    AppState::Chat { widget }
+                                        if widget.session_id() == Some(session_id)
+                                ),
+                            };
+                            if parent_matches {
+                                if let Some(status) = side_parent_status(&event.msg) {
+                                    *parent_status = Some(status.to_string());
+                                    match focused {
+                                        SideConversationFocus::Side => {
+                                            if let AppState::Chat { widget } = &mut self.app_state {
+                                                widget.set_side_parent_status(Some(status));
+                                            }
+                                        }
+                                        SideConversationFocus::Parent => {
+                                            if let Some(child) = child.as_mut() {
+                                                child.set_side_parent_status(Some(status));
+                                            }
+                                        }
+                                    }
+                                }
+                                match focused {
+                                    SideConversationFocus::Side => {
+                                        if let Some(parent) = parent.as_mut() {
+                                            parent.handle_code_event(event);
+                                        }
+                                    }
+                                    SideConversationFocus::Parent => {
+                                        self.dispatch_code_event(event);
+                                    }
+                                }
+                            }
+                        }
+                        SideConversationState::Forking { parent_session_id, .. }
+                            if *parent_session_id == session_id =>
+                        {
+                            self.dispatch_code_event(event);
+                        }
+                        SideConversationState::Forking { .. } => {
+                            self.pending_side_events
+                                .entry(session_id)
+                                .or_default()
+                                .push(event);
+                        }
+                        SideConversationState::Idle | SideConversationState::Returning { .. } => {
+                            if matches!(
+                                &self.app_state,
+                                AppState::Chat { widget }
+                                    if widget.accepts_conversation_event(session_id, &event.msg)
+                            ) {
+                                self.dispatch_code_event(event);
+                            }
+                        }
                     }
                 }
                 AppEvent::ExitRequest => {
@@ -861,6 +962,7 @@ impl App<'_> {
                     let mut new_widget = ChatWidget::new(
                         self.config.clone(),
                         self.app_event_tx.clone(),
+                        self._server.clone(),
                         None,
                         Vec::new(),
                         self.enhanced_keys_supported,
@@ -1103,11 +1205,23 @@ impl App<'_> {
                 | AppEvent::BackgroundReviewFinished { .. }
                 | AppEvent::GhostSnapshotFinished { .. }) => {
                     if let SideConversationState::Active {
-                        pending_parent_events,
+                        parent,
+                        focused,
                         ..
                     } = &mut self.side_conversation
                     {
-                        pending_parent_events.push(event);
+                        match focused {
+                            SideConversationFocus::Side => {
+                                if let Some(parent) = parent.as_mut() {
+                                    apply_parent_event(parent, event);
+                                }
+                            }
+                            SideConversationFocus::Parent => {
+                                if let AppState::Chat { widget } = &mut self.app_state {
+                                    apply_parent_event(widget, event);
+                                }
+                            }
+                        }
                     } else if let AppState::Chat { widget } = &mut self.app_state {
                         apply_parent_event(widget, event);
                     }
@@ -1358,6 +1472,7 @@ impl App<'_> {
                             let mut new_widget = ChatWidget::new(
                                 self.config.clone(),
                                 self.app_event_tx.clone(),
+                                self._server.clone(),
                                 None,
                                 Vec::new(),
                                 self.enhanced_keys_supported,
@@ -1607,7 +1722,15 @@ impl App<'_> {
                             use code_core::protocol::ApplyPatchApprovalRequestEvent;
                             use code_core::protocol::FileChange;
 
-                            self.app_event_tx.send(AppEvent::CodexEvent(Event {
+                            let Some(session_id) = (match &self.app_state {
+                                AppState::Chat { widget } => widget.session_id(),
+                                AppState::Onboarding { .. } => None,
+                            }) else {
+                                continue;
+                            };
+                            self.app_event_tx.send(AppEvent::CodexEventForConversation {
+                                session_id,
+                                event: Event {
                                 id: "1".to_string(),
                                 event_seq: 0,
                                 // msg: EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
@@ -1641,7 +1764,8 @@ impl App<'_> {
                                     },
                                 ),
                                 order: None,
-                            }));
+                                },
+                            });
                         }
                     }
                 }
@@ -1649,7 +1773,45 @@ impl App<'_> {
                     parent_session_id,
                     initial_message,
                 } => {
+                    if let SideConversationState::Active {
+                        parent,
+                        child,
+                        focused: SideConversationFocus::Parent,
+                        parent_status,
+                        ..
+                    } = &mut self.side_conversation
+                        && matches!(
+                            &self.app_state,
+                            AppState::Chat { widget }
+                                if widget.session_id() == Some(parent_session_id)
+                        )
+                    {
+                        let Some(child_widget) = child.take() else {
+                            continue;
+                        };
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            let previous = std::mem::replace(widget, child_widget);
+                            *parent = Some(previous);
+                            widget.set_side_parent_status(parent_status.as_deref());
+                            if let Some(message) = initial_message {
+                                widget.submit_side_user_message(message);
+                            }
+                        }
+                        if let SideConversationState::Active { focused, .. } =
+                            &mut self.side_conversation
+                        {
+                            *focused = SideConversationFocus::Side;
+                        }
+                        self.clear_on_first_frame = true;
+                        self.app_event_tx.send(AppEvent::RequestRedraw);
+                        continue;
+                    }
                     if !matches!(self.side_conversation, SideConversationState::Idle) {
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            widget.debug_notice(
+                                "A side conversation is already starting or active.".to_string(),
+                            );
+                        }
                         continue;
                     }
                     if self.pending_jump_back_ghost_state.is_some() {
@@ -1661,14 +1823,10 @@ impl App<'_> {
                         }
                         continue;
                     }
-                    let Some((mut config, code_home, parent_task_running)) = (match &mut self.app_state {
+                    let Some(mut config) = (match &mut self.app_state {
                         AppState::Chat { widget }
                             if widget.session_id() == Some(parent_session_id) => {
-                            Some((
-                                widget.config_ref().clone(),
-                                widget.config_ref().code_home.clone(),
-                                widget.has_active_parent_turn(),
-                            ))
+                            Some(widget.config_ref().clone())
                         }
                         AppState::Chat { widget } => {
                             widget.debug_notice("'/btw' needs a saved parent session.".to_string());
@@ -1684,6 +1842,10 @@ impl App<'_> {
                     config.user_instructions = Some(side_user_instructions(
                         config.user_instructions.take(),
                     ));
+                    // A side conversation cannot create sub-agents, even if the
+                    // model bypasses the TUI slash-command policy and calls the
+                    // agent tool directly.
+                    config.subagent_max_depth = 0;
                     let server = self._server.clone();
                     let tx = self.app_event_tx.clone();
                     let cleanup_owner = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -1691,17 +1853,10 @@ impl App<'_> {
                     let (finished_tx, finished_rx) = std::sync::mpsc::sync_channel(1);
                     let fork_task = spawn_runtime_task(&self.app_runtime, async move {
                         let fork = async {
-                            let catalog = SessionCatalog::new(code_home);
-                            let entry = catalog
-                                .find_by_id(&parent_session_id.to_string())
-                                .await
-                                .map_err(|err| format!("failed to find parent session: {err}"))?
-                                .ok_or_else(|| "parent session is no longer available.".to_string())?;
                             server
-                                .fork_conversation(
-                                    usize::from(parent_task_running),
+                                .fork_registered_conversation(
+                                    parent_session_id.into(),
                                     config,
-                                    catalog.entry_rollout_path(&entry),
                                     Some(SIDE_CONTEXT_BOUNDARY),
                                 )
                                 .await
@@ -1713,6 +1868,8 @@ impl App<'_> {
                                 let code_core::EphemeralConversation {
                                     conversation,
                                     cleanup,
+                                    captured_sequence,
+                                    boundary_version,
                                 } = new_conv;
                                 task_cleanup_owner
                                     .lock()
@@ -1721,6 +1878,8 @@ impl App<'_> {
                                 tx.send(AppEvent::SideConversationForked {
                                     parent_session_id,
                                     request_id,
+                                    captured_sequence,
+                                    boundary_version,
                                     new_conv: crate::app_event::Redacted(conversation),
                                     cleanup_owner: crate::app_event::Redacted(
                                         task_cleanup_owner.clone(),
@@ -1749,6 +1908,8 @@ impl App<'_> {
                 AppEvent::SideConversationForked {
                     parent_session_id,
                     request_id,
+                    captured_sequence,
+                    boundary_version,
                     new_conv,
                     cleanup_owner,
                     initial_message,
@@ -1799,10 +1960,14 @@ impl App<'_> {
                         let parent = std::mem::replace(widget, Box::new(side_widget));
                         self.side_conversation = SideConversationState::Active {
                             parent: Some(parent),
+                            child: None,
+                            focused: SideConversationFocus::Side,
+                            parent_status: None,
+                            captured_sequence,
+                            boundary_version,
                             request_id,
                             child_session_id,
                             child_cleanup: Some(child_cleanup),
-                            pending_parent_events: Vec::new(),
                         };
                         let pending_events = self
                             .pending_side_events
@@ -1848,14 +2013,14 @@ impl App<'_> {
                         request_id,
                         child_session_id,
                         child_cleanup,
-                        pending_parent_events,
                     ) = match &mut self.side_conversation {
                         SideConversationState::Active {
                             parent,
+                            focused: SideConversationFocus::Side,
                             request_id,
                             child_session_id,
                             child_cleanup,
-                            pending_parent_events,
+                            ..
                         } => {
                             let Some(parent) = parent.take() else {
                                 continue;
@@ -1868,7 +2033,6 @@ impl App<'_> {
                                 *request_id,
                                 *child_session_id,
                                 child_cleanup,
-                                std::mem::take(pending_parent_events),
                             )
                         }
                         _ => continue,
@@ -1890,15 +2054,50 @@ impl App<'_> {
                             request_id,
                             child_session_id,
                         };
-                        for event in pending_parent_events {
-                            match event {
-                                AppEvent::CodexEvent(event) => self.dispatch_code_event(event),
-                                event => {
-                                    if let AppState::Chat { widget } = &mut self.app_state {
-                                        apply_parent_event(widget, event);
-                                    }
+                        self.clear_on_first_frame = true;
+                        self.app_event_tx.send(AppEvent::RequestRedraw);
+                    }
+                }
+                AppEvent::ToggleSideConversation => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        match &mut self.side_conversation {
+                            SideConversationState::Active {
+                                parent,
+                                child,
+                                focused,
+                                parent_status,
+                                captured_sequence,
+                                boundary_version,
+                                ..
+                            } => {
+                                tracing::trace!(
+                                    captured_sequence,
+                                    boundary_version,
+                                    "switching side conversation focus"
+                                );
+                                match *focused {
+                                SideConversationFocus::Side => {
+                                    let Some(parent_widget) = parent.take() else {
+                                        continue;
+                                    };
+                                    let mut previous = std::mem::replace(widget, parent_widget);
+                                    previous.set_side_conversation_mode();
+                                    *child = Some(previous);
+                                    widget.set_parent_with_side_mode();
+                                    *focused = SideConversationFocus::Parent;
+                                }
+                                SideConversationFocus::Parent => {
+                                    let Some(child_widget) = child.take() else {
+                                        continue;
+                                    };
+                                    let previous = std::mem::replace(widget, child_widget);
+                                    *parent = Some(previous);
+                                    widget.set_side_parent_status(parent_status.as_deref());
+                                    *focused = SideConversationFocus::Side;
+                                }
                                 }
                             }
+                            _ => continue,
                         }
                         self.clear_on_first_frame = true;
                         self.app_event_tx.send(AppEvent::RequestRedraw);
@@ -1979,6 +2178,7 @@ impl App<'_> {
                         let mut new_widget = ChatWidget::new(
                             cfg,
                             self.app_event_tx.clone(),
+                            self._server.clone(),
                             None,
                             Vec::new(),
                             self.enhanced_keys_supported,
@@ -2739,6 +2939,7 @@ impl App<'_> {
                     let mut w = ChatWidget::new(
                         config,
                         app_event_tx.clone(),
+                        self._server.clone(),
                         initial_prompt,
                         initial_images,
                         enhanced_keys_supported,
@@ -2910,7 +3111,14 @@ impl App<'_> {
                             ),
                             order: None,
                         };
-                        self.app_event_tx.send(AppEvent::CodexEvent(ev));
+                        if let AppState::Chat { widget } = &self.app_state
+                            && let Some(session_id) = widget.session_id()
+                        {
+                            self.app_event_tx.send(AppEvent::CodexEventForConversation {
+                                session_id,
+                                event: ev,
+                            });
+                        }
                     }
 
                     // Prefill composer with the edited text
@@ -2924,16 +3132,22 @@ impl App<'_> {
                 }
             }
         }
-        let side_event_forwarder = if matches!(
-            self.side_conversation,
-            SideConversationState::Active { .. }
-        ) {
-            match &mut self.app_state {
+        let side_event_forwarder = match &mut self.side_conversation {
+            SideConversationState::Active {
+                focused: SideConversationFocus::Side,
+                ..
+            } => match &mut self.app_state {
                 AppState::Chat { widget } => widget.stop_conversation_event_forwarder(),
                 AppState::Onboarding { .. } => None,
-            }
-        } else {
-            None
+            },
+            SideConversationState::Active {
+                child,
+                focused: SideConversationFocus::Parent,
+                ..
+            } => child
+                .as_mut()
+                .and_then(|widget| widget.stop_conversation_event_forwarder()),
+            _ => None,
         };
         let side_state = std::mem::replace(
             &mut self.side_conversation,
@@ -3083,6 +3297,27 @@ mod next_event_priority_tests {
         assert!(!side_return_key_event(KeyEvent::new(
             KeyCode::Char('\\'),
             crossterm::event::KeyModifiers::CONTROL,
+        )));
+    }
+
+    #[test]
+    fn side_toggle_accepts_ctrl_slash_and_terminal_ctrl_seven_alias() {
+        assert!(side_toggle_key_event(KeyEvent::new(
+            KeyCode::Char('/'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )));
+        assert!(side_toggle_key_event(KeyEvent::new(
+            KeyCode::Char('7'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )));
+        assert!(!side_toggle_key_event(KeyEvent::new_with_kind(
+            KeyCode::Char('/'),
+            crossterm::event::KeyModifiers::CONTROL,
+            KeyEventKind::Repeat,
+        )));
+        assert!(!side_toggle_key_event(KeyEvent::new(
+            KeyCode::Char('/'),
+            crossterm::event::KeyModifiers::NONE,
         )));
     }
 

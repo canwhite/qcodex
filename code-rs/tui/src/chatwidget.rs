@@ -62,7 +62,6 @@ use code_core::auth_accounts::{self, StoredAccount};
 use code_login::AuthManager;
 use code_login::AuthMode;
 use code_protocol::dynamic_tools::DynamicToolResponse;
-use code_protocol::protocol::SessionSource;
 use code_protocol::num_format::format_with_separators_u64;
 use code_core::external_agent_command_exists;
 use code_core::split_command_and_args;
@@ -2192,6 +2191,7 @@ struct AutoCompactionOverlay {
 pub(crate) struct BackgroundOrderTicket {
     request_ordinal: u64,
     seq_counter: Arc<AtomicU64>,
+    session_id: uuid::Uuid,
 }
 
 impl BackgroundOrderTicket {
@@ -3493,6 +3493,7 @@ impl ChatWidget<'_> {
         BackgroundOrderTicket {
             request_ordinal: req,
             seq_counter: counter,
+            session_id: self.session_id.unwrap_or_else(uuid::Uuid::nil),
         }
     }
 
@@ -3604,6 +3605,7 @@ impl ChatWidget<'_> {
         &mut self,
         config: Config,
         auth_manager: Arc<AuthManager>,
+        conversation_manager: Arc<ConversationManager>,
         code_op_rx: UnboundedReceiver<Op>,
     ) {
         let ticket = self.make_background_tail_ticket();
@@ -3612,10 +3614,6 @@ impl ChatWidget<'_> {
 
         tokio::spawn(async move {
             let mut code_op_rx = code_op_rx;
-            let conversation_manager = ConversationManager::new(
-                auth_manager.clone(),
-                SessionSource::Cli,
-            );
             let resume_path = config.experimental_resume.clone();
             let new_conversation = match resume_path {
                 Some(path) => conversation_manager
@@ -3638,13 +3636,17 @@ impl ChatWidget<'_> {
                 }
             };
 
+            let session_id = new_conversation.session_configured.session_id;
             let event = Event {
                 id: new_conversation.conversation_id.to_string(),
                 event_seq: 0,
                 msg: EventMsg::SessionConfigured(new_conversation.session_configured),
                 order: None,
             };
-            app_event_tx_clone.send(AppEvent::CodexEvent(event));
+            app_event_tx_clone.send(AppEvent::CodexEventForConversation {
+                session_id,
+                event,
+            });
 
             let conversation = new_conversation.conversation;
             let conversation_clone = conversation.clone();
@@ -3664,7 +3666,10 @@ impl ChatWidget<'_> {
             });
 
             while let Ok(event) = conversation.next_event().await {
-                app_event_tx_clone.send(AppEvent::CodexEvent(event));
+                app_event_tx_clone.send(AppEvent::CodexEventForConversation {
+                    session_id,
+                    event,
+                });
             }
             // (debug end notice removed)
         });
@@ -6894,6 +6899,7 @@ impl ChatWidget<'_> {
     pub(crate) fn new(
         mut config: Config,
         app_event_tx: AppEventSender,
+        conversation_manager: Arc<ConversationManager>,
         initial_prompt: Option<String>,
         initial_images: Vec<PathBuf>,
         enhanced_keys_supported: bool,
@@ -7198,7 +7204,12 @@ impl ChatWidget<'_> {
             resume_picker_loading: false,
         };
         new_widget.load_auto_review_baseline_marker();
-        new_widget.spawn_conversation_runtime(config.clone(), auth_manager, code_op_rx);
+        new_widget.spawn_conversation_runtime(
+            config.clone(),
+            auth_manager,
+            conversation_manager,
+            code_op_rx,
+        );
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.code_home)
             && let Ok(records) = account_usage::list_rate_limit_snapshots(&config.code_home)
                 && let Some(record) = records.into_iter().find(|r| r.account_id == active_id) {
@@ -12323,6 +12334,10 @@ impl ChatWidget<'_> {
         // (debug watchdog removed)
     }
 
+    pub(crate) fn submit_side_user_message(&mut self, user_message: UserMessage) {
+        self.submit_user_message(user_message);
+    }
+
     fn split_leading_slash_command(text: &str) -> Option<(String, String)> {
         if !text.starts_with('/') {
             return None;
@@ -16721,6 +16736,7 @@ impl ChatWidget<'_> {
                     self.app_event_tx.clone(),
                     self.config.clone(),
                     self.config.debug,
+                    self.session_id,
                     account,
                     false,
                     false,
@@ -16745,6 +16761,7 @@ impl ChatWidget<'_> {
             self.app_event_tx.clone(),
             self.config.clone(),
             self.config.debug,
+            self.session_id,
         );
     }
 
@@ -16873,6 +16890,7 @@ impl ChatWidget<'_> {
         let app_event_tx = self.app_event_tx.clone();
         let config = self.config.clone();
         let debug_enabled = self.config.debug;
+        let session_id = self.session_id;
         let account = auth_accounts::get_active_account_id(&config.code_home)
             .ok()
             .flatten()
@@ -16918,6 +16936,7 @@ impl ChatWidget<'_> {
                     app_event_tx,
                     config,
                     debug_enabled,
+                    session_id,
                     account,
                     true,
                     false,
@@ -25636,9 +25655,23 @@ Have we met every part of this goal and is there no further work to do?"#
             hint: None,
         });
         self.bottom_pane.update_status_text(
-            "Side conversation · parent chat unchanged, workspace shared · Ctrl+C to return"
+            "Side conversation · Ctrl+/ for parent · Ctrl+C to close"
                 .to_string(),
         );
+    }
+
+    pub(crate) fn set_parent_with_side_mode(&mut self) {
+        self.bottom_pane
+            .update_status_text("Main conversation · Ctrl+/ for side".to_string());
+    }
+
+    pub(crate) fn set_side_parent_status(&mut self, status: Option<&str>) {
+        let status = status
+            .map(|status| format!(" · parent: {status}"))
+            .unwrap_or_default();
+        self.bottom_pane.update_status_text(format!(
+            "Side conversation{status} · Ctrl+/ for parent · Ctrl+C to close"
+        ));
     }
 
     pub(crate) fn prepare_for_side_return(&mut self) {
@@ -26162,10 +26195,6 @@ Have we met every part of this goal and is there no further work to do?"#
             || !self.active_task_ids.is_empty()
             || self.stream.is_write_cycle_active()
             || (wait_running && wait_blocks)
-    }
-
-    pub(crate) fn has_active_parent_turn(&self) -> bool {
-        self.is_task_running() || self.auto_state.is_active()
     }
 
     #[inline]
@@ -27630,6 +27659,7 @@ Have we met every part of this goal and is there no further work to do?"#
         app_event_tx: AppEventSender,
         ticket: BackgroundOrderTicket,
     ) {
+        let session_id = ticket.session_id;
         tracing::info!(
             "[cdp] connect_to_cdp_chrome() begin, host={:?}, port={:?}",
             host,
@@ -27785,7 +27815,7 @@ Have we met every part of this goal and is there no further work to do?"#
                                                     BrowserScreenshotUpdateEvent, Event, EventMsg,
                                                 };
                                                 app_event_tx_inner.send(
-                                                    AppEvent::CodexEvent(Event {
+                                                    AppEvent::conversation_event(session_id, Event {
                                                         id: uuid::Uuid::new_v4().to_string(),
                                                         event_seq: 0,
                                                         msg: EventMsg::BrowserScreenshotUpdate(
@@ -27855,7 +27885,7 @@ Have we met every part of this goal and is there no further work to do?"#
                                             use code_core::protocol::BrowserScreenshotUpdateEvent;
                                             use code_core::protocol::Event;
                                             use code_core::protocol::EventMsg;
-                                            app_event_tx_bg.send(AppEvent::CodexEvent(Event {
+                                            app_event_tx_bg.send(AppEvent::conversation_event(session_id, Event {
                                                     id: uuid::Uuid::new_v4().to_string(),
                                                     event_seq: 0,
                                                     msg: EventMsg::BrowserScreenshotUpdate(
@@ -27983,7 +28013,7 @@ Have we met every part of this goal and is there no further work to do?"#
                                                                 *latest = Some((first_path.clone(), url_inner.clone()));
                                                             }
                                                             use code_core::protocol::{BrowserScreenshotUpdateEvent, Event, EventMsg};
-                                                            app_event_tx_inner.send(AppEvent::CodexEvent(Event {
+                                                            app_event_tx_inner.send(AppEvent::conversation_event(session_id, Event {
                                                                 id: uuid::Uuid::new_v4().to_string(),
                                                                 event_seq: 0,
                                                                 msg: EventMsg::BrowserScreenshotUpdate(BrowserScreenshotUpdateEvent {
@@ -28047,7 +28077,7 @@ Have we met every part of this goal and is there no further work to do?"#
                                                         use code_core::protocol::BrowserScreenshotUpdateEvent;
                                                         use code_core::protocol::Event;
                                                         use code_core::protocol::EventMsg;
-                                                        app_event_tx_bg.send(AppEvent::CodexEvent(Event {
+                                                        app_event_tx_bg.send(AppEvent::conversation_event(session_id, Event {
                                                             id: uuid::Uuid::new_v4().to_string(),
                                                             event_seq: 0,
                                                             msg: EventMsg::BrowserScreenshotUpdate(BrowserScreenshotUpdateEvent {
@@ -28272,6 +28302,7 @@ Have we met every part of this goal and is there no further work to do?"#
         // Parse the browser subcommand
         let trimmed = command_text.trim();
         let browser_ticket = self.make_background_tail_ticket();
+        let session_id = browser_ticket.session_id;
         self.consume_pending_prompt_for_ui_only_turn();
 
         // Handle the case where just "/browser" was typed
@@ -28474,7 +28505,7 @@ Have we met every part of this goal and is there no further work to do?"#
                                                     BrowserScreenshotUpdateEvent, EventMsg,
                                                 };
                                                 app_event_tx_inner.send(
-                                                    AppEvent::CodexEvent(Event {
+                                                    AppEvent::conversation_event(session_id, Event {
                                                         id: uuid::Uuid::new_v4().to_string(),
                                                         event_seq: 0,
                                                         msg: EventMsg::BrowserScreenshotUpdate(
@@ -28535,7 +28566,7 @@ Have we met every part of this goal and is there no further work to do?"#
 
                                                 // Send update event
                                                 use code_core::protocol::{BrowserScreenshotUpdateEvent, EventMsg};
-                                                app_event_tx_inner.send(AppEvent::CodexEvent(Event { id: uuid::Uuid::new_v4().to_string(), event_seq: 0, msg: EventMsg::BrowserScreenshotUpdate(BrowserScreenshotUpdateEvent {
+                                                app_event_tx_inner.send(AppEvent::conversation_event(session_id, Event { id: uuid::Uuid::new_v4().to_string(), event_seq: 0, msg: EventMsg::BrowserScreenshotUpdate(BrowserScreenshotUpdateEvent {
                                                         screenshot_path: first_path.clone(),
                                                         url: url_inner,
                                                     }), order: None }));
@@ -28586,7 +28617,7 @@ Have we met every part of this goal and is there no further work to do?"#
                                         // Send update event
                                         use code_core::protocol::BrowserScreenshotUpdateEvent;
                                         use code_core::protocol::EventMsg;
-                                        app_event_tx.send(AppEvent::CodexEvent(Event {
+                                        app_event_tx.send(AppEvent::conversation_event(session_id, Event {
                                             id: uuid::Uuid::new_v4().to_string(),
                                             event_seq: 0,
                                             msg: EventMsg::BrowserScreenshotUpdate(
@@ -29353,6 +29384,7 @@ Have we met every part of this goal and is there no further work to do?"#
         let latest_screenshot = self.latest_browser_screenshot.clone();
         let app_event_tx = self.app_event_tx.clone();
         let ticket = self.make_background_tail_ticket();
+        let session_id = ticket.session_id;
 
         tokio::spawn(async move {
             let ticket = ticket;
@@ -29416,7 +29448,7 @@ Have we met every part of this goal and is there no further work to do?"#
                         }
                         use code_core::protocol::BrowserScreenshotUpdateEvent;
                         use code_core::protocol::EventMsg;
-                        app_event_tx.send(AppEvent::CodexEvent(Event {
+                        app_event_tx.send(AppEvent::conversation_event(session_id, Event {
                             id: uuid::Uuid::new_v4().to_string(),
                             event_seq: 0,
                             msg: EventMsg::BrowserScreenshotUpdate(BrowserScreenshotUpdateEvent {
@@ -29484,6 +29516,7 @@ Have we met every part of this goal and is there no further work to do?"#
         // Parse the chrome command arguments
         let parts: Vec<&str> = command_text.split_whitespace().collect();
         let chrome_ticket = self.make_background_tail_ticket();
+        let session_id = chrome_ticket.session_id;
         self.consume_pending_prompt_for_ui_only_turn();
 
         // Handle empty command - just "/chrome"
@@ -29604,7 +29637,7 @@ Have we met every part of this goal and is there no further work to do?"#
                             }
                             use code_core::protocol::BrowserScreenshotUpdateEvent;
                             use code_core::protocol::EventMsg;
-                            app_event_tx.send(AppEvent::CodexEvent(Event {
+                            app_event_tx.send(AppEvent::conversation_event(session_id, Event {
                                 id: uuid::Uuid::new_v4().to_string(),
                                 event_seq: 0,
                                 msg: EventMsg::BrowserScreenshotUpdate(
@@ -29813,6 +29846,22 @@ Have we met every part of this goal and is there no further work to do?"#
         self.session_id
     }
 
+    /// A newly-created widget has no session id until its first
+    /// `SessionConfigured` event arrives. That one event must be admitted by
+    /// the app-level session router; every other event remains fail-closed.
+    pub(crate) fn accepts_conversation_event(
+        &self,
+        session_id: uuid::Uuid,
+        event: &EventMsg,
+    ) -> bool {
+        self.session_id == Some(session_id)
+            || matches!(
+                event,
+                EventMsg::SessionConfigured(configured)
+                    if self.session_id.is_none() && configured.session_id == session_id
+            )
+    }
+
     fn side_initial_message(mut message: UserMessage) -> Option<UserMessage> {
         let Some(InputItem::Text { text }) = message.ordered_items.first_mut() else {
             return Some(message);
@@ -29823,8 +29872,8 @@ Have we met every part of this goal and is there no further work to do?"#
         };
         let Some(separator) = rest.find(char::is_whitespace) else {
             message.display_text.clear();
-            message.ordered_items.clear();
-            return None;
+            message.ordered_items.remove(0);
+            return (!message.ordered_items.is_empty()).then_some(message);
         };
         let initial_text = rest[separator..].trim_start().to_string();
         *text = initial_text.clone();
@@ -30985,6 +31034,61 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
+    fn fresh_widget_admits_only_its_first_session_configured_event() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        let session_id = uuid::Uuid::new_v4();
+        let configured = SessionConfiguredEvent {
+            session_id,
+            model: chat.config.model.clone(),
+            history_log_id: 0,
+            history_entry_count: 0,
+        };
+
+        assert!(chat.accepts_conversation_event(
+            session_id,
+            &EventMsg::SessionConfigured(configured),
+        ));
+        assert!(!chat.accepts_conversation_event(
+            uuid::Uuid::new_v4(),
+            &EventMsg::TaskStarted,
+        ));
+    }
+
+    #[test]
+    fn bare_btw_preserves_ordered_attachments() {
+        let image = std::path::PathBuf::from("/tmp/side-image.png");
+        let message = UserMessage {
+            display_text: "/btw".to_string(),
+            ordered_items: vec![
+                InputItem::Text {
+                    text: "/btw".to_string(),
+                },
+                InputItem::Text {
+                    text: "[image: side-image.png]".to_string(),
+                },
+                InputItem::LocalImage {
+                    path: image.clone(),
+                },
+            ],
+            suppress_persistence: false,
+        };
+
+        let side = ChatWidget::side_initial_message(message)
+            .expect("attachment-only side message should remain");
+        assert_eq!(side.display_text, "");
+        assert_eq!(
+            side.ordered_items,
+            vec![
+                InputItem::Text {
+                    text: "[image: side-image.png]".to_string(),
+                },
+                InputItem::LocalImage { path: image },
+            ]
+        );
+    }
+
+    #[test]
     fn btw_can_start_while_parent_task_is_running() {
         let mut harness = ChatWidgetHarness::new();
         let parent_session_id = uuid::Uuid::new_v4();
@@ -31061,17 +31165,6 @@ use code_core::protocol::OrderMeta;
             .expect_err("aborted side forwarder should not complete normally");
         assert!(error.is_cancelled());
         assert!(chat.conversation_event_forwarder.is_none());
-    }
-
-    #[test]
-    fn active_auto_drive_marks_parent_turn_as_unfinished() {
-        let mut harness = ChatWidgetHarness::new();
-        let chat = harness.chat();
-        chat.bottom_pane.set_task_running(false);
-        chat.auto_state.set_phase(AutoRunPhase::Active);
-
-        assert!(!chat.is_task_running());
-        assert!(chat.has_active_parent_turn());
     }
 
     fn history_contains_text(chat: &ChatWidget<'_>, needle: &str) -> bool {

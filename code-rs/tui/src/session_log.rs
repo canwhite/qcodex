@@ -134,8 +134,12 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
     }
 
     match event {
-        AppEvent::CodexEvent(ev) => {
-            write_record("to_tui", "code_event", ev);
+        AppEvent::CodexEventForConversation { session_id, event } => {
+            let value = json!({
+                "session_id": session_id,
+                "event": event,
+            });
+            write_record("to_tui", "conversation_code_event", &value);
         }
         AppEvent::KeyEvent(k) => {
             let value = json!({

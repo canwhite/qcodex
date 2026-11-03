@@ -322,7 +322,12 @@ pub mod test_helpers {
         let events = harness.poll_until(
             |events| events
                 .iter()
-                .any(|event| matches!(event, AppEvent::CodexEvent(_))),
+                .any(|event| {
+                    matches!(
+                        event,
+                        AppEvent::CodexEventForConversation { .. }
+                    )
+                }),
             Duration::from_millis(200),
         );
         crate::chatwidget::smoke_helpers::assert_has_codex_event(&events);

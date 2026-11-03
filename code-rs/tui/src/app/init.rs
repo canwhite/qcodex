@@ -291,6 +291,7 @@ impl App<'_> {
             let mut chat_widget = ChatWidget::new(
                 config.clone(),
                 app_event_tx.clone(),
+                conversation_manager.clone(),
                 initial_prompt,
                 initial_images,
                 enhanced_keys_supported,

@@ -104,6 +104,7 @@ pub(super) struct AgentTask {
     kind: AgentTaskKind,
     pub(super) origin: TaskOriginKind,
     pub(super) visible_to_user: bool,
+    pub(super) fork_history_boundary: usize,
 }
 
 impl AgentTask {
@@ -115,6 +116,7 @@ impl AgentTask {
         origin: TaskOriginKind,
         visible_to_user: bool,
     ) -> Self {
+        let fork_history_boundary = sess.history_len();
         let handle = {
             let sess_clone = Arc::clone(&sess);
             let tc_clone = Arc::clone(&turn_context);
@@ -133,6 +135,7 @@ impl AgentTask {
             kind: AgentTaskKind::Regular,
             origin,
             visible_to_user,
+            fork_history_boundary,
         }
     }
 
@@ -142,6 +145,7 @@ impl AgentTask {
         sub_id: String,
         input: Vec<InputItem>,
     ) -> Self {
+        let fork_history_boundary = sess.history_len();
         let handle = {
             let sess_clone = Arc::clone(&sess);
             let tc_clone = Arc::clone(&turn_context);
@@ -164,6 +168,7 @@ impl AgentTask {
             kind: AgentTaskKind::Compact,
             origin: TaskOriginKind::ManualCompact,
             visible_to_user: false,
+            fork_history_boundary,
         }
     }
 
@@ -173,6 +178,7 @@ impl AgentTask {
         sub_id: String,
         input: Vec<InputItem>,
     ) -> Self {
+        let fork_history_boundary = sess.history_len();
         let handle = {
             let sess_clone = Arc::clone(&sess);
             let tc_clone = Arc::clone(&turn_context);
@@ -197,6 +203,7 @@ impl AgentTask {
             kind: AgentTaskKind::Review,
             origin: TaskOriginKind::Review,
             visible_to_user: false,
+            fork_history_boundary,
         }
     }
 
@@ -225,6 +232,7 @@ pub(super) async fn submission_loop(
     auth_manager: Option<Arc<AuthManager>>,
     rx_sub: Receiver<Submission>,
     tx_event: Sender<Event>,
+    session_handle: Arc<OnceLock<Arc<Session>>>,
 ) {
     let mut config = config;
     let mut sess: Option<Arc<Session>> = None;
@@ -878,6 +886,8 @@ pub(super) async fn submission_loop(
                         }
                         replay_history_items = Some(reconstructed);
                     }
+
+                let _ = session_handle.set(Arc::clone(&new_session));
 
                 // Gather history metadata for SessionConfiguredEvent.
                 let (history_log_id, history_entry_count) =

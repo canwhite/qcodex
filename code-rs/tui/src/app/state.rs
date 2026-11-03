@@ -205,6 +205,12 @@ pub(super) struct LoginFlowState {
 /// Owns the temporary side-conversation lifecycle.  Keeping these states
 /// together makes it impossible for a fork result to be treated as active
 /// before its parent is retained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SideConversationFocus {
+    Parent,
+    Side,
+}
+
 pub(super) enum SideConversationState<'a> {
     Idle,
     Forking {
@@ -216,10 +222,14 @@ pub(super) enum SideConversationState<'a> {
     },
     Active {
         parent: Option<Box<ChatWidget<'a>>>,
+        child: Option<Box<ChatWidget<'a>>>,
+        focused: SideConversationFocus,
+        parent_status: Option<String>,
+        captured_sequence: u64,
+        boundary_version: u32,
         request_id: u64,
         child_session_id: uuid::Uuid,
         child_cleanup: Option<EphemeralConversationCleanup>,
-        pending_parent_events: Vec<AppEvent>,
     },
     Returning {
         request_id: u64,

@@ -973,6 +973,7 @@ pub struct Codex {
     next_id: AtomicU64,
     tx_sub: Sender<Submission>,
     rx_event: Receiver<Event>,
+    session: Arc<OnceLock<Arc<Session>>>,
 }
 
 // Allow internal components (like background exec completions) to trigger a new
@@ -1050,6 +1051,7 @@ impl Codex {
 
         // Generate a unique ID for the lifetime of this Codex session.
         let session_id = Uuid::new_v4();
+        let session = Arc::new(OnceLock::new());
 
         // This task will run until Op::Shutdown is received.
         tokio::spawn(submission_loop(
@@ -1058,11 +1060,13 @@ impl Codex {
             auth_manager,
             rx_sub,
             tx_event,
+            session.clone(),
         ));
         let codex = Codex {
             next_id: AtomicU64::new(0),
             tx_sub,
             rx_event,
+            session,
         };
         // Make a clone of tx_sub available for internal auto-turn triggers.
         let _ = TX_SUB_GLOBAL.set(codex.tx_sub.clone());
@@ -1085,6 +1089,12 @@ impl Codex {
         let sub = Submission { id: id.clone(), op };
         self.submit_with_id(sub).await?;
         Ok(id)
+    }
+
+    pub(crate) fn fork_history_snapshot(&self) -> Option<(Vec<ResponseItem>, u64)> {
+        self.session
+            .get()
+            .map(|session| session.fork_history_snapshot())
     }
 
     /// Use sparingly: prefer `submit()` so Codex is responsible for generating

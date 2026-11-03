@@ -34,6 +34,7 @@ pub(crate) fn spawn_agent(
                 return;
             }
         };
+        let session_id = session_configured.session_id;
 
         // Forward the captured `SessionConfigured` event so it can be rendered in the UI.
         let ev = code_core::protocol::Event {
@@ -41,7 +42,10 @@ pub(crate) fn spawn_agent(
             id: "".to_string(),
             msg: code_core::protocol::EventMsg::SessionConfigured(session_configured),
         };
-        app_event_tx_clone.send(AppEvent::CodexEvent(ev));
+        app_event_tx_clone.send(AppEvent::CodexEventForConversation {
+            session_id,
+            event: ev,
+        });
 
         let conversation_clone = conversation.clone();
         tokio::spawn(async move {
@@ -54,7 +58,10 @@ pub(crate) fn spawn_agent(
         });
 
         while let Ok(event) = conversation.next_event().await {
-            app_event_tx_clone.send(AppEvent::CodexEvent(event));
+            app_event_tx_clone.send(AppEvent::CodexEventForConversation {
+                session_id,
+                event,
+            });
         }
     });
 
@@ -73,12 +80,16 @@ pub(crate) fn spawn_agent_from_existing(
 
     let app_event_tx_clone = app_event_tx.clone();
     tokio::spawn(async move {
+        let session_id = session_configured.session_id;
         // Forward the captured `SessionConfigured` event so it can be rendered in the UI.
         let ev = code_core::protocol::Event {
             id: "".to_string(),
             msg: code_core::protocol::EventMsg::SessionConfigured(session_configured),
         };
-        app_event_tx_clone.send(AppEvent::CodexEvent(ev));
+        app_event_tx_clone.send(AppEvent::CodexEventForConversation {
+            session_id,
+            event: ev,
+        });
 
         let conversation_clone = conversation.clone();
         tokio::spawn(async move {
@@ -91,7 +102,10 @@ pub(crate) fn spawn_agent_from_existing(
         });
 
         while let Ok(event) = conversation.next_event().await {
-            app_event_tx_clone.send(AppEvent::CodexEvent(event));
+            app_event_tx_clone.send(AppEvent::CodexEventForConversation {
+                session_id,
+                event,
+            });
         }
     });
 

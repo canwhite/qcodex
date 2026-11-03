@@ -27,4 +27,10 @@ impl CodexConversation {
     pub async fn next_event(&self) -> CodexResult<Event> {
         self.codex.next_event().await
     }
+
+    pub(crate) fn fork_history_snapshot(
+        &self,
+    ) -> Option<(Vec<code_protocol::models::ResponseItem>, u64)> {
+        self.codex.fork_history_snapshot()
+    }
 }

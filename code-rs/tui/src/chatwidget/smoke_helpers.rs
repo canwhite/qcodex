@@ -10,6 +10,9 @@ use crate::bottom_pane::SettingsSection;
 use crossterm::event::KeyEvent;
 use code_auto_drive_core::AutoRunPhase;
 use code_core::config::{Config, ConfigOverrides, ConfigToml};
+use code_core::ConversationManager;
+use code_login::{AuthManager, AuthMode};
+use code_protocol::protocol::SessionSource;
 use code_core::history::state::HistoryRecord;
 use code_core::history::state::ExecStatus;
 use code_core::protocol::{BackgroundEventEvent, Event, EventMsg, OrderMeta};
@@ -18,6 +21,7 @@ use chrono::Utc;
 use ratatui::text::Line;
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 
@@ -104,10 +108,20 @@ impl ChatWidgetHarness {
 
         let runtime = &*TEST_RUNTIME;
         let _guard = runtime.enter();
+        let auth_manager = AuthManager::shared_with_mode_and_originator(
+            cfg.code_home.clone(),
+            AuthMode::ApiKey,
+            cfg.responses_originator_header.clone(),
+        );
+        let conversation_manager = Arc::new(ConversationManager::new(
+            auth_manager,
+            SessionSource::Cli,
+        ));
 
         let chat = ChatWidget::new(
             cfg,
             app_event_tx,
+            conversation_manager,
             None,
             Vec::new(),
             false,
@@ -804,7 +818,7 @@ pub fn assert_has_insert_history(events: &[AppEvent]) {
             AppEvent::InsertHistory(_) | AppEvent::InsertHistoryWithKind { .. } | AppEvent::InsertFinalAnswer { .. }
         ) || matches!(
             event,
-            AppEvent::CodexEvent(ev)
+            AppEvent::CodexEventForConversation { event: ev, .. }
                 if crate::chatwidget::is_test_mode()
                     && matches!(ev.msg, EventMsg::SessionConfigured(_))
         )
@@ -838,7 +852,9 @@ pub fn assert_has_terminal_chunk_containing(events: &[AppEvent], needle: &str) {
 
 pub fn assert_has_codex_event(events: &[AppEvent]) {
     assert!(
-        events.iter().any(|event| matches!(event, AppEvent::CodexEvent(_))),
+        events
+            .iter()
+            .any(|event| matches!(event, AppEvent::CodexEventForConversation { .. })),
         "expected CodexEvent, got: {events:#?}"
     );
 }

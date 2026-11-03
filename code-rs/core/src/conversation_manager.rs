@@ -44,7 +44,11 @@ pub struct EphemeralConversationCleanup {
 pub struct EphemeralConversation {
     pub conversation: NewConversation,
     pub cleanup: EphemeralConversationCleanup,
+    pub captured_sequence: u64,
+    pub boundary_version: u32,
 }
+
+const SIDE_BOUNDARY_VERSION: u32 = 1;
 
 struct EphemeralRolloutGuard {
     path: Option<PathBuf>,
@@ -200,13 +204,51 @@ impl ConversationManager {
     pub async fn fork_conversation(
         &self,
         num_messages_to_drop: usize,
-        mut config: Config,
+        config: Config,
         path: PathBuf,
         trailing_developer_instructions: Option<&str>,
     ) -> CodexResult<EphemeralConversation> {
         // Compute the prefix up to the cut point.
         let history = RolloutRecorder::get_rollout_history(&path).await?;
         let history = truncate_history_for_fork(history, num_messages_to_drop);
+        self.fork_from_history(
+            config,
+            history,
+            trailing_developer_instructions,
+            0,
+        )
+        .await
+    }
+
+    /// Fork a currently registered conversation from an atomic in-memory
+    /// history snapshot. This avoids racing the rollout recorder on disk.
+    pub async fn fork_registered_conversation(
+        &self,
+        parent_id: ConversationId,
+        config: Config,
+        trailing_developer_instructions: Option<&str>,
+    ) -> CodexResult<EphemeralConversation> {
+        let parent = self.get_conversation(parent_id).await?;
+        let (items, captured_sequence) = parent
+            .fork_history_snapshot()
+            .ok_or(CodexErr::ConversationNotFound(parent_id.into()))?;
+        let history = live_history_for_fork(items);
+        self.fork_from_history(
+            config,
+            history,
+            trailing_developer_instructions,
+            captured_sequence,
+        )
+        .await
+    }
+
+    async fn fork_from_history(
+        &self,
+        mut config: Config,
+        history: InitialHistory,
+        trailing_developer_instructions: Option<&str>,
+        captured_sequence: u64,
+    ) -> CodexResult<EphemeralConversation> {
 
         // If there is no prior history to seed, just start a fresh conversation.
         if matches!(history, InitialHistory::New) {
@@ -217,6 +259,8 @@ impl ConversationManager {
                     rollout_path: None,
                 },
                 conversation,
+                captured_sequence,
+                boundary_version: SIDE_BOUNDARY_VERSION,
             });
         }
 
@@ -279,6 +323,8 @@ impl ConversationManager {
                 rollout_path: Some(rollout_path),
             },
             conversation,
+            captured_sequence,
+            boundary_version: SIDE_BOUNDARY_VERSION,
         })
     }
 
@@ -374,6 +420,15 @@ fn truncate_history_for_fork(
         unfinished_turn.unwrap_or(false),
     ));
     truncate_after_dropping_last_messages(history, messages_to_drop)
+}
+
+fn live_history_for_fork(items: Vec<ResponseItem>) -> InitialHistory {
+    InitialHistory::Forked(
+        items
+            .into_iter()
+            .map(RolloutItem::ResponseItem)
+            .collect(),
+    )
 }
 
 /// Return a prefix of `items` obtained by dropping the last `n` user messages
@@ -492,6 +547,22 @@ mod tests {
             .collect();
         let truncated2 = truncate_after_dropping_last_messages(InitialHistory::Forked(initial2), 2);
         assert!(matches!(truncated2, InitialHistory::New));
+    }
+
+    #[test]
+    fn live_snapshot_preserves_the_exact_atomic_prefix() {
+        let history = live_history_for_fork(vec![
+                user_msg("completed request"),
+                assistant_msg("completed answer"),
+            ]);
+
+        let actual = serde_json::to_value(history.get_rollout_items()).expect("serialize history");
+        let expected = serde_json::to_value(vec![
+            RolloutItem::ResponseItem(user_msg("completed request")),
+            RolloutItem::ResponseItem(assistant_msg("completed answer")),
+        ])
+        .expect("serialize expected history");
+        assert_eq!(actual, expected);
     }
 
     #[test]

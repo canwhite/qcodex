@@ -30,11 +30,13 @@ pub(super) fn start_rate_limit_refresh(
     app_event_tx: AppEventSender,
     config: Config,
     debug_enabled: bool,
+    session_id: Option<Uuid>,
 ) {
     start_rate_limit_refresh_with_options(
         app_event_tx,
         config,
         debug_enabled,
+        session_id,
         None,
         true,
         true,
@@ -45,6 +47,7 @@ pub(super) fn start_rate_limit_refresh_for_account(
     app_event_tx: AppEventSender,
     config: Config,
     debug_enabled: bool,
+    session_id: Option<Uuid>,
     account: StoredAccount,
     emit_ui: bool,
     notify_on_failure: bool,
@@ -53,6 +56,7 @@ pub(super) fn start_rate_limit_refresh_for_account(
         app_event_tx,
         config,
         debug_enabled,
+        session_id,
         Some(account),
         emit_ui,
         notify_on_failure,
@@ -63,6 +67,7 @@ fn start_rate_limit_refresh_with_options(
     app_event_tx: AppEventSender,
     config: Config,
     debug_enabled: bool,
+    session_id: Option<Uuid>,
     account: Option<StoredAccount>,
     emit_ui: bool,
     notify_on_failure: bool,
@@ -73,6 +78,7 @@ fn start_rate_limit_refresh_with_options(
             app_event_tx.clone(),
             config,
             debug_enabled,
+            session_id,
             account,
             emit_ui,
         ) {
@@ -100,6 +106,7 @@ fn run_refresh(
     app_event_tx: AppEventSender,
     config: Config,
     debug_enabled: bool,
+    session_id: Option<Uuid>,
     account: Option<StoredAccount>,
     emit_ui: bool,
 ) -> Result<()> {
@@ -216,7 +223,7 @@ fn run_refresh(
         #[cfg(feature = "code-fork")]
         handle_rate_limit(&snapshot, &app_event_tx);
 
-        if emit_ui {
+        if emit_ui && let Some(session_id) = session_id {
             let event = Event {
                 id: "rate-limit-refresh".to_string(),
                 event_seq: 0,
@@ -227,7 +234,7 @@ fn run_refresh(
                 order: None,
             };
 
-            app_event_tx.send(AppEvent::CodexEvent(event));
+            app_event_tx.send(AppEvent::CodexEventForConversation { session_id, event });
         } else if let Some(account_id) = record_account_id {
             app_event_tx.send(AppEvent::RateLimitSnapshotStored { account_id });
         }

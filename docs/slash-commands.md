@@ -24,8 +24,9 @@ Notes
   A new objective replaces the current goal; `pause` and `resume` control its
   lifecycle, and `clear` removes it.
 - `/btw [message]`: fork the current saved session into a temporary side
-  conversation. The optional message becomes its first turn; press `Ctrl+\\`
-  after its work is idle to return to the unchanged parent.
+  conversation. The optional message becomes its first turn. Press `Ctrl+/` to
+  switch between the live parent and side conversations; with an empty side
+  composer, press `Ctrl+C` to close the side and return to the parent.
 - `/quit`: exit Code.
 - `/exit`: exit Code.
 - `/logout`: log out of Code.

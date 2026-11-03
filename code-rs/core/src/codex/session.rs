@@ -1134,6 +1134,19 @@ impl Session {
         state.history.replace(items);
     }
 
+    pub(super) fn history_len(&self) -> usize {
+        self.state.lock().unwrap().history.len()
+    }
+
+    pub(super) fn fork_history_snapshot(&self) -> (Vec<ResponseItem>, u64) {
+        let state = self.state.lock().unwrap();
+        let mut items = state.history.contents();
+        if let Some(task) = state.current_task.as_ref() {
+            items.truncate(task.fork_history_boundary);
+        }
+        (items, state.request_ordinal)
+    }
+
     pub fn remove_task(&self, sub_id: &str) {
         let mut state = self.state.lock().unwrap();
         if let Some(agent) = &state.current_task

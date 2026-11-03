@@ -115,9 +115,8 @@ pub(crate) use code_auto_drive_core::{
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, AsRefStr)]
 pub(crate) enum AppEvent {
-    CodexEvent(Event),
-    /// Event emitted by a temporary side conversation. The id is checked
-    /// before it can reach the visible widget.
+    /// Event emitted by a managed conversation. The id determines whether it
+    /// reaches the visible parent/side widget or its retained peer.
     CodexEventForConversation {
         session_id: Uuid,
         event: Event,
@@ -271,6 +270,8 @@ pub(crate) enum AppEvent {
     SideConversationForked {
         parent_session_id: Uuid,
         request_id: u64,
+        captured_sequence: u64,
+        boundary_version: u32,
         new_conv: Redacted<code_core::NewConversation>,
         cleanup_owner: Redacted<
             std::sync::Arc<
@@ -289,6 +290,9 @@ pub(crate) enum AppEvent {
 
     /// Return from the active temporary side conversation to its parent.
     ReturnFromSide,
+
+    /// Switch focus between an open side conversation and its retained parent.
+    ToggleSideConversation,
 
     /// Cleanup for a returned temporary side conversation completed.
     SideConversationCleanupFinished {
@@ -749,4 +753,8 @@ pub(crate) enum AppEvent {
     
 }
 
-// No helper constructor; use `AppEvent::CodexEvent(ev)` directly to avoid shadowing.
+impl AppEvent {
+    pub(crate) fn conversation_event(session_id: Uuid, event: Event) -> Self {
+        Self::CodexEventForConversation { session_id, event }
+    }
+}

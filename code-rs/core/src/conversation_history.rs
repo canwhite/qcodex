@@ -17,6 +17,10 @@ impl ConversationHistory {
         self.items.clone()
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.items.len()
+    }
+
     /// Drains and returns the contents of the transcript.
     ///
     /// This avoids cloning large history items (e.g., base64 screenshots) when
