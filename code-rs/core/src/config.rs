@@ -66,7 +66,37 @@ mod validation;
 use defaults::{default_responses_originator, default_review_model, default_true_local};
 
 const OPENAI_BASE_URL_ENV_VAR: &str = "OPENAI_BASE_URL";
+const OPENAI_MODEL_ENV_VAR: &str = "OPENAI_MODEL";
+const OPENAI_REASONING_EFFORT_ENV_VAR: &str = "OPENAI_REASONING_EFFORT";
 const RESERVED_MODEL_PROVIDER_IDS: [&str; 2] = ["openai", "oss"];
+
+fn openai_reasoning_effort_from_env() -> std::io::Result<Option<ReasoningEffort>> {
+    let Some(value) = std::env::var(OPENAI_REASONING_EFFORT_ENV_VAR)
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let effort = match value.as_str() {
+        "none" | "minimal" => ReasoningEffort::Minimal,
+        "low" => ReasoningEffort::Low,
+        "medium" => ReasoningEffort::Medium,
+        "high" => ReasoningEffort::High,
+        "xhigh" => ReasoningEffort::XHigh,
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "`{OPENAI_REASONING_EFFORT_ENV_VAR}` must be one of: minimal, low, medium, high, xhigh"
+                ),
+            ));
+        }
+    };
+
+    Ok(Some(effort))
+}
 
 fn validate_reserved_model_provider_ids(
     model_providers: &HashMap<String, ModelProviderInfo>,
@@ -1337,10 +1367,19 @@ impl Config {
             OPENAI_DEFAULT_MODEL
         };
 
-        let model_explicit = model.is_some() || config_profile.model.is_some() || cfg.model.is_some();
+        let openai_model_from_env = (model_provider_id == "openai")
+            .then(|| std::env::var(OPENAI_MODEL_ENV_VAR).ok())
+            .flatten()
+            .filter(|model| !model.trim().is_empty());
+
+        let model_explicit = model.is_some()
+            || config_profile.model.is_some()
+            || cfg.model.is_some()
+            || openai_model_from_env.is_some();
 
         let model = model
             .or(config_profile.model)
+            .or(openai_model_from_env)
             .or(cfg.model)
             .unwrap_or_else(|| default_model_slug.to_string());
 
@@ -1378,9 +1417,14 @@ impl Config {
             .or(cfg.preferred_model_reasoning_effort)
             .or(config_profile.model_reasoning_effort)
             .or(cfg.model_reasoning_effort);
+        let openai_reasoning_effort_from_env = (model_provider_id == "openai")
+            .then(openai_reasoning_effort_from_env)
+            .transpose()?
+            .flatten();
 
-        let requested_chat_effort =
-            preferred_model_reasoning_effort.unwrap_or(ReasoningEffort::Medium);
+        let requested_chat_effort = openai_reasoning_effort_from_env
+            .or(preferred_model_reasoning_effort)
+            .unwrap_or(ReasoningEffort::Low);
         let chat_reasoning_effort =
             clamp_reasoning_effort_for_model(&model, requested_chat_effort);
 
@@ -1808,8 +1852,11 @@ impl Config {
     fn is_using_chatgpt_auth(code_home: &Path) -> bool {
         use code_app_server_protocol::AuthMode;
         use crate::CodexAuth;
-        
-        // Prefer ChatGPT when both ChatGPT tokens and an API key are present.
+
+        if crate::auth::read_api_key_from_env().is_some() {
+            return false;
+        }
+
         match CodexAuth::from_code_home(code_home, AuthMode::ChatGPT, "code_cli_rs") {
             Ok(Some(auth)) => auth.mode.is_chatgpt(),
             _ => false,
@@ -2151,6 +2198,118 @@ theme = "catppuccin-mocha"
 
         assert_eq!(config.model, "gpt-5.1-codex-max");
         Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn project_openai_model_overrides_global_model() -> std::io::Result<()> {
+        let _model_guard = EnvVarGuard::new(OPENAI_MODEL_ENV_VAR);
+        unsafe {
+            std::env::set_var(OPENAI_MODEL_ENV_VAR, "compatible-provider-model");
+        }
+
+        let cfg = ConfigToml {
+            model: Some("global-default-model".to_string()),
+            ..Default::default()
+        };
+        let code_home = TempDir::new()?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model, "compatible-provider-model");
+        assert!(config.model_explicit);
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn project_openai_model_does_not_override_another_provider() -> std::io::Result<()> {
+        let _model_guard = EnvVarGuard::new(OPENAI_MODEL_ENV_VAR);
+        unsafe {
+            std::env::set_var(OPENAI_MODEL_ENV_VAR, "compatible-provider-model");
+        }
+
+        let cfg = ConfigToml {
+            model: Some("oss-provider-model".to_string()),
+            ..Default::default()
+        };
+        let code_home = TempDir::new()?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                model_provider: Some("oss".to_string()),
+                ..Default::default()
+            },
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model, "oss-provider-model");
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn openai_reasoning_effort_defaults_to_low() -> std::io::Result<()> {
+        let _effort_guard = EnvVarGuard::new(OPENAI_REASONING_EFFORT_ENV_VAR);
+        unsafe {
+            std::env::remove_var(OPENAI_REASONING_EFFORT_ENV_VAR);
+        }
+
+        let code_home = TempDir::new()?;
+        let config = Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            ConfigOverrides::default(),
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_reasoning_effort, ReasoningEffort::Low);
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn openai_reasoning_effort_from_env_overrides_config() -> std::io::Result<()> {
+        let _effort_guard = EnvVarGuard::new(OPENAI_REASONING_EFFORT_ENV_VAR);
+        unsafe {
+            std::env::set_var(OPENAI_REASONING_EFFORT_ENV_VAR, "high");
+        }
+
+        let cfg = ConfigToml {
+            model_reasoning_effort: Some(ReasoningEffort::Low),
+            ..Default::default()
+        };
+        let code_home = TempDir::new()?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_reasoning_effort, ReasoningEffort::High);
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn invalid_openai_reasoning_effort_is_rejected() {
+        let _effort_guard = EnvVarGuard::new(OPENAI_REASONING_EFFORT_ENV_VAR);
+        unsafe {
+            std::env::set_var(OPENAI_REASONING_EFFORT_ENV_VAR, "maximum");
+        }
+
+        let code_home = TempDir::new().expect("temporary code home");
+        let err = Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            ConfigOverrides::default(),
+            code_home.path().to_path_buf(),
+        )
+        .expect_err("invalid reasoning effort should fail configuration loading");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains(OPENAI_REASONING_EFFORT_ENV_VAR));
     }
 
     #[test]

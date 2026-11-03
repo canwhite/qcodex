@@ -395,7 +395,7 @@ impl ModelClient {
         family
     }
 
-    fn uses_first_party_openai_model_metadata(&self) -> bool {
+    pub(crate) fn uses_first_party_openai_model_metadata(&self) -> bool {
         // Provider-owned ModelInfo is the codex-rs source of truth. This
         // compatibility check identifies the one built-in first-party path;
         // proxy/custom endpoints must not inherit embedded OpenAI capabilities.
@@ -1736,7 +1736,7 @@ impl ModelClient {
                     if status == StatusCode::TOO_MANY_REQUESTS
                         && self.config.auto_switch_accounts_on_rate_limit
                         && auth_manager.is_some()
-                        && auth::read_code_api_key_from_env().is_none()
+                        && auth::read_api_key_from_env().is_none()
                     {
                         let current_account_id = auth
                             .as_ref()
@@ -2222,7 +2222,7 @@ impl ModelClient {
             if status == StatusCode::TOO_MANY_REQUESTS
                 && self.config.auto_switch_accounts_on_rate_limit
                 && auth_manager.is_some()
-                && auth::read_code_api_key_from_env().is_none()
+                && auth::read_api_key_from_env().is_none()
             {
                 let now = Utc::now();
                 let current_account_id = auth

@@ -122,10 +122,11 @@ fn load_dotenv() {
     }
 
     // 2) Load from the current project's .env, but with extra safety:
-    //    - Do NOT import provider API keys by default (e.g., OPENAI_API_KEY, ANTHROPIC_API_KEY,
+    //    - Allow the OpenAI-compatible provider configuration used by this project:
+    //      OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_WIRE_API, OPENAI_MODEL, and
+    //      OPENAI_REASONING_EFFORT.
+    //    - Do NOT import other provider API keys (e.g., ANTHROPIC_API_KEY,
     //      GOOGLE_API_KEY, QWEN_API_KEY).
-    //    - Users can opt back in via CODEX_ALLOW_PROJECT_OPENAI_KEYS=1 (either exported
-    //      in the shell or placed in ~/.code/.env).
     // NOTE: use an explicit cwd/.env path instead of dotenv_iter() because
     // dotenv_iter() walks parent directories. Parent-walking can accidentally
     // load unrelated files such as ~/.env when the working directory is nested
@@ -133,23 +134,9 @@ fn load_dotenv() {
     if let Ok(cwd) = std::env::current_dir() {
         let project_env_path = cwd.join(".env");
         if let Ok(iter) = dotenvy::from_path_iter(project_env_path) {
-        // Filtered setter that always blocks provider keys from the project's .env.
+        // Filtered setter that only allows the supported OpenAI API key.
             for (key, value) in iter.into_iter().flatten() {
-                let upper = key.to_ascii_uppercase();
-                // Never allow CODEX_* to be set from .env files for safety.
-                if upper.starts_with(ILLEGAL_ENV_VAR_PREFIX) && upper != "CODEX_HOME" { continue; }
-                // Always ignore provider API keys from project .env (must be set globally or in shell).
-                if matches!(
-                    upper.as_str(),
-                    "OPENAI_API_KEY"
-                        | "AZURE_OPENAI_API_KEY"
-                        | "ANTHROPIC_API_KEY"
-                        | "CLAUDE_API_KEY"
-                        | "GOOGLE_API_KEY"
-                        | "GEMINI_API_KEY"
-                        | "QWEN_API_KEY"
-                        | "DASHSCOPE_API_KEY"
-                ) {
+                if !is_project_env_key_allowed(&key) {
                     continue;
                 }
                 // Safe: still single-threaded during startup.
@@ -170,6 +157,29 @@ fn load_dotenv() {
             }
         }
     }
+}
+
+fn is_project_env_key_allowed(key: &str) -> bool {
+    let upper = key.to_ascii_uppercase();
+
+    // Never allow CODEX_* to be set from .env files for safety.
+    if upper.starts_with(ILLEGAL_ENV_VAR_PREFIX) && upper != "CODEX_HOME" {
+        return false;
+    }
+
+    // OPENAI_API_KEY is intentionally allowed so a project can use its
+    // configured OpenAI-compatible endpoint. Other provider keys remain
+    // restricted to the shell or the global .env file.
+    !matches!(
+        upper.as_str(),
+        "AZURE_OPENAI_API_KEY"
+            | "ANTHROPIC_API_KEY"
+            | "CLAUDE_API_KEY"
+            | "GOOGLE_API_KEY"
+            | "GEMINI_API_KEY"
+            | "QWEN_API_KEY"
+            | "DASHSCOPE_API_KEY"
+    )
 }
 
 /// Helper to set vars from a dotenvy iterator while filtering out `CODEX_` keys.
@@ -304,6 +314,27 @@ mod tests {
     use std::sync::Mutex;
 
     static PATH_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn project_env_allows_openai_compatible_provider_configuration() {
+        for key in [
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "OPENAI_WIRE_API",
+            "OPENAI_MODEL",
+            "OPENAI_REASONING_EFFORT",
+        ] {
+            assert!(is_project_env_key_allowed(key), "{key} should be allowed");
+        }
+    }
+
+    #[test]
+    fn project_env_rejects_other_provider_keys_and_codex_overrides() {
+        for key in ["ANTHROPIC_API_KEY", "AZURE_OPENAI_API_KEY", "CODEX_CONFIG"] {
+            assert!(!is_project_env_key_allowed(key), "{key} should be rejected");
+        }
+        assert!(is_project_env_key_allowed("CODEX_HOME"));
+    }
 
     #[test]
     fn prepend_path_seeds_default_when_missing() {

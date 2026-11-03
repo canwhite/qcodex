@@ -3172,6 +3172,7 @@ async fn run_turn(
         if used_fallback_model_metadata
             && forced_model_override.is_none()
             && !fallback_metadata_warning_sent
+            && tc.client.uses_first_party_openai_model_metadata()
         {
             let resolved_model_slug = prompt
                 .model_override
@@ -3258,7 +3259,7 @@ async fn run_turn(
 
                 let mut switched = false;
                 if sess.client.auto_switch_accounts_on_rate_limit()
-                    && auth::read_code_api_key_from_env().is_none()
+                    && auth::read_api_key_from_env().is_none()
                 {
                     if let Some(auth_manager) = sess.client.get_auth_manager() {
                         let auth = auth_manager.auth();

@@ -3641,7 +3641,7 @@ fn classify_model_error_with_auto_switch(
     if let Some(code_err) = find_in_chain::<CodexErr>(error) {
         if let CodexErr::UsageLimitReached(limit) = code_err {
             if client.auto_switch_accounts_on_rate_limit()
-                && auth::read_code_api_key_from_env().is_none()
+                && auth::read_api_key_from_env().is_none()
             {
                 if let Some(auth_manager) = client.get_auth_manager() {
                     let auth = auth_manager.auth();

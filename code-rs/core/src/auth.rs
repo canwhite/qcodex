@@ -414,6 +414,15 @@ pub fn read_code_api_key_from_env() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Returns the API key configured for the current process.
+///
+/// `CODEX_API_KEY` takes precedence for backwards compatibility. Otherwise,
+/// use the standard `OPENAI_API_KEY`, including one loaded from a project
+/// `.env` file.
+pub fn read_api_key_from_env() -> Option<String> {
+    read_code_api_key_from_env().or_else(read_openai_api_key_from_env)
+}
+
 pub fn get_auth_file(code_home: &Path) -> PathBuf {
     code_home.join("auth.json")
 }
@@ -1085,11 +1094,63 @@ mod tests {
     use base64::Engine;
     use reqwest::StatusCode;
     use pretty_assertions::assert_eq;
+    use serial_test::serial;
     use serde::Serialize;
     use serde_json::json;
+    use std::ffi::OsString;
     use tempfile::tempdir;
 
     const LAST_REFRESH: &str = "2025-08-06T20:41:36.232376Z";
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn new(key: &'static str) -> Self {
+            Self {
+                key,
+                original: std::env::var_os(key),
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn auth_manager_prefers_openai_api_key_over_persisted_auth() {
+        let _guard = EnvVarGuard::new(OPENAI_API_KEY_ENV_VAR);
+        unsafe { std::env::set_var(OPENAI_API_KEY_ENV_VAR, "project-api-key") };
+
+        let code_home = tempdir().unwrap();
+        std::fs::write(code_home.path().join("auth.json"), "not valid JSON").unwrap();
+
+        let auth_manager = AuthManager::new(
+            code_home.path().to_path_buf(),
+            AuthMode::ChatGPT,
+            "test".to_string(),
+        );
+        let auth = auth_manager.auth().expect("API key auth should be available");
+
+        assert_eq!(auth.mode, AuthMode::ApiKey);
+        assert_eq!(auth.api_key.as_deref(), Some("project-api-key"));
+
+        auth_manager.reload();
+        let reloaded_auth = auth_manager
+            .auth()
+            .expect("API key auth should survive reload");
+        assert_eq!(reloaded_auth.mode, AuthMode::ApiKey);
+        assert_eq!(reloaded_auth.api_key.as_deref(), Some("project-api-key"));
+    }
 
     #[tokio::test]
     async fn roundtrip_auth_dot_json() {
@@ -1615,7 +1676,7 @@ impl AuthManager {
     /// unauthenticated state.
     pub fn new(code_home: PathBuf, preferred_auth_mode: AuthMode, originator: String) -> Self {
         let mut effective_mode = preferred_auth_mode;
-        let auth = if let Some(api_key) = read_code_api_key_from_env() {
+        let auth = if let Some(api_key) = read_api_key_from_env() {
             effective_mode = AuthMode::ApiKey;
             Some(CodexAuth::from_api_key(&api_key))
         } else {
@@ -1707,7 +1768,7 @@ impl AuthManager {
     pub fn reload(&self) -> bool {
         let preferred = self.preferred_auth_method();
         let env_auth = if self.enable_code_api_key_env {
-            read_code_api_key_from_env().map(|api_key| CodexAuth::from_api_key(&api_key))
+            read_api_key_from_env().map(|api_key| CodexAuth::from_api_key(&api_key))
         } else {
             None
         };
@@ -1744,7 +1805,7 @@ impl AuthManager {
 
         let preferred = self.preferred_auth_method();
         let env_auth = if self.enable_code_api_key_env {
-            read_code_api_key_from_env().map(|api_key| CodexAuth::from_api_key(&api_key))
+            read_api_key_from_env().map(|api_key| CodexAuth::from_api_key(&api_key))
         } else {
             None
         };
