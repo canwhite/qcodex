@@ -1053,8 +1053,10 @@ mod tests {
 
     #[test]
     fn schema_marks_goal_required_with_bootstrap_description() {
-        let mut features = SchemaFeatures::default();
-        features.include_goal_field = true;
+        let features = SchemaFeatures {
+            include_goal_field: true,
+            ..Default::default()
+        };
         let schema = build_schema(&Vec::new(), features, &default_auto_drive_cli_routing_entries());
         let required = schema
             .get("required")
@@ -1258,13 +1260,15 @@ mod tests {
 
     #[test]
     fn resolve_cli_routing_entries_falls_back_when_enabled_entries_missing() {
-        let mut settings = AutoDriveSettings::default();
-        settings.model_routing_entries = vec![AutoDriveModelRoutingEntry {
-            model: "gpt-5.5".to_string(),
-            enabled: false,
-            reasoning_levels: vec![ReasoningEffort::High],
-            description: "disabled".to_string(),
-        }];
+        let settings = AutoDriveSettings {
+            model_routing_entries: vec![AutoDriveModelRoutingEntry {
+                model: "gpt-5.5".to_string(),
+                enabled: false,
+                reasoning_levels: vec![ReasoningEffort::High],
+                description: "disabled".to_string(),
+            }],
+            ..Default::default()
+        };
 
         let available_models = vec![
             AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string(),
@@ -1858,8 +1862,8 @@ pub fn start_auto_coordinator(
         }
     });
 
-    if handle.is_err() {
-        tracing::error!("auto coordinator spawn failed: {:#}", handle.unwrap_err());
+    if let Err(err) = handle {
+        tracing::error!("auto coordinator spawn failed: {err:#}");
         return Err(anyhow!("auto coordinator worker unavailable"));
     }
 
@@ -1870,6 +1874,10 @@ pub fn start_auto_coordinator(
 }
 
 #[tracing::instrument(skip_all, fields(goal = %goal_text, derive_goal = derive_goal_from_history))]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the coordinator loop keeps worker lifecycle inputs explicit"
+)]
 fn run_auto_loop(
     event_tx: AutoCoordinatorEventSender,
     goal_text: String,
@@ -1960,6 +1968,7 @@ fn run_auto_loop(
         .map(|spec| spec.slug.to_string())
         .collect();
     }
+    let debug_logger = DebugLogger::new(debug_enabled).or_else(|_| DebugLogger::new(false))?;
     let client = Arc::new(ModelClient::new(
         config.clone(),
         Some(auth_mgr),
@@ -1969,10 +1978,7 @@ fn run_auto_loop(
         model_reasoning_summary,
         model_text_verbosity,
         Uuid::new_v4(),
-        Arc::new(Mutex::new(
-            DebugLogger::new(debug_enabled)
-                .unwrap_or_else(|_| DebugLogger::new(false).expect("debug logger")),
-        )),
+        Arc::new(Mutex::new(debug_logger)),
     ));
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -3014,6 +3020,10 @@ struct RequestStreamResult {
 }
 
 #[tracing::instrument(skip_all, fields(conv_items = conversation.len()))]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "coordinator decisions keep prompt, routing, cancellation, and telemetry inputs explicit"
+)]
 fn request_coordinator_decision(
     runtime: &tokio::runtime::Runtime,
     client: &ModelClient,
@@ -3076,6 +3086,10 @@ fn request_coordinator_decision(
     Ok(decision)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "decision streaming keeps prompt and cancellation inputs explicit"
+)]
 fn request_decision(
     runtime: &tokio::runtime::Runtime,
     client: &ModelClient,
@@ -3170,6 +3184,10 @@ fn indent_lines(text: &str, prefix: &str) -> String {
 }
 
 #[tracing::instrument(skip_all, fields(conv_items = conversation.len()))]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "user-turn decisions keep prompt and cancellation inputs explicit"
+)]
 fn request_user_turn_decision(
     runtime: &tokio::runtime::Runtime,
     client: &ModelClient,
@@ -3208,6 +3226,10 @@ fn request_user_turn_decision(
     Ok((user_response, cli_command))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "model-specific decision streaming keeps prompt and cancellation inputs explicit"
+)]
 fn request_decision_with_model(
     runtime: &tokio::runtime::Runtime,
     client: &ModelClient,
@@ -3433,6 +3455,10 @@ fn request_decision_with_model(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "prompt assembly keeps each coordinator input explicit"
+)]
 fn build_user_turn_prompt(
     developer_intro: &str,
     primary_goal: &str,
@@ -4578,7 +4604,7 @@ pub(crate) fn extract_first_json_object(input: &str) -> Option<String> {
                 }
                 depth -= 1;
                 if depth == 0 {
-                    let Some(s) = start else { return None; };
+                    let s = start?;
                     return Some(input[s..=idx].to_string());
                 }
             }
@@ -4638,6 +4664,10 @@ enum CompactionResult {
     Completed { summary_text: Option<String> },
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compaction keeps runtime, metrics, model, and prompt inputs explicit"
+)]
 fn maybe_compact(
     runtime: &tokio::runtime::Runtime,
     client: &ModelClient,

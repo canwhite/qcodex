@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "protocol parity setup and assertions intentionally fail fast"
+)]
+
 use std::net::SocketAddr;
 use std::time::Duration;
 

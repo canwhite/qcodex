@@ -279,8 +279,9 @@ pub fn apply_retention_policy(
     }
 
     // 2. Keep only the latest baseline (immutable)
-    if policy.keep_latest_baseline && !env_baselines.is_empty() {
-        let latest = env_baselines.pop().unwrap();
+    if policy.keep_latest_baseline
+        && let Some(latest) = env_baselines.pop()
+    {
         stats.bytes_kept += latest.size_bytes;
         kept_items.push((latest.index, latest.item));
     }
@@ -334,8 +335,7 @@ pub fn apply_retention_policy(
     }
 
     // Keep only the most recent screenshot
-    if !screenshots.is_empty() {
-        let latest = screenshots.pop().unwrap();
+    if let Some(latest) = screenshots.pop() {
         stats.kept_recent_screenshots = 1;
         stats.bytes_kept += latest.size_bytes;
         kept_items.push((latest.index, latest.item));

@@ -1,10 +1,7 @@
-#![cfg(feature = "dev-faults")]
-
 use anyhow::anyhow;
 use chrono::Duration as ChronoDuration;
 use code_core::error::{CodexErr, UnexpectedResponseError, UsageLimitReachedError};
 use once_cell::sync::OnceCell;
-use rand::Rng;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -26,7 +23,7 @@ struct FaultConfig {
 }
 
 #[derive(Debug, Clone)]
-enum FaultReset {
+pub(crate) enum FaultReset {
     Seconds(u64),
     Timestamp(Instant),
 }
@@ -73,7 +70,10 @@ fn init_config() -> HashMap<FaultScope, FaultConfig> {
                         }
                     }
             }
-            *cfg.rate_limit_reset.lock().unwrap() = parse_reset_hint();
+            *cfg
+                .rate_limit_reset
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = parse_reset_hint();
             map.insert(scope, cfg);
         }
     map
@@ -81,13 +81,6 @@ fn init_config() -> HashMap<FaultScope, FaultConfig> {
 
 fn config() -> &'static HashMap<FaultScope, FaultConfig> {
     CONFIG.get_or_init(init_config)
-}
-
-fn jitter_seconds(max: Duration) -> f64 {
-    if max.is_zero() {
-        return 0.0;
-    }
-    rand::rng().random_range(0.0..max.as_secs_f64())
 }
 
 /// Represents a fault to inject.
@@ -112,7 +105,11 @@ pub fn next_fault(scope: FaultScope) -> Option<InjectedFault> {
         if remaining > 0 {
             tracing::warn!("[faults] inject 429 rate limit (remaining {})", remaining - 1);
             return Some(InjectedFault::RateLimit {
-                reset_hint: cfg.rate_limit_reset.lock().unwrap().clone(),
+                reset_hint: cfg
+                    .rate_limit_reset
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
             });
         }
     }

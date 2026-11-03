@@ -40,6 +40,10 @@ use code_protocol::models::ReasoningItemContent;
 use code_protocol::models::ResponseItem;
 
 /// Implementation for the classic Chat Completions API.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "stream setup keeps transport, model, telemetry, and checkpoint dependencies explicit"
+)]
 pub(crate) async fn stream_chat_completions(
     prompt: &Prompt,
     model_family: &ModelFamily,

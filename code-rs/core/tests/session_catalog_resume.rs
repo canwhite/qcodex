@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "test fixture construction and assertions intentionally fail fast"
+)]
+
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};

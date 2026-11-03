@@ -192,7 +192,7 @@ pub async fn setup_worktree(
             .arg("worktree")
             .arg("remove")
             .arg("--force")
-            .arg(worktree_path.to_str().unwrap())
+            .arg(&worktree_path)
             .current_dir(git_root)
             .output()
             .await
@@ -265,7 +265,7 @@ pub async fn setup_worktree(
                 let _ = Command::new("git")
                     .arg("worktree")
                     .arg("remove")
-                    .arg(worktree_path.to_str().unwrap())
+                    .arg(&worktree_path)
                     .arg("--force")
                     .current_dir(git_root)
                     .output()

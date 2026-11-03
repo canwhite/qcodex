@@ -385,10 +385,10 @@ fn flatten_items(items: &[ResponseItem]) -> String {
             ResponseItem::Message { role, content, .. } => {
                 let text = content
                     .iter()
-                    .filter_map(|chunk| match chunk {
+                    .map(|chunk| match chunk {
                         ContentItem::InputText { text }
-                        | ContentItem::OutputText { text } => Some(text.as_str()),
-                        ContentItem::InputImage { .. } => Some("<image>"),
+                        | ContentItem::OutputText { text } => text.as_str(),
+                        ContentItem::InputImage { .. } => "<image>",
                     })
                     .collect::<Vec<_>>()
                     .join(" ");

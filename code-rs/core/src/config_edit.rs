@@ -199,6 +199,10 @@ pub async fn delete_subagent_command(code_home: &Path, name: &str) -> Result<boo
 /// (case-insensitive) name exists, update selected fields; otherwise append a
 /// new entry with the provided values. Fields not managed by the editor are
 /// preserved when updating.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "agent configuration fields map directly to the persisted table"
+)]
 pub async fn upsert_agent_config(
     code_home: &Path,
     name: &str,
@@ -281,6 +285,10 @@ pub async fn upsert_agent_config(
 }
 
 // Helper: append a single [[agents]] entry (no-alloc fallible path wrapper above)
+#[expect(
+    clippy::too_many_arguments,
+    reason = "agent configuration fields map directly to the persisted table"
+)]
 fn append_agent_entry(
     doc: &mut DocumentMut,
     name: &str,
@@ -315,6 +323,10 @@ fn append_agent_entry(
     doc["agents"] = toml_edit::Item::ArrayOfTables(arr);
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "agent configuration fields map directly to the persisted table"
+)]
 async fn write_new_or_append(
     mut doc: DocumentMut,
     code_home: &Path,

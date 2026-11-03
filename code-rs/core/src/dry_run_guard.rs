@@ -32,7 +32,7 @@ pub enum PackageManager {
 }
 
 impl PackageManager {
-    fn label(&self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             PackageManager::Npm => "npm",
             PackageManager::Pnpm => "pnpm",

@@ -1560,7 +1560,7 @@ fn session_models_from_config(config: &Config) -> Option<acp::SessionModelState>
     }
 
     Some(acp::SessionModelState {
-        current_model_id: current_model_id.expect("current model id set"),
+        current_model_id: current_model_id?,
         available_models,
         meta: None,
     })

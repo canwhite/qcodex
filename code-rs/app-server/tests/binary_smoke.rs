@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "smoke-test setup and assertions intentionally fail fast"
+)]
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;

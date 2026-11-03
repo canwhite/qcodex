@@ -367,6 +367,10 @@ impl Session {
         let _ = self.tx_event.send(event).await;
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "execution event ordering metadata is explicit at the history boundary"
+    )]
     async fn on_exec_command_end(
         &self,
         turn_diff_tracker: &mut TurnDiffTracker,
@@ -537,6 +541,10 @@ impl Session {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "execution orchestration keeps event and hook context explicit"
+    )]
     async fn run_exec_with_events_inner<'a>(
         &self,
         turn_diff_tracker: &mut TurnDiffTracker,
@@ -913,6 +921,10 @@ impl Session {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "hook execution keeps command and event ordering context explicit"
+    )]
     async fn run_hook_command(
         &self,
         turn_diff_tracker: &mut TurnDiffTracker,

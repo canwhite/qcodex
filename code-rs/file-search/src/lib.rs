@@ -289,6 +289,10 @@ pub fn run(
 /// `run` that sends one final batch of results over the provided channel.
 ///
 /// Parameters mirror the upstream API for compatibility.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the signature mirrors the upstream streaming search API"
+)]
 pub fn run_streaming(
     pattern_text: &str,
     limit: NonZeroUsize,
@@ -305,16 +309,12 @@ pub fn run_streaming(
         return Ok(FileSearchResults { matches: Vec::new(), total_match_count: 0 });
     }
 
-    // Convert NonZeroUsize → NonZero<usize>
-    let limit_nz = NonZero::new(limit.get()).expect("NonZeroUsize.get() > 0");
-    let threads_nz = NonZero::new(threads.get()).expect("NonZeroUsize.get() > 0");
-
     let results = run(
         pattern_text,
-        limit_nz,
+        limit,
         search_directory,
         exclude,
-        threads_nz,
+        threads,
         cancel_flag.clone(),
         compute_indices,
     )?;

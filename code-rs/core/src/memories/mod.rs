@@ -281,6 +281,10 @@ async fn refresh_stage1_outputs(
         .map(|output| (output.session_id, output.source_updated_at))
         .collect::<HashMap<_, _>>();
 
+    #[expect(
+        clippy::needless_collect,
+        reason = "materializing entries keeps the spawned refresh future Send and lifetime-independent"
+    )]
     let entries = catalog
         .all_ordered()
         .into_iter()

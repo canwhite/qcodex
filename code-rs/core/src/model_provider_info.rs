@@ -270,7 +270,7 @@ impl ModelProviderInfo {
         if let Some(auth) = self.auth.as_ref() {
             provider_auth_cache()
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&ProviderAuthCacheKey::from(auth));
         }
     }
@@ -617,7 +617,12 @@ impl ModelProviderInfo {
 
 async fn resolve_provider_auth_token(config: &ModelProviderAuthInfo) -> io::Result<String> {
     let cache_key = ProviderAuthCacheKey::from(config);
-    if let Some(cached_token) = provider_auth_cache().lock().unwrap().get(&cache_key).cloned() {
+    if let Some(cached_token) = provider_auth_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&cache_key)
+        .cloned()
+    {
         let should_use_cached_token = match config.refresh_interval() {
             Some(refresh_interval) => cached_token.fetched_at.elapsed() < refresh_interval,
             None => true,
@@ -628,13 +633,16 @@ async fn resolve_provider_auth_token(config: &ModelProviderAuthInfo) -> io::Resu
     }
 
     let access_token = run_provider_auth_command(config).await?;
-    provider_auth_cache().lock().unwrap().insert(
+    provider_auth_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(
         cache_key,
         CachedProviderAuthToken {
             access_token: access_token.clone(),
             fetched_at: Instant::now(),
         },
-    );
+        );
     Ok(access_token)
 }
 

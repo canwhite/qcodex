@@ -36,9 +36,10 @@ fn ensure_table_path<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> &'a mut Tom
         if !item.is_table() {
             *item = TomlItem::Table(TomlTable::new());
         }
-        table = item
-            .as_table_mut()
-            .expect("item was just initialized as a table");
+        let TomlItem::Table(next_table) = item else {
+            unreachable!("item was just initialized as a table");
+        };
+        table = next_table;
     }
     table
 }
@@ -230,9 +231,12 @@ pub async fn persist_model_selection(
                     TomlItem::Table(table)
                 });
 
-            let profiles_table = profiles_item
-                .as_table_mut()
-                .expect("profiles table should be a table");
+            if !profiles_item.is_table() {
+                *profiles_item = TomlItem::Table(TomlTable::new());
+            }
+            let TomlItem::Table(profiles_table) = profiles_item else {
+                unreachable!("profiles item was just initialized as a table");
+            };
 
             let profile_item = profiles_table
                 .entry(profile_name)
@@ -242,9 +246,12 @@ pub async fn persist_model_selection(
                     TomlItem::Table(table)
                 });
 
-            let profile_table = profile_item
-                .as_table_mut()
-                .expect("profile entry should be a table");
+            if !profile_item.is_table() {
+                *profile_item = TomlItem::Table(TomlTable::new());
+            }
+            let TomlItem::Table(profile_table) = profile_item else {
+                unreachable!("profile item was just initialized as a table");
+            };
 
             profile_table["model"] = toml_edit::value(model.to_string());
 
@@ -584,9 +591,9 @@ pub fn set_custom_theme(
         if !colors_item.is_table() {
             *colors_item = TomlItem::Table(TomlTable::new());
         }
-        let colors_tbl = colors_item
-            .as_table_mut()
-            .expect("colors item was just initialized as a table");
+        let TomlItem::Table(colors_tbl) = colors_item else {
+            unreachable!("colors item was just initialized as a table");
+        };
         macro_rules! set_opt {
             ($key:ident) => {
                 if let Some(ref v) = colors.$key { colors_tbl.insert(stringify!($key), toml_edit::value(v.clone())); }
@@ -1286,10 +1293,9 @@ pub fn add_project_allowed_command(
 
 /// List MCP servers from `CODEX_HOME/config.toml`.
 /// Returns `(enabled, disabled)` lists of `(name, McpServerConfig)`.
-pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(
-    Vec<(String, McpServerConfig)>,
-    Vec<(String, McpServerConfig)>,
-)> {
+type McpServerList = Vec<(String, McpServerConfig)>;
+
+pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(McpServerList, McpServerList)> {
     let read_path = resolve_code_path_for_read(code_home, Path::new(CONFIG_TOML_FILE));
     let doc_str = std::fs::read_to_string(&read_path).unwrap_or_default();
     let doc = doc_str.parse::<DocumentMut>().unwrap_or_else(|_| DocumentMut::new());
@@ -1499,7 +1505,12 @@ pub fn add_mcp_server(
     if !doc.as_table().contains_key("mcp_servers") {
         doc["mcp_servers"] = TomlItem::Table(toml_edit::Table::new());
     }
-    let tbl = doc["mcp_servers"].as_table_mut().unwrap();
+    if !doc["mcp_servers"].is_table() {
+        doc["mcp_servers"] = TomlItem::Table(toml_edit::Table::new());
+    }
+    let Some(tbl) = doc["mcp_servers"].as_table_mut() else {
+        unreachable!("mcp_servers was just initialized as a table");
+    };
 
     let McpServerConfig {
         transport,
@@ -1631,10 +1642,13 @@ pub fn set_mcp_server_enabled(
 
     // Helper to ensure table exists
     fn ensure_table<'a>(doc: &'a mut DocumentMut, key: &'a str) -> &'a mut toml_edit::Table {
-        if !doc.as_table().contains_key(key) {
+        if !doc.as_table().contains_key(key) || !doc[key].is_table() {
             doc[key] = TomlItem::Table(toml_edit::Table::new());
         }
-        doc[key].as_table_mut().unwrap()
+        let Some(table) = doc[key].as_table_mut() else {
+            unreachable!("table was just initialized");
+        };
+        table
     }
 
     let mut changed = false;
@@ -1672,8 +1686,6 @@ pub fn set_mcp_server_enabled(
     Ok(changed)
 }
 
-/// Apply a single dotted-path override onto a TOML value.
-
 fn env_path(var: &str) -> std::io::Result<Option<PathBuf>> {
     match std::env::var(var) {
         Ok(val) if !val.trim().is_empty() => {
@@ -1699,9 +1711,7 @@ fn compute_legacy_code_home_dir() -> Option<PathBuf> {
     if env_overrides_present() {
         return None;
     }
-    let Some(home) = home_dir() else {
-        return None;
-    };
+    let home = home_dir()?;
     let candidate = home.join(".codex");
     if path_exists(&candidate) {
         Some(candidate)
@@ -1795,9 +1805,7 @@ pub(crate) fn load_instructions(code_dir: Option<&Path>) -> Option<String> {
             if env_overrides_present() {
                 return None;
             }
-            let Some(legacy_home) = legacy_code_home_dir() else {
-                return None;
-            };
+            let legacy_home = legacy_code_home_dir()?;
             let legacy_path = legacy_home.join("AGENTS.md");
             match std::fs::read_to_string(&legacy_path) {
                 Ok(s) => s,

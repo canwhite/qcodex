@@ -2,6 +2,7 @@ use crate::BrowserError;
 use crate::Result;
 use crate::config::BrowserConfig;
 use crate::config::WaitStrategy;
+use crate::global;
 use crate::page::Page;
 use chromiumoxide::Browser;
 use chromiumoxide::BrowserConfig as CdpConfig;
@@ -24,7 +25,9 @@ use tokio::time::sleep;
 use tracing::debug;
 use tracing::info;
 use tracing::warn;
-use crate::global;
+
+type NavigationCallback = Box<dyn Fn(String) + Send + Sync>;
+type LastAppliedMetrics = (i64, i64, f64, bool, std::time::Instant);
 
 #[derive(Deserialize)]
 struct JsonVersion {
@@ -45,6 +48,7 @@ impl BrowserLaunchLockFile {
             .create(true)
             .read(true)
             .write(true)
+            .truncate(false)
             .open(&lock_path)?;
 
         let start = Instant::now();
@@ -334,13 +338,13 @@ pub struct BrowserManager {
     assets: Arc<Mutex<Option<Arc<crate::assets::AssetManager>>>>,
     user_data_dir: Arc<Mutex<Option<String>>>,
     cleanup_profile_on_drop: Arc<Mutex<bool>>,
-    navigation_callback: Arc<tokio::sync::RwLock<Option<Box<dyn Fn(String) + Send + Sync>>>>,
+    navigation_callback: Arc<tokio::sync::RwLock<Option<NavigationCallback>>>,
     navigation_monitor_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     viewport_monitor_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Gate to temporarily disable all automatic viewport corrections (post-initial set)
     auto_viewport_correction_enabled: Arc<tokio::sync::RwLock<bool>>,
     /// Track last applied device metrics to avoid redundant overrides
-    last_metrics_applied: Arc<Mutex<Option<(i64, i64, f64, bool, std::time::Instant)>>>,
+    last_metrics_applied: Arc<Mutex<Option<LastAppliedMetrics>>>,
 }
 
 #[derive(Debug)]
@@ -1211,8 +1215,8 @@ impl BrowserManager {
                 info!("No existing tabs found; waiting briefly for targets");
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 let mut pages2 = browser.pages().await?;
-                if !pages2.is_empty() {
-                    pages2.pop().unwrap()
+                if let Some(page) = pages2.pop() {
+                    page
                 } else {
                     // As a last resort, still create a tab, but log it clearly
                     warn!("Creating a new about:blank tab because none were available");
@@ -1934,10 +1938,13 @@ impl BrowserManager {
 
         // Initialize assets manager if needed
         let mut assets_guard = self.assets.lock().await;
-        if assets_guard.is_none() {
-            *assets_guard = Some(Arc::new(crate::assets::AssetManager::new().await?));
-        }
-        let assets = assets_guard.as_ref().unwrap().clone();
+        let assets = if let Some(assets) = assets_guard.as_ref() {
+            Arc::clone(assets)
+        } else {
+            let assets = Arc::new(crate::assets::AssetManager::new().await?);
+            *assets_guard = Some(Arc::clone(&assets));
+            assets
+        };
         drop(assets_guard);
 
         // Get current config

@@ -358,7 +358,7 @@ impl EnvironmentContextSnapshot {
             map.insert("reasoning_effort", reasoning.clone());
         }
 
-        let encoded = serde_json::to_vec(&map).expect("serializing fingerprint fields");
+        let encoded = serde_json::to_vec(&map).unwrap_or_default();
         let mut sha = Sha1::new();
         sha.update(encoded);
         format!("{:x}", sha.finalize())

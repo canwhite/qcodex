@@ -44,6 +44,10 @@ pub(crate) fn apply_toml_override(root: &mut TomlValue, path: &str, value: TomlV
     }
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "configuration warnings must remain visible before logging is initialized"
+)]
 fn warn_on_suspicious_cli_overrides(cli_paths: &[String]) {
     if cli_paths.is_empty() {
         return;
@@ -66,6 +70,10 @@ fn warn_on_suspicious_cli_overrides(cli_paths: &[String]) {
     }
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "configuration warnings must remain visible before logging is initialized"
+)]
 fn warn_on_unknown_cli_overrides(cli_paths: &[String], ignored_paths: &[String]) {
     if cli_paths.is_empty() || ignored_paths.is_empty() {
         return;

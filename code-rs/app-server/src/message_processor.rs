@@ -565,9 +565,11 @@ impl MessageProcessor {
     }
 
     fn load_effective_config(&self, cwd: Option<&str>) -> Result<Config, JSONRPCErrorError> {
-        let mut overrides = code_core::config::ConfigOverrides::default();
-        overrides.code_linux_sandbox_exe = self.base_config.code_linux_sandbox_exe.clone();
-        overrides.cwd = cwd.map(PathBuf::from);
+        let overrides = code_core::config::ConfigOverrides {
+            code_linux_sandbox_exe: self.base_config.code_linux_sandbox_exe.clone(),
+            cwd: cwd.map(PathBuf::from),
+            ..Default::default()
+        };
 
         Config::load_with_cli_overrides(self.cli_overrides.clone(), overrides).map_err(|err| {
             JSONRPCErrorError {
@@ -837,14 +839,20 @@ fn set_toml_path(root: &mut TomlValue, key_path: &str, value: TomlValue) -> Resu
         ));
     }
 
+    let Some((key, parent_segments)) = segments.split_last() else {
+        return Err(config_write_error(
+            ConfigWriteErrorCode::ConfigPathNotFound,
+            "Config key path must not be empty",
+        ));
+    };
     let mut current = root;
-    for segment in &segments[..segments.len() - 1] {
+    for segment in parent_segments {
         if !current.is_table() {
             *current = TomlValue::Table(Default::default());
         }
-        let table = current
-            .as_table_mut()
-            .expect("table should exist after conversion");
+        let TomlValue::Table(table) = current else {
+            unreachable!("current value was just converted to a table");
+        };
         current = table
             .entry((*segment).to_string())
             .or_insert_with(|| TomlValue::Table(Default::default()));
@@ -853,16 +861,10 @@ fn set_toml_path(root: &mut TomlValue, key_path: &str, value: TomlValue) -> Resu
     if !current.is_table() {
         *current = TomlValue::Table(Default::default());
     }
-    let table = current
-        .as_table_mut()
-        .expect("table should exist after conversion");
-    table.insert(
-        segments
-            .last()
-            .expect("segments cannot be empty")
-            .to_string(),
-        value,
-    );
+    let TomlValue::Table(table) = current else {
+        unreachable!("current value was just converted to a table");
+    };
+    table.insert((*key).to_string(), value);
 
     Ok(())
 }
@@ -880,14 +882,20 @@ fn upsert_toml_path(
         ));
     }
 
+    let Some((key, parent_segments)) = segments.split_last() else {
+        return Err(config_write_error(
+            ConfigWriteErrorCode::ConfigPathNotFound,
+            "Config key path must not be empty",
+        ));
+    };
     let mut current = root;
-    for segment in &segments[..segments.len() - 1] {
+    for segment in parent_segments {
         if !current.is_table() {
             *current = TomlValue::Table(Default::default());
         }
-        let table = current
-            .as_table_mut()
-            .expect("table should exist after conversion");
+        let TomlValue::Table(table) = current else {
+            unreachable!("current value was just converted to a table");
+        };
         current = table
             .entry((*segment).to_string())
             .or_insert_with(|| TomlValue::Table(Default::default()));
@@ -897,13 +905,10 @@ fn upsert_toml_path(
         *current = TomlValue::Table(Default::default());
     }
 
-    let table = current
-        .as_table_mut()
-        .expect("table should exist after conversion");
-    let key = segments
-        .last()
-        .expect("segments cannot be empty")
-        .to_string();
+    let TomlValue::Table(table) = current else {
+        unreachable!("current value was just converted to a table");
+    };
+    let key = (*key).to_string();
     if let Some(existing) = table.get_mut(&key) {
         merge_toml_values(existing, value);
     } else {
@@ -1012,11 +1017,13 @@ mod tests {
             "outbound initialized flag should be set"
         );
 
-        let opted_out = outbound_opted_out_notification_methods
-            .read()
-            .expect("read lock");
-        assert!(opted_out.contains("configWarning"));
-        assert!(opted_out.contains("codex/event/session_configured"));
+        {
+            let opted_out = outbound_opted_out_notification_methods
+                .read()
+                .expect("read lock");
+            assert!(opted_out.contains("configWarning"));
+            assert!(opted_out.contains("codex/event/session_configured"));
+        }
 
         // Drain initialize response envelope to ensure processing completed.
         let envelope = outgoing_rx.recv().await.expect("initialize response envelope");

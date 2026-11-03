@@ -222,7 +222,7 @@ impl DebugLogger {
             let guard = self
                 .session_usage_file
                 .lock()
-                .expect("usage lock poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if guard.as_os_str().is_empty() {
                 return Ok(());
             }
@@ -269,7 +269,7 @@ impl DebugLogger {
         let mut guard = self
             .session_usage_file
             .lock()
-            .expect("usage lock poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = path;
 
         self.set_turn_latency_file(session_id)
@@ -293,7 +293,7 @@ impl DebugLogger {
         let mut guard = self
             .turn_latency_file
             .lock()
-            .expect("turn latency lock poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = Some(path);
 
         Ok(())
@@ -308,7 +308,7 @@ impl DebugLogger {
             let guard = self
                 .turn_latency_file
                 .lock()
-                .expect("turn latency lock poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard.clone()
         };
 

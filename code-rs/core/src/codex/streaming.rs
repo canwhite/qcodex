@@ -845,11 +845,9 @@ pub(super) async fn submission_loop(
                 if let Some(inner) = Arc::get_mut(&mut new_session) {
                     inner.self_handle = weak_handle;
                 }
-                sess = Some(new_session);
+                sess = Some(Arc::clone(&new_session));
                 if config.memories_enabled && config.memories.generate_memories {
-                    crate::memories::maybe_spawn_memory_refresh(Arc::clone(
-                        sess.as_ref().expect("session initialized"),
-                    ));
+                    crate::memories::maybe_spawn_memory_refresh(Arc::clone(&new_session));
                 }
                 if let Some(sess_arc) = &sess
                     && !config.always_allow_commands.is_empty() {
@@ -886,7 +884,7 @@ pub(super) async fn submission_loop(
                     crate::message_history::history_metadata(&config).await;
 
                 // ack
-                let sess_arc = sess.as_ref().expect("session initialized");
+                let sess_arc = &new_session;
                 let events = std::iter::once(sess_arc.make_event(
                     INITIAL_SUBMIT_ID,
                     EventMsg::SessionConfigured(SessionConfiguredEvent {
@@ -961,7 +959,7 @@ pub(super) async fn submission_loop(
                     manager.set_event_sender(agent_tx);
                     drop(manager);
 
-                    let sess_for_agents = sess.as_ref().expect("session active").clone();
+                    let sess_for_agents = Arc::clone(&new_session);
                     // Forward agent events to the main event channel
                     let tx_event_clone = tx_event.clone();
                     tokio::spawn(async move {
@@ -1978,12 +1976,13 @@ async fn request_auto_context_decision(sess: &Arc<Session>, prompt: &Prompt) -> 
     while let Some(event) = stream.next().await {
         match event {
             Ok(ResponseEvent::OutputTextDelta { delta, .. }) => out.push_str(&delta),
-            Ok(ResponseEvent::OutputItemDone { item, .. }) => {
-                if let ResponseItem::Message { content, .. } = item {
-                    for content_item in content {
-                        if let ContentItem::OutputText { text } = content_item {
-                            out.push_str(&text);
-                        }
+            Ok(ResponseEvent::OutputItemDone {
+                item: ResponseItem::Message { content, .. },
+                ..
+            }) => {
+                for content_item in content {
+                    if let ContentItem::OutputText { text } = content_item {
+                        out.push_str(&text);
                     }
                 }
             }
@@ -2156,14 +2155,14 @@ async fn maybe_run_auto_context_compaction(
         phase: None,
     };
 
-    let mut prompt = Prompt::default();
-    prompt.input = vec![developer_message, user_message];
-    prompt.include_additional_instructions = false;
-    prompt.text_format = Some(TextFormat {
-        r#type: "json_schema".to_string(),
-        name: Some("auto_context_decision".to_string()),
-        strict: Some(true),
-        schema: Some(serde_json::json!({
+    let mut prompt = Prompt {
+        input: vec![developer_message, user_message],
+        include_additional_instructions: false,
+        text_format: Some(TextFormat {
+            r#type: "json_schema".to_string(),
+            name: Some("auto_context_decision".to_string()),
+            strict: Some(true),
+            schema: Some(serde_json::json!({
             "type": "object",
             "properties": {
                 "should_compact_now": { "type": "boolean" },
@@ -2178,8 +2177,10 @@ async fn maybe_run_auto_context_compaction(
                 "recent_context_still_useful"
             ],
             "additionalProperties": false
-        })),
-    });
+            })),
+        }),
+        ..Default::default()
+    };
     prompt.set_log_tag("auto_context/judge");
 
     emit_auto_context_phase(
@@ -2572,7 +2573,7 @@ async fn run_agent(
             review_history.push(response_item.clone());
         } else {
             // Record to history but we'll handle ephemeral images separately
-            sess.record_conversation_items(&[response_item.clone()])
+            sess.record_conversation_items(std::slice::from_ref(&response_item))
                 .await;
         }
         initial_response_item = Some(response_item);
@@ -2619,7 +2620,7 @@ async fn run_agent(
                 if is_review_mode {
                     review_history.push(first_pending.clone());
                 } else {
-                    sess.record_conversation_items(&[first_pending.clone()])
+                    sess.record_conversation_items(std::slice::from_ref(&first_pending))
                         .await;
                 }
                 initial_response_item = Some(first_pending);
@@ -3707,10 +3708,11 @@ fn extract_mcp_tool_selection_from_history(history: &[ResponseItem]) -> Option<V
                     search_call_ids.insert(call_id.clone());
                 }
             }
-            ResponseItem::ToolSearchCall { call_id, .. } => {
-                if let Some(call_id) = call_id {
-                    search_call_ids.insert(call_id.clone());
-                }
+            ResponseItem::ToolSearchCall {
+                call_id: Some(call_id),
+                ..
+            } => {
+                search_call_ids.insert(call_id.clone());
             }
             ResponseItem::FunctionCallOutput { call_id, output } => {
                 if !search_call_ids.contains(call_id) {
@@ -4655,6 +4657,10 @@ async fn try_run_turn(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "stream item handling keeps stable ordering metadata explicit"
+)]
 async fn handle_response_item(
     sess: &Session,
     turn_diff_tracker: &mut TurnDiffTracker,
@@ -4705,8 +4711,9 @@ async fn handle_response_item(
                 let stamped = sess.make_event_with_order(&eid, EventMsg::AgentReasoning(AgentReasoningEvent { text }), order, seq_hint);
                 sess.tx_event.send(stamped).await.ok();
             }
-            if sess.show_raw_agent_reasoning && content.is_some() {
-                let content = content.unwrap();
+            if sess.show_raw_agent_reasoning
+                && let Some(content) = content
+            {
                 for item in content.into_iter() {
                     let text = match item {
                         ReasoningItemContent::ReasoningText { text } => text,
@@ -4877,6 +4884,10 @@ async fn handle_response_item(
     Ok(output)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "image generation events preserve protocol and ordering fields explicitly"
+)]
 async fn handle_image_generation_call(
     sess: &Session,
     sub_id: &str,
@@ -5165,6 +5176,10 @@ mod preview_tests {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "tool dispatch preserves protocol and ordering fields explicitly"
+)]
 async fn handle_function_call(
     sess: &Session,
     turn_diff_tracker: &mut TurnDiffTracker,
@@ -6047,13 +6062,15 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
                 url: &str,
                 timeout: Duration,
             ) -> Result<BrowserFetchOutcome, String> {
-                let mut config = CodexBrowserConfig::default();
-                config.enabled = true;
-                config.headless = true;
-                config.fullpage = false;
-                config.segments_max = 2;
-                config.persist_profile = false;
-                config.idle_timeout_ms = 10_000;
+                let config = CodexBrowserConfig {
+                    enabled: true,
+                    headless: true,
+                    fullpage: false,
+                    segments_max: 2,
+                    persist_profile: false,
+                    idle_timeout_ms: 10_000,
+                    ..Default::default()
+                };
 
                 let manager = BrowserManager::new(config);
                 manager.set_enabled_sync(true);
@@ -7684,6 +7701,10 @@ async fn handle_gh_run_wait(
         None
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "workflow summary fields map directly to the external run record"
+    )]
     fn run_summary_text(
         run_id: &str,
         branch: &str,
@@ -10140,6 +10161,10 @@ async fn handle_list_agents(
     ).await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "container execution preserves tool and ordering context explicitly"
+)]
 async fn handle_container_exec_with_params(
     params: ExecParams,
     sess: &Session,
@@ -10664,9 +10689,9 @@ async fn handle_container_exec_with_params(
                         "checkout" => {
                             if args.contains(&"--") {
                                 Some(SensitiveGitKind::PathCheckout)
-                            } else if args.iter().any(|a| matches!(*a, "-b" | "-B" | "--orphan" | "--detach")) {
-                                Some(SensitiveGitKind::BranchChange)
-                            } else if args.first().copied() == Some("-") {
+                            } else if args.iter().any(|a| matches!(*a, "-b" | "-B" | "--orphan" | "--detach"))
+                                || args.first().copied() == Some("-")
+                            {
                                 Some(SensitiveGitKind::BranchChange)
                             } else if let Some(first_arg) = args.first() {
                                 let a = *first_arg;
@@ -12120,10 +12145,8 @@ pub(super) fn add_pending_screenshot(
 #[allow(dead_code)]
 fn consume_pending_screenshots(sess: &Session) -> Vec<ResponseInputItem> {
     let mut pending = sess.pending_browser_screenshots.lock().unwrap();
-    let screenshots = pending.drain(..).collect::<Vec<_>>();
-
-    screenshots
-        .into_iter()
+    pending
+        .drain(..)
         .map(|path| {
             let metadata = format!(
                 "[EPHEMERAL:browser_screenshot] Browser screenshot at {}",
@@ -12601,7 +12624,7 @@ async fn handle_browser_click(sess: &Session, ctx: &ToolCallCtx, arguments: Stri
                         Ok((x, y)) => Ok((x, y, "Mouse up".to_string())),
                         Err(e) => Err(e),
                     },
-                    "click" | _ => match browser_manager.click_at_current().await {
+                    _ => match browser_manager.click_at_current().await {
                         Ok((x, y)) => Ok((x, y, "Clicked".to_string())),
                         Err(e) => Err(e),
                     },
@@ -14279,6 +14302,10 @@ mod cleanup_tests {
     }
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "the opt-in compact trace is explicitly requested as raw stderr diagnostics"
+)]
 pub(super) fn debug_history(label: &str, items: &[ResponseItem]) {
     let preview: Vec<String> = items
         .iter()

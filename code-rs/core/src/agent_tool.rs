@@ -884,6 +884,10 @@ impl AgentManager {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "agent creation options remain explicit at the tool boundary"
+    )]
     pub async fn create_agent(
         &mut self,
         model: String,
@@ -914,6 +918,10 @@ impl AgentManager {
         .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "agent creation options remain explicit at the tool boundary"
+    )]
     pub async fn create_agent_with_config(
         &mut self,
         model: String,
@@ -946,6 +954,10 @@ impl AgentManager {
     }
 
     #[allow(dead_code)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "agent creation options remain explicit at the tool boundary"
+    )]
     pub async fn create_agent_with_options(
         &mut self,
         model: String,
@@ -981,6 +993,10 @@ impl AgentManager {
             .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "agent orchestration keeps lifecycle options explicit"
+    )]
     async fn create_agent_internal(
         &mut self,
         model: String,
@@ -1558,6 +1574,10 @@ fn prefer_json_result(path: Option<&PathBuf>, fallback: Result<String, String>) 
     fallback
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "external agent execution keeps permission and routing context explicit"
+)]
 async fn execute_model_with_permissions(
     agent_id: &str,
     model: &str,
@@ -1792,8 +1812,10 @@ async fn execute_model_with_permissions(
     // Proactively check for presence of external command before spawn when not
     // using the current executable fallback. This avoids confusing OS errors
     // like "program not found" and lets us surface a cleaner message.
-    if !(family == "codex" || family == "code" || (family == "cloud" && config.is_none()))
-        && !external_agent_command_exists(&command_for_spawn)
+    if !(family == "codex"
+        || family == "code"
+        || external_agent_command_exists(&command_for_spawn)
+        || family == "cloud" && config.is_none())
     {
         return Err(format_agent_not_found_error(&command, &command_for_spawn));
     }
@@ -2189,10 +2211,10 @@ async fn run_agent_smoke_test(cfg: AgentConfig) -> Result<String, String> {
         _ = timer.as_mut() => {
             task.abort();
             let _ = task.await;
-            return Err(format!(
+            Err(format!(
                 "agent validation timed out after {}s",
                 AGENT_SMOKE_TEST_TIMEOUT.as_secs()
-            ));
+            ))
         }
     }
 }
@@ -2694,9 +2716,7 @@ pub struct AgentToolRequest {
 }
 
 pub(crate) fn normalize_agent_name(name: Option<String>) -> Option<String> {
-    let Some(name) = name.map(|value| value.trim().to_string()) else {
-        return None;
-    };
+    let name = name.map(|value| value.trim().to_string())?;
 
     if name.is_empty() {
         return None;
@@ -2739,15 +2759,11 @@ fn canonicalize_agent_word_boundaries(input: &str) -> String {
 
         if !current.is_empty()
             && let Some(prev) = prev_char {
-                if prev.is_ascii_lowercase() && ch.is_ascii_uppercase() {
-                    split = true;
-                } else if prev.is_ascii_uppercase()
-                    && ch.is_ascii_uppercase()
-                    && uppercase_run > 0
-                    && next_char.is_some_and(|c| c.is_ascii_lowercase())
-                {
-                    split = true;
-                }
+                split = (prev.is_ascii_lowercase() && ch.is_ascii_uppercase())
+                    || (prev.is_ascii_uppercase()
+                        && ch.is_ascii_uppercase()
+                        && uppercase_run > 0
+                        && next_char.is_some_and(|c| c.is_ascii_lowercase()));
             }
 
         if split {
@@ -2933,6 +2949,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the test lock intentionally serializes process-wide environment mutation"
+    )]
     async fn read_only_agents_use_code_binary_path() {
         let _lock = env_lock().lock().expect("env lock");
         let _reset_path = EnvReset::capture("PATH");
@@ -2970,6 +2990,10 @@ mod tests {
 
     #[cfg(not(target_os = "windows"))]
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the test lock intentionally serializes process-wide environment mutation"
+    )]
     async fn claude_agent_uses_local_install_when_not_on_path() {
         let _lock = env_lock().lock().expect("env lock");
         let _reset_path = EnvReset::capture("PATH");
@@ -3384,7 +3408,7 @@ mod tests {
         manager.prune_terminal_agents();
 
         let archived_id = "agent-0";
-        assert!(manager.agents.get(archived_id).is_none());
+        assert!(!manager.agents.contains_key(archived_id));
         let archived = manager
             .get_agent(archived_id)
             .expect("pruned agent should remain queryable");

@@ -192,6 +192,10 @@ pub(crate) struct ToolsConfigParams<'a> {
 }
 
 impl ToolsConfig {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "tool availability flags are explicit inputs to protocol configuration"
+    )]
     pub fn new(
         model_family: &ModelFamily,
         approval_policy: AskForApproval,

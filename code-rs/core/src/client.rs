@@ -175,10 +175,12 @@ struct CompactHistoryResponse {
 fn rate_limit_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(
+        let Ok(regex) = Regex::new(
             r"(?i)(?:please\s+try\s+again|try\s+again|please\s+retry|retry|try)\s+(?:in|after)\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|secs|seconds?)"
-        )
-            .expect("valid rate limit regex")
+        ) else {
+            unreachable!("the static rate-limit regex must compile");
+        };
+        regex
     })
 }
 
@@ -256,7 +258,7 @@ fn is_reasoning_summary_rejected(error: &Error) -> bool {
     // Only treat as rejection if it's specifically an "unsupported_value" error
     // for the reasoning.summary parameter, or if the message explicitly says
     // the organization must be verified for reasoning summaries.
-    (param_matches && code_matches) || (code_matches && message_matches)
+    code_matches && (param_matches || message_matches)
 }
 
 fn map_unauthorized_outcome(
@@ -332,6 +334,10 @@ fn reasoning_effort_for_provider(
 }
 
 impl ModelClient {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the client constructor keeps session-scoped dependencies explicit"
+    )]
     pub fn new(
         config: Arc<Config>,
         auth_manager: Option<Arc<AuthManager>>,
@@ -2951,10 +2957,8 @@ async fn process_sse<S>(
                                 current_item_id = Some(item_id.clone());
                             }
                         }
-                        ResponseItem::Reasoning { id, .. } => {
-                            if let Some(id) = id {
-                                current_item_id = Some(id.clone());
-                            }
+                        ResponseItem::Reasoning { id: Some(id), .. } => {
+                            current_item_id = Some(id.clone());
                         }
                         _ => {}
                     }
@@ -3283,7 +3287,7 @@ async fn stream_from_fixture(
     let rdr = std::io::Cursor::new(content);
     let stream = ReaderStream::new(rdr).map_err(CodexErr::Io);
     // Create a dummy debug logger for testing
-    let debug_logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+    let debug_logger = Arc::new(Mutex::new(DebugLogger::new(false)?));
     tokio::spawn(process_sse(
         stream,
         tx_event,

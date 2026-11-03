@@ -161,10 +161,7 @@ impl Page {
                         .map(|d| d.as_millis() as i128)
                         .unwrap_or(0);
                     // Join args into a readable string; also keep raw values
-                    let text = match serde_json::to_string(&evt.args) {
-                        Ok(s) => s,
-                        Err(_) => String::new(),
-                    };
+                    let text = serde_json::to_string(&evt.args).unwrap_or_default();
                     let item = serde_json::json!({
                         "ts_unix_ms": ts,
                         "level": format!("{:?}", evt.r#type),
@@ -542,6 +539,7 @@ impl Page {
     ///   with from_surface(true) immediately (safe when not visible). Fallbacks stay conservative.
     /// - Final fallback: If two attempts with false fail even while visible, we try true once rather than
     ///   failing entirely. This prevents chronic timeouts; the flash trade-off is acceptable as a last resort.
+    ///
     /// Do not loosen these guarantees casually; they were tuned to balance reliability and no-flash UX.
     async fn capture_screenshot_with_retry(
         &self,
@@ -2145,6 +2143,8 @@ impl Page {
         let user_code_with_source = format!("{code}\n//# sourceURL=browser_js_user_code.js");
 
         // Use the improved JavaScript harness
+        let serialized_user_code = serde_json::to_string(&user_code_with_source)
+            .map_err(|err| BrowserError::CdpError(format!("failed to serialize user code: {err}")))?;
         let wrapped = format!(
             r#"(async () => {{
   const __meta = {{ startTs: Date.now(), urlBefore: location.href }};
@@ -2203,7 +2203,7 @@ impl Page {
 
   try {{
     const AsyncFunction = Object.getPrototypeOf(async function(){{}}).constructor;
-    const __userCode = {0};
+    const __userCode = {serialized_user_code};
     const evaluator = new AsyncFunction('__code', '"use strict"; return eval(__code);');
     const raw = await evaluator(__userCode);
     const value = (raw === undefined ? null : __normalize(raw));
@@ -2234,8 +2234,7 @@ impl Page {
     console.error = __orig.error;
     console.debug = __orig.debug;
   }}
-}})()"#,
-            serde_json::to_string(&user_code_with_source).expect("Failed to serialize user code")
+}})()"#
         );
 
         tracing::debug!("Executing JavaScript code: {}", code);

@@ -502,6 +502,10 @@ macro_rules! server_request_definitions {
         ),* $(,)?
     ) => {
         /// Request initiated from the server and sent to the client.
+        #[allow(
+            clippy::large_enum_variant,
+            reason = "protocol request variants preserve their generated wire payload types"
+        )]
         #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
         #[serde(tag = "method", rename_all = "camelCase")]
         pub enum ServerRequest {
@@ -516,6 +520,10 @@ macro_rules! server_request_definitions {
             )*
         }
 
+        #[allow(
+            clippy::large_enum_variant,
+            reason = "protocol payload variants preserve their generated parameter types"
+        )]
         #[derive(Debug, Clone, PartialEq, JsonSchema)]
         pub enum ServerRequestPayload {
             $( $variant($params), )*

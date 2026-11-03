@@ -289,7 +289,9 @@ type SharedCatalog = Arc<AsyncMutex<Option<rollout_catalog::SessionCatalog>>>;
 fn catalog_cache_handle(code_home: &Path) -> SharedCatalog {
     static CACHE: OnceCell<Mutex<HashMap<PathBuf, SharedCatalog>>> = OnceCell::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = cache.lock().expect("session catalog cache poisoned");
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     guard
         .entry(code_home.to_path_buf())
         .or_insert_with(|| Arc::new(AsyncMutex::new(None)))

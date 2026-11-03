@@ -151,7 +151,7 @@ mod tests {
                 assert!(prompt.contains("Task for /audit"));
                 assert_eq!(summary, "/audit security pass");
             }
-            other => panic!("unexpected result: {:?}", other),
+            other => panic!("unexpected result: {other:?}"),
         }
     }
 

@@ -408,7 +408,7 @@ pub struct TextFormat {
 /// Limits the number of screenshots in the input to a maximum of 5.
 /// Keeps the first screenshot and the last 4 screenshots.
 /// Replaces removed screenshots with a placeholder message.
-fn limit_screenshots_in_input(input: &mut Vec<ResponseItem>) {
+fn limit_screenshots_in_input(input: &mut [ResponseItem]) {
     // Find all screenshot positions
     let mut screenshot_positions = Vec::new();
     
@@ -474,7 +474,7 @@ const SPARK_IMAGE_PLACEHOLDER: &str =
 
 /// Replace `input_image` payloads with text placeholders for models that are
 /// known not to accept image inputs.
-pub(crate) fn replace_image_payloads_for_model(input: &mut Vec<ResponseItem>, model_slug: &str) {
+pub(crate) fn replace_image_payloads_for_model(input: &mut [ResponseItem], model_slug: &str) {
     if !model_slug.to_ascii_lowercase().contains("-spark") {
         return;
     }
@@ -832,13 +832,15 @@ mod tests {
     fn prepend_developer_messages_precedes_environment_context() {
         use std::path::PathBuf;
 
-        let mut prompt = Prompt::default();
-        prompt.environment_context = Some(EnvironmentContext::new(
-            Some(PathBuf::from("/workspace")),
-            None,
-            None,
-            None,
-        ));
+        let mut prompt = Prompt {
+            environment_context: Some(EnvironmentContext::new(
+                Some(PathBuf::from("/workspace")),
+                None,
+                None,
+                None,
+            )),
+            ..Default::default()
+        };
         let coordinator_text = "Coordinator guidance";
         prompt
             .prepend_developer_messages

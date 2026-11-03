@@ -1,4 +1,7 @@
-#![allow(clippy::unwrap_used)]
+#![expect(
+    clippy::expect_used,
+    reason = "test fixture construction and assertions intentionally fail fast"
+)]
 
 mod common;
 

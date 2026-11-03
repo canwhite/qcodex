@@ -1,3 +1,8 @@
+#![expect(
+    clippy::await_holding_lock,
+    reason = "these tests serialize process-wide environment mutation across async discovery"
+)]
+
 use anyhow::Result;
 use code_core::custom_prompts::{default_prompts_dir, discover_prompts_in};
 use once_cell::sync::Lazy;

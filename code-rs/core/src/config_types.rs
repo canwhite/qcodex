@@ -1151,6 +1151,10 @@ impl<'de> Deserialize<'de> for ThemeConfig {
     where
         D: Deserializer<'de>,
     {
+        #[expect(
+            clippy::large_enum_variant,
+            reason = "the untagged compatibility representation mirrors the accepted TOML shapes"
+        )]
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum ThemeConfigRepr {

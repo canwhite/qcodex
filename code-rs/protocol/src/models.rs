@@ -165,6 +165,10 @@ impl PermissionProfile {
     }
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde serialize_with callbacks must accept a reference to the field"
+)]
 fn serialize_network_permission<S>(
     network: &Option<bool>,
     serializer: S,

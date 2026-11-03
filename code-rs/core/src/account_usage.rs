@@ -280,22 +280,21 @@ fn truncate_to_hour(ts: DateTime<Utc>) -> DateTime<Utc> {
         .with_minute(0)
         .and_then(|dt| dt.with_second(0))
         .and_then(|dt| dt.with_nanosecond(0))
-        .expect("valid hour truncation");
+        .unwrap_or(naive);
     Utc.from_utc_datetime(&trimmed)
 }
 
 fn truncate_to_day(ts: DateTime<Utc>) -> DateTime<Utc> {
     let date = ts.date_naive();
-    let start = date.and_hms_opt(0, 0, 0).expect("valid day truncation");
+    let start = date.and_hms_opt(0, 0, 0).unwrap_or(ts.naive_utc());
     Utc.from_utc_datetime(&start)
 }
 
 fn truncate_to_month(ts: DateTime<Utc>) -> DateTime<Utc> {
     let date = ts.date_naive();
     let month_start = NaiveDate::from_ymd_opt(date.year(), date.month(), 1)
-        .expect("valid month truncation")
-        .and_hms_opt(0, 0, 0)
-        .expect("valid month start time");
+        .and_then(|start| start.and_hms_opt(0, 0, 0))
+        .unwrap_or(ts.naive_utc());
     Utc.from_utc_datetime(&month_start)
 }
 
@@ -363,6 +362,7 @@ where
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(&path)?;
 
     file.lock_exclusive()?;
@@ -627,15 +627,9 @@ fn record_threshold_log(
             && previous_logged
                 .is_some_and(|logged| observed_at.signed_duration_since(logged) >= UNKNOWN_RESET_RELOG_INTERVAL);
 
-        let mut should_clear = false;
-
-        if reset_moved_earlier {
-            should_clear = true;
-        } else if prev_reset_elapsed && !logged_after_prev_reset {
-            should_clear = true;
-        } else if unknown_reset_elapsed {
-            should_clear = true;
-        }
+        let should_clear = reset_moved_earlier
+            || (prev_reset_elapsed && !logged_after_prev_reset)
+            || unknown_reset_elapsed;
 
         existing.reset_at = new_reset;
 
@@ -659,6 +653,10 @@ fn record_threshold_log(
     true
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the warning log record fields are kept explicit at this persistence boundary"
+)]
 fn append_rate_limit_warning_log(
     code_home: &Path,
     account_id: &str,
@@ -703,6 +701,10 @@ fn append_rate_limit_warning_log(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the warning record fields are kept explicit at this public persistence boundary"
+)]
 pub fn record_rate_limit_warning(
     code_home: &Path,
     account_id: &str,

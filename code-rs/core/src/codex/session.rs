@@ -219,8 +219,10 @@ pub(super) enum FollowUpTurnAction {
     PostTurnPendingInput,
     ManualCompact(String),
     PendingInput,
-    QueuedUserInput(QueuedUserInput),
+    QueuedUserInput(Box<QueuedUserInput>),
 }
+
+type ScreenshotFingerprint = (PathBuf, Vec<u8>, Vec<u8>);
 
 fn take_follow_up_turn_action(state: &mut State) -> Option<FollowUpTurnAction> {
     if !state.pending_post_turn_input.is_empty() {
@@ -240,9 +242,9 @@ fn take_follow_up_turn_action(state: &mut State) -> Option<FollowUpTurnAction> {
     if state.pending_user_input.is_empty() {
         None
     } else {
-        Some(FollowUpTurnAction::QueuedUserInput(
+        Some(FollowUpTurnAction::QueuedUserInput(Box::new(
             state.pending_user_input.remove(0),
-        ))
+        )))
     }
 }
 
@@ -291,7 +293,7 @@ pub(super) fn spawn_usage_task<F>(task: F)
 where
     F: FnOnce() + Send + 'static,
 {
-    let _ = tokio::task::spawn_blocking(task);
+    std::mem::drop(tokio::task::spawn_blocking(task));
 }
 
 pub(super) fn format_retry_eta(retry_after: &RetryAfter) -> Option<String> {
@@ -501,7 +503,8 @@ pub(crate) struct Session {
     /// Track the last system status to detect changes
     pub(super) last_system_status: Mutex<Option<String>>,
     /// Track the last screenshot path and hash to detect changes
-    pub(super) last_screenshot_info: Mutex<Option<(PathBuf, Vec<u8>, Vec<u8>)>>, // (path, phash, dhash)
+    /// Last screenshot path, perceptual hash, and difference hash.
+    pub(super) last_screenshot_info: Mutex<Option<ScreenshotFingerprint>>,
     pub(super) time_budget: Mutex<Option<RunTimeBudget>>,
     pub(super) confirm_guard: ConfirmGuardRuntime,
     pub(super) project_hooks: ProjectHooks,
@@ -1383,6 +1386,10 @@ impl Session {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "approval requests preserve command, sandbox, and event ordering fields explicitly"
+    )]
     pub async fn request_command_approval(
         &self,
         sub_id: String,

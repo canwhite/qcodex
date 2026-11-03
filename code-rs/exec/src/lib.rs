@@ -196,10 +196,8 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
         }
         if auto_drive_goal
             .as_ref()
-            .is_some_and(std::string::String::is_empty)
+            .is_none_or(std::string::String::is_empty)
         {
-            auto_drive_goal = Some(trimmed_prompt.to_string());
-        } else if auto_drive_goal.is_none() {
             auto_drive_goal = Some(trimmed_prompt.to_string());
         }
     }
@@ -1881,11 +1879,9 @@ fn parse_auto_review_summary(raw: &str) -> AutoReviewSummary {
 }
 
 fn summary_from_runs(outputs: &[ReviewOutputEvent]) -> AutoReviewSummary {
-    if outputs.is_empty() {
+    let Some(latest) = outputs.last() else {
         return AutoReviewSummary::default();
-    }
-
-    let latest = outputs.last().unwrap();
+    };
     let mut summary = summary_from_output(latest);
 
     if let Some(idx) = outputs.iter().rposition(|o| !o.findings.is_empty()) {
@@ -2484,9 +2480,9 @@ fn write_review_json(
     outputs: &[code_core::protocol::ReviewOutputEvent],
     snapshot: Option<&code_core::protocol::ReviewSnapshotInfo>,
 ) -> std::io::Result<()> {
-    if outputs.is_empty() {
+    let Some(latest) = outputs.last() else {
         return Ok(());
-    }
+    };
 
     #[derive(serde::Serialize)]
     struct ReviewRun<'a> {
@@ -2505,9 +2501,6 @@ fn write_review_json(
         snapshot: Option<&'a code_core::protocol::ReviewSnapshotInfo>,
     }
 
-    let latest = outputs
-        .last()
-        .expect("outputs is non-empty due to earlier guard");
     let runs: Vec<ReviewRun<'_>> = outputs
         .iter()
         .enumerate()
@@ -2800,8 +2793,7 @@ mod tests {
     #[test]
     fn strip_scope_removes_previous_commit_scope() {
         let prompt = format!(
-            "Please review.\nReview scope: commit abc123 (parent deadbeef)\nMore text\n\n{}",
-            AUTO_RESOLVE_REVIEW_FOLLOWUP
+            "Please review.\nReview scope: commit abc123 (parent deadbeef)\nMore text\n\n{AUTO_RESOLVE_REVIEW_FOLLOWUP}"
         );
         let cleaned = strip_scope_from_prompt(&prompt);
         assert!(!cleaned.contains("abc123"));
@@ -3020,7 +3012,7 @@ mod tests {
         let user_line = RolloutLine {
             timestamp: last_event_at.to_string(),
             item: RolloutItem::ResponseItem(ResponseItem::Message {
-                id: Some(format!("user-{}", session_id)),
+                id: Some(format!("user-{session_id}")),
                 role: "user".to_string(),
                 content: vec![ContentItem::InputText {
                     text: message.to_string(),
@@ -3033,10 +3025,10 @@ mod tests {
         let assistant_line = RolloutLine {
             timestamp: last_event_at.to_string(),
             item: RolloutItem::ResponseItem(ResponseItem::Message {
-                id: Some(format!("msg-{}", session_id)),
+                id: Some(format!("msg-{session_id}")),
                 role: "assistant".to_string(),
                 content: vec![ContentItem::OutputText {
-                    text: format!("Ack: {}", message),
+                    text: format!("Ack: {message}"),
                 }],
                 end_turn: None,
                 phase: None,
@@ -3093,8 +3085,7 @@ mod tests {
         let path_str = path.to_string_lossy();
         assert!(
             path_str.contains("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
-            "resolved path should reference newer session, got {}",
-            path_str
+            "resolved path should reference newer session, got {path_str}"
         );
     }
 
@@ -3125,8 +3116,7 @@ mod tests {
         let path_str = path.to_string_lossy();
         assert!(
             path_str.contains("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
-            "resolved path should match requested session, got {}",
-            path_str
+            "resolved path should match requested session, got {path_str}"
         );
     }
 
@@ -3170,8 +3160,7 @@ mod tests {
         let path_str = path.to_string_lossy();
         assert!(
             path_str.contains("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
-            "resolved path should ignore mtime drift, got {}",
-            path_str
+            "resolved path should ignore mtime drift, got {path_str}"
         );
     }
 

@@ -9,7 +9,10 @@ use std::path::Path;
 struct GoalRecord { objective: String, status: String, #[serde(default)] token_budget: Option<i64>, #[serde(default)] blocker: Option<String>, #[serde(default)] blocker_count: u8 }
 
 fn save(path: &Path, record: &GoalRecord) -> std::io::Result<()> {
-    std::fs::create_dir_all(path.parent().expect("goal path parent"))?;
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "goal path has no parent")
+    })?;
+    std::fs::create_dir_all(parent)?;
     let temporary = path.with_extension("json.tmp");
     std::fs::write(&temporary, serde_json::to_vec(record).map_err(std::io::Error::other)?)?;
     std::fs::rename(temporary, path)

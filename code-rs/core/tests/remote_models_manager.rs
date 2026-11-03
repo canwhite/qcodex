@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "test fixture construction intentionally fails fast"
+)]
+
 use chrono::Utc;
 use code_core::AuthManager;
 use code_core::CodexAuth;

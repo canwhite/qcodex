@@ -1,4 +1,9 @@
 #![allow(dead_code)]
+#![expect(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "shared test setup and assertions intentionally fail fast"
+)]
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};

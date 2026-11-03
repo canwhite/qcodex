@@ -533,14 +533,12 @@ pub fn run_patch_harness(
             }
         }
 
-    let go_files: Vec<PathBuf> = changed_paths
+    let has_go_files = changed_paths
         .iter()
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("go"))
-        .cloned()
-        .collect();
+        .any(|path| path.extension().and_then(|ext| ext.to_str()) == Some("go"));
     if functional_enabled
         && cfg.tools.golangci_lint.unwrap_or(true)
-        && !go_files.is_empty()
+        && has_go_files
         && is_allowed("golangci-lint")
         && has_go_module(cwd)
         && let Some(exe) = which(Path::new("golangci-lint")) {

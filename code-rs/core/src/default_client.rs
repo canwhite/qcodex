@@ -109,16 +109,16 @@ pub fn requested_model_headers(originator_override: Option<&str>, model: &str) -
     let user_agent = get_code_user_agent_for_model(originator_override, model);
 
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "version",
-        HeaderValue::from_str(&requested_version)
-            .expect("requested model version should be a valid header value"),
-    );
-    headers.insert(
-        reqwest::header::USER_AGENT,
-        HeaderValue::from_str(&user_agent)
-            .expect("requested model user-agent should be a valid header value"),
-    );
+    if let Ok(value) = HeaderValue::from_str(&requested_version) {
+        headers.insert("version", value);
+    } else {
+        tracing::warn!("omitting invalid requested model version header");
+    }
+    if let Ok(value) = HeaderValue::from_str(&user_agent) {
+        headers.insert(reqwest::header::USER_AGENT, value);
+    } else {
+        tracing::warn!("omitting invalid requested model user-agent header");
+    }
     headers
 }
 
@@ -249,6 +249,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the test lock intentionally serializes process-wide environment mutation"
+    )]
     async fn with_originator_env_cleared_async<F, Fut>(f: F)
     where
         F: FnOnce() -> Fut,

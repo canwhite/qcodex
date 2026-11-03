@@ -3,7 +3,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -19,6 +19,10 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
 use crate::codex::Session;
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -322,7 +326,7 @@ pub(crate) fn merge_effective_subscription(state: &SubscriptionState) -> Subscri
 
 #[allow(dead_code)]
 pub(crate) fn set_bridge_levels(levels: Vec<String>) {
-    let mut state = SUBSCRIPTIONS.lock().unwrap();
+    let mut state = lock_unpoisoned(&SUBSCRIPTIONS);
     let mut sub = state
         .session
         .clone()
@@ -334,7 +338,7 @@ pub(crate) fn set_bridge_levels(levels: Vec<String>) {
 
 #[allow(dead_code)]
 pub(crate) fn set_bridge_subscription(levels: Vec<String>, capabilities: Vec<String>) {
-    let mut state = SUBSCRIPTIONS.lock().unwrap();
+    let mut state = lock_unpoisoned(&SUBSCRIPTIONS);
     let mut sub = state
         .session
         .clone()
@@ -347,7 +351,7 @@ pub(crate) fn set_bridge_subscription(levels: Vec<String>, capabilities: Vec<Str
 
 #[allow(dead_code)]
 pub(crate) fn set_bridge_filter(filter: &str) {
-    let mut state = SUBSCRIPTIONS.lock().unwrap();
+    let mut state = lock_unpoisoned(&SUBSCRIPTIONS);
     let mut sub = state
         .session
         .clone()
@@ -366,7 +370,7 @@ pub(crate) fn send_bridge_control(action: &str, args: serde_json::Value) {
     })
     .to_string();
 
-    if let Some(sender) = CONTROL_SENDER.lock().unwrap().as_ref() {
+    if let Some(sender) = lock_unpoisoned(&CONTROL_SENDER).as_ref() {
         let _ = sender.send(msg);
     }
 }
@@ -399,7 +403,7 @@ pub(crate) fn spawn_bridge_listener(session: std::sync::Arc<Session>) {
                                     sub.llm_filter
                                 ))
                                 .await;
-                            *LAST_OVERRIDE_FINGERPRINT.lock().unwrap() = Some(fp);
+                            *lock_unpoisoned(&LAST_OVERRIDE_FINGERPRINT) = Some(fp);
                             last_override_seen = Some(fp);
                         }
                     }
@@ -409,7 +413,7 @@ pub(crate) fn spawn_bridge_listener(session: std::sync::Arc<Session>) {
                             session
                                 .record_bridge_event("Code Bridge subscription override removed or invalid; reverted to defaults (errors only).".to_string())
                                 .await;
-                            *LAST_OVERRIDE_FINGERPRINT.lock().unwrap() = None;
+                            *lock_unpoisoned(&LAST_OVERRIDE_FINGERPRINT) = None;
                             last_override_seen = None;
                         }
                     }
@@ -422,7 +426,7 @@ pub(crate) fn spawn_bridge_listener(session: std::sync::Arc<Session>) {
                             .to_string(),
                     )
                     .await;
-                *LAST_OVERRIDE_FINGERPRINT.lock().unwrap() = None;
+                *lock_unpoisoned(&LAST_OVERRIDE_FINGERPRINT) = None;
                 last_override_seen = None;
             }
 
@@ -474,31 +478,31 @@ fn read_subscription_override(path: &Path) -> Result<SubscriptionOverride> {
 }
 
 pub(crate) fn set_workspace_subscription(sub: Option<Subscription>) {
-    let mut state = SUBSCRIPTIONS.lock().unwrap();
+    let mut state = lock_unpoisoned(&SUBSCRIPTIONS);
     state.workspace = sub;
     maybe_resubscribe(&mut state);
 }
 
 pub(crate) fn set_session_subscription(sub: Option<Subscription>) {
-    let mut state = SUBSCRIPTIONS.lock().unwrap();
+    let mut state = lock_unpoisoned(&SUBSCRIPTIONS);
     state.session = sub;
     maybe_resubscribe(&mut state);
 }
 
 pub(crate) fn force_resubscribe() {
-    let mut state = SUBSCRIPTIONS.lock().unwrap();
+    let mut state = lock_unpoisoned(&SUBSCRIPTIONS);
     state.last_sent = None;
     maybe_resubscribe(&mut state);
 }
 
 pub(crate) fn get_effective_subscription() -> Subscription {
-    let state = SUBSCRIPTIONS.lock().unwrap();
+    let state = lock_unpoisoned(&SUBSCRIPTIONS);
     merge_effective_subscription(&state)
 }
 
 #[allow(dead_code)]
 pub(crate) fn get_workspace_subscription() -> Option<Subscription> {
-    SUBSCRIPTIONS.lock().unwrap().workspace.clone()
+    lock_unpoisoned(&SUBSCRIPTIONS).workspace.clone()
 }
 
 pub(crate) fn persist_workspace_subscription(cwd: &Path, sub: Option<Subscription>) -> anyhow::Result<()> {
@@ -538,7 +542,7 @@ fn maybe_resubscribe(state: &mut SubscriptionState) {
     })
     .to_string();
 
-    if let Some(sender) = CONTROL_SENDER.lock().unwrap().as_ref() {
+    if let Some(sender) = lock_unpoisoned(&CONTROL_SENDER).as_ref() {
         let _ = sender.send(msg);
     }
 
@@ -677,7 +681,7 @@ async fn connect_and_listen(meta: BridgeMeta, session: Arc<Session>, cwd: &Path)
 
     // initial subscribe using effective merged subscription
     let initial = {
-        let state = SUBSCRIPTIONS.lock().unwrap();
+        let state = lock_unpoisoned(&SUBSCRIPTIONS);
         merge_effective_subscription(&state)
     };
     let subscribe = serde_json::json!({
@@ -689,14 +693,14 @@ async fn connect_and_listen(meta: BridgeMeta, session: Arc<Session>, cwd: &Path)
     .to_string();
     tx.send(Message::Text(subscribe)).await?;
     {
-        let mut state = SUBSCRIPTIONS.lock().unwrap();
+        let mut state = lock_unpoisoned(&SUBSCRIPTIONS);
         state.last_sent = Some(initial);
     }
 
     // set up control sender channel and forwarder (moves tx)
     let (ctrl_tx, mut ctrl_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     {
-        let mut guard = CONTROL_SENDER.lock().unwrap();
+        let mut guard = lock_unpoisoned(&CONTROL_SENDER);
         *guard = Some(ctrl_tx);
     }
 
@@ -794,7 +798,7 @@ async fn connect_and_listen(meta: BridgeMeta, session: Arc<Session>, cwd: &Path)
     let _ = batch_handle.await;
     // clear sender on exit
     {
-        let mut guard = CONTROL_SENDER.lock().unwrap();
+        let mut guard = lock_unpoisoned(&CONTROL_SENDER);
         *guard = None;
     }
     Ok(())

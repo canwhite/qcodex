@@ -2245,7 +2245,7 @@ mod tests {
         }
 
         assert!(
-            processor.conversation_listeners.get(&subscription_id).is_none(),
+            !processor.conversation_listeners.contains_key(&subscription_id),
             "listener should be removed by owner"
         );
         assert_eq!(cancel_rx.try_recv(), Ok(()));

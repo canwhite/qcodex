@@ -39,6 +39,10 @@ pub async fn spawn_command_under_seatbelt(
     .await
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "the opt-in seatbelt dump is explicitly requested as raw stderr diagnostics"
+)]
 fn create_seatbelt_command_args(
     command: Vec<String>,
     sandbox_policy: &SandboxPolicy,
