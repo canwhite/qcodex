@@ -366,8 +366,8 @@ impl MarkdownStreamCollector {
             source.push('\n');
         }
         let source = unwrap_markdown_language_fence_if_enabled(source);
-        let source = strip_empty_fenced_code_blocks(&source);
-        source
+
+        strip_empty_fenced_code_blocks(&source)
     }
 
     /// Returns true if the internal buffer currently ends with a newline.
@@ -488,7 +488,7 @@ fn is_short_plain_word(s: &str) -> bool {
     if t.is_empty() || t.len() > 5 {
         return false;
     }
-    t.chars().all(|c| c.is_alphanumeric())
+    t.chars().all(char::is_alphanumeric)
 }
 
 /// fence helpers are provided by `crate::render::markdown_utils`

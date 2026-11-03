@@ -232,8 +232,8 @@ impl ModelSelectionView {
                 }
             }
             Some(EntryKind::Preset(idx)) => {
-                if let Some(old) = previous_flat.get(idx) {
-                    if let Some((new_idx, _)) = self
+                if let Some(old) = previous_flat.get(idx)
+                    && let Some((new_idx, _)) = self
                         .flat_presets
                         .iter()
                         .enumerate()
@@ -247,7 +247,6 @@ impl ModelSelectionView {
                             + usize::from(include_follow_chat);
                         next_selected = Some(new_idx + prefix);
                     }
-                }
             }
             None => {}
         }
@@ -439,10 +438,9 @@ impl ModelSelectionView {
                         Some(ServiceTier::Fast)
                     };
                     self.current_service_tier = next_service_tier;
-                    let _ = self.app_event_tx.send(AppEvent::UpdateServiceTierSelection {
+                    self.app_event_tx.send(AppEvent::UpdateServiceTierSelection {
                         service_tier: next_service_tier,
                     });
-                    return;
                 }
                 EntryKind::ContextMode => {
                     let next_context_mode = match self.current_context_mode {
@@ -451,58 +449,55 @@ impl ModelSelectionView {
                         Some(ContextMode::Auto) => Some(ContextMode::Disabled),
                     };
                     self.current_context_mode = next_context_mode;
-                    let _ = self.app_event_tx.send(AppEvent::UpdateSessionContextModeSelection {
+                    self.app_event_tx.send(AppEvent::UpdateSessionContextModeSelection {
                         context_mode: next_context_mode,
                     });
-                    return;
                 }
                 EntryKind::FollowChat => {
                     match self.target {
                         ModelSelectionTarget::Session => {}
                         ModelSelectionTarget::Review => {
-                            let _ =
-                                self.app_event_tx.send(AppEvent::UpdateReviewUseChatModel(true));
+                            self.app_event_tx.send(AppEvent::UpdateReviewUseChatModel(true));
                         }
                         ModelSelectionTarget::Planning => {
-                            let _ = self
+                            self
                                 .app_event_tx
                                 .send(AppEvent::UpdatePlanningUseChatModel(true));
                         }
                         ModelSelectionTarget::AutoDrive => {
-                            let _ = self
+                            self
                                 .app_event_tx
                                 .send(AppEvent::UpdateAutoDriveUseChatModel(true));
                         }
                         ModelSelectionTarget::ReviewResolve => {
-                            let _ = self
+                            self
                                 .app_event_tx
                                 .send(AppEvent::UpdateReviewResolveUseChatModel(true));
                         }
                         ModelSelectionTarget::AutoReview => {
-                            let _ = self
+                            self
                                 .app_event_tx
                                 .send(AppEvent::UpdateAutoReviewUseChatModel(true));
                         }
                         ModelSelectionTarget::AutoReviewResolve => {
-                            let _ = self
+                            self
                                 .app_event_tx
                                 .send(AppEvent::UpdateAutoReviewResolveUseChatModel(true));
                         }
                     }
                     self.send_closed(true);
-                    return;
                 }
                 EntryKind::Preset(idx) => {
                     if let Some(flat_preset) = self.flat_presets.get(*idx) {
                         match self.target {
                             ModelSelectionTarget::Session => {
-                                let _ = self.app_event_tx.send(AppEvent::UpdateModelSelection {
+                                self.app_event_tx.send(AppEvent::UpdateModelSelection {
                                     model: flat_preset.model.clone(),
                                     effort: Some(flat_preset.effort),
                                 });
                             }
                             ModelSelectionTarget::Review => {
-                                let _ = self
+                                self
                                     .app_event_tx
                                     .send(AppEvent::UpdateReviewModelSelection {
                                         model: flat_preset.model.clone(),
@@ -510,7 +505,7 @@ impl ModelSelectionView {
                                     });
                             }
                             ModelSelectionTarget::Planning => {
-                                let _ = self
+                                self
                                     .app_event_tx
                                     .send(AppEvent::UpdatePlanningModelSelection {
                                         model: flat_preset.model.clone(),
@@ -518,7 +513,7 @@ impl ModelSelectionView {
                                     });
                             }
                             ModelSelectionTarget::AutoDrive => {
-                                let _ = self
+                                self
                                     .app_event_tx
                                     .send(AppEvent::UpdateAutoDriveModelSelection {
                                         model: flat_preset.model.clone(),
@@ -526,7 +521,7 @@ impl ModelSelectionView {
                                     });
                             }
                             ModelSelectionTarget::ReviewResolve => {
-                                let _ = self
+                                self
                                     .app_event_tx
                                     .send(AppEvent::UpdateReviewResolveModelSelection {
                                         model: flat_preset.model.clone(),
@@ -534,7 +529,7 @@ impl ModelSelectionView {
                                     });
                             }
                             ModelSelectionTarget::AutoReview => {
-                                let _ = self
+                                self
                                     .app_event_tx
                                     .send(AppEvent::UpdateAutoReviewModelSelection {
                                         model: flat_preset.model.clone(),
@@ -542,7 +537,7 @@ impl ModelSelectionView {
                                     });
                             }
                             ModelSelectionTarget::AutoReviewResolve => {
-                                let _ = self
+                                self
                                     .app_event_tx
                                     .send(AppEvent::UpdateAutoReviewResolveModelSelection {
                                         model: flat_preset.model.clone(),
@@ -757,7 +752,7 @@ impl ModelSelectionView {
                 Span::styled("Use chat model", label_style),
             ];
             if !status.is_empty() {
-                spans.push(Span::raw(format!("  {}", status)));
+                spans.push(Span::raw(format!("  {status}")));
             }
             lines.push(ModelLine {
                 line: Line::from(spans),
@@ -1036,7 +1031,7 @@ impl ModelSelectionView {
         if self.is_complete {
             return;
         }
-        let _ = self.app_event_tx.send(AppEvent::ModelSelectionClosed {
+        self.app_event_tx.send(AppEvent::ModelSelectionClosed {
             target: self.target.into(),
             accepted,
         });

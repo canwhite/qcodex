@@ -55,11 +55,11 @@ impl App<'_> {
         // Split queues so interactive input never waits behind bulk updates.
         let (high_tx, app_event_rx_high) = channel();
         let (bulk_tx, app_event_rx_bulk) = channel();
-        let app_event_tx = AppEventSender::new_dual(high_tx.clone(), bulk_tx.clone());
+        let app_event_tx = AppEventSender::new_dual(high_tx, bulk_tx);
 
         {
             let remote_tx = app_event_tx.clone();
-            let remote_auth_manager = auth_manager.clone();
+            let remote_auth_manager = auth_manager;
             let remote_provider = config.model_provider.clone();
             let remote_code_home = config.code_home.clone();
             let remote_using_chatgpt_hint = config.using_chatgpt_auth;
@@ -79,7 +79,7 @@ impl App<'_> {
                 let auth_mode = remote_auth_manager
                     .auth()
                     .map(|auth| auth.mode)
-                    .or_else(|| {
+                    .or({
                         if remote_using_chatgpt_hint {
                             Some(AuthMode::ChatGPT)
                         } else {

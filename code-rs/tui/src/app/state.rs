@@ -126,7 +126,10 @@ impl FrameTimer {
 
     pub(super) fn schedule(self: &Arc<Self>, duration: Duration, tx: AppEventSender) {
         let deadline = Instant::now() + duration;
-        let mut state = self.state.lock().unwrap();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.deadlines.push(Reverse(deadline));
         let should_spawn = if !state.worker_running {
             state.worker_running = true;
@@ -141,7 +144,10 @@ impl FrameTimer {
             let timer = Arc::clone(self);
             let tx_for_thread = tx.clone();
             if thread_spawner::spawn_lightweight("frame-timer", move || timer.run(tx_for_thread)).is_none() {
-                let mut state = self.state.lock().unwrap();
+                let mut state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 state.worker_running = false;
                 let drained = state.deadlines.len();
                 state.deadlines.clear();
@@ -155,7 +161,10 @@ impl FrameTimer {
     }
 
     fn run(self: Arc<Self>, tx: AppEventSender) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
             let deadline = match state.deadlines.peek().copied() {
                 Some(Reverse(deadline)) => deadline,
@@ -170,7 +179,10 @@ impl FrameTimer {
                 state.deadlines.pop();
                 drop(state);
                 tx.send(AppEvent::RequestRedraw);
-                state = self.state.lock().unwrap();
+                state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 continue;
             }
 
@@ -432,8 +444,8 @@ impl BufferDiffProfiler {
         let current_buffer = frame.buffer.clone();
         self.frame_seq = self.frame_seq.saturating_add(1);
 
-        if let Some(prev_buffer) = &self.prev {
-            if self.should_log_frame() {
+        if let Some(prev_buffer) = &self.prev
+            && self.should_log_frame() {
                 if prev_buffer.area != current_buffer.area {
                     tracing::info!(
                         target: "code_tui::buffer_diff",
@@ -534,14 +546,13 @@ impl BufferDiffProfiler {
                     );
                 }
             }
-        }
 
         self.prev = Some(current_buffer);
     }
 
     fn should_log_frame(&self) -> bool {
         let interval = self.log_every.max(1) as u64;
-        interval == 1 || self.frame_seq % interval == 0
+        interval == 1 || self.frame_seq.is_multiple_of(interval)
     }
 }
 

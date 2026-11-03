@@ -53,7 +53,8 @@ impl PromptsSettingsView {
         let mut name_field = FormTextField::new_single_line();
         name_field.set_filter(InputFilter::Id);
         let body_field = FormTextField::new_multi_line();
-        let view = Self {
+
+        Self {
             prompts,
             selected: 0,
             focus: Focus::List,
@@ -63,8 +64,7 @@ impl PromptsSettingsView {
             app_event_tx,
             is_complete: false,
             mode: Mode::List,
-        };
-        view
+        }
     }
 
     pub fn handle_key_event_direct(&mut self, key: KeyEvent) -> bool {
@@ -170,7 +170,7 @@ impl PromptsSettingsView {
             };
             let name_span = Span::styled(format!("{arrow} /{}", p.name), name_style);
             let preview_span = Span::styled(
-                format!("  {}", preview),
+                format!("  {preview}"),
                 Style::default().fg(colors::text_dim()),
             );
             let mut spans = vec![name_span];
@@ -350,11 +350,9 @@ impl PromptsSettingsView {
             return Err("Name must use letters, numbers, '-', '_' or '.'".to_string());
         }
 
-        let builtin: Vec<String> = built_in_slash_commands()
+        if built_in_slash_commands()
             .into_iter()
-            .map(|(n, _)| n.to_ascii_lowercase())
-            .collect();
-        if builtin.contains(&slug.to_ascii_lowercase()) {
+            .map(|(n, _)| n.to_ascii_lowercase()).any(|x| x == slug.to_ascii_lowercase()) {
             return Err("Name conflicts with a built-in slash command".to_string());
         }
 
@@ -402,7 +400,7 @@ impl PromptsSettingsView {
 
         // Update local list
         let mut updated = self.prompts.clone();
-        let new_entry = CustomPrompt { name: name.clone(), path, content: body.clone(), description: None, argument_hint: None };
+        let new_entry = CustomPrompt { name, path, content: body, description: None, argument_hint: None };
         if self.selected < updated.len() {
             updated[self.selected] = new_entry;
         } else {

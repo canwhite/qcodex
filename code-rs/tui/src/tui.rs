@@ -159,8 +159,8 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
         std::env::var("CODE_FORCE_FULL_BG_PAINT").map(|v| v == "1").unwrap_or(false)
     };
 
-    if should_paint_bg {
-        if let Ok((cols, rows)) = crossterm::terminal::size() {
+    if should_paint_bg
+        && let Ok((cols, rows)) = crossterm::terminal::size() {
             // Build a single line of spaces once to reduce allocations.
             let blank = " ".repeat(cols as usize);
             // Set explicit fg/bg to the theme's colors while painting.
@@ -173,7 +173,6 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
             // profile default background (e.g., white) between frames.
             execute!(stdout(), MoveTo(0, 0), SetColors(crossterm::style::Colors::new(theme_fg.into(), theme_bg.into())))?;
         }
-    }
 
     // Wrap stdout in a larger BufWriter to reduce syscalls and flushes.
     // A larger buffer significantly helps during heavy scrolling where many cells change.
@@ -350,7 +349,6 @@ fn should_enable_alternate_scroll_mode() -> bool {
     !matches!(env::var("TERM_PROGRAM"), Ok(value) if value.eq_ignore_ascii_case("Apple_Terminal"))
 }
 
-/// Clear the current screen (normal buffer) with the theme background and reset cursor.
 // Removed: clear_screen_with_theme — we no longer hard-clear the normal buffer in terminal mode.
 
 /// Determine whether to enable xterm focus change tracking for the current

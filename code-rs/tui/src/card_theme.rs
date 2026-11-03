@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods, reason = "card gradients require truecolor interpolation")]
+
 use ratatui::prelude::Color;
 use std::time::Duration;
 

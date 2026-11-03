@@ -94,7 +94,7 @@ pub(crate) fn append_markdown_with_opener_and_cwd_and_bold(
                 // downstream renderer can surface a border + title without losing lang info.
                 if fenced {
                     let label = _lang.clone().unwrap_or_else(|| "text".to_string());
-                    let sentinel = format!("⟦LANG:{}⟧", label);
+                    let sentinel = format!("⟦LANG:{label}⟧");
                     lines.push(Line::from(Span::styled(sentinel, Style::default().fg(code_bg).bg(code_bg))));
                 }
 

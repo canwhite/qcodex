@@ -100,7 +100,7 @@ impl UpdateSettingsView {
                 );
                 return;
             }
-            let Some(latest) = state.latest_version.clone() else {
+            let Some(latest) = state.latest_version else {
                 self.app_event_tx.send_background_event_with_ticket(
                     &self.ticket,
                     "✅ Code is already up to date.".to_string(),
@@ -129,8 +129,7 @@ impl UpdateSettingsView {
         self.app_event_tx.send_background_event_with_ticket(
             &self.ticket,
             format!(
-                "↻ Complete the guided terminal steps for `{}` then restart Code to finish upgrading to {}.",
-                display, latest
+                "↻ Complete the guided terminal steps for `{display}` then restart Code to finish upgrading to {latest}."
             ),
         );
         self.is_complete = true;
@@ -162,7 +161,7 @@ impl UpdateSettingsView {
         } else if let Some(latest) = &state.latest_version {
             format!("{} → {}", self.current_version, latest)
         } else {
-            format!("{}", self.current_version)
+            self.current_version.to_string()
         };
 
         let run_prefix = if run_selected { "› " } else { "  " };

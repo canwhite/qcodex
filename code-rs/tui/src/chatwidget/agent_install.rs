@@ -884,7 +884,7 @@ fn extract_first_json_object(input: &str) -> Option<String> {
                 }
                 depth -= 1;
                 if depth == 0 {
-                    let Some(s) = start else { return None; };
+                    let s = start?;
                     return Some(input[s..=idx].to_string());
                 }
             }

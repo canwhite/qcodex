@@ -368,15 +368,14 @@ impl SkillsSettingsView {
     }
 
     fn save_current(&mut self) {
-        if let Some(skill) = self.skills.get(self.selected) {
-            if skill.scope != SkillScope::User {
+        if let Some(skill) = self.skills.get(self.selected)
+            && skill.scope != SkillScope::User {
                 self.status = Some((
                     "Only user skills can be saved".to_string(),
                     Style::default().fg(colors::error()),
                 ));
                 return;
             }
-        }
 
         let name = self.name_field.text().trim().to_string();
         let body = self.body_field.text().to_string();
@@ -429,7 +428,7 @@ impl SkillsSettingsView {
             path,
             description,
             scope: SkillScope::User,
-            content: body.clone(),
+            content: body,
         };
         if self.selected < updated.len() {
             updated[self.selected] = new_entry;
@@ -459,15 +458,14 @@ impl SkillsSettingsView {
             return;
         }
 
-        if let Err(err) = fs::remove_file(&skill.path) {
-            if err.kind() != std::io::ErrorKind::NotFound {
+        if let Err(err) = fs::remove_file(&skill.path)
+            && err.kind() != std::io::ErrorKind::NotFound {
                 self.status = Some((
                     format!("Delete failed: {err}"),
                     Style::default().fg(colors::error()),
                 ));
                 return;
             }
-        }
 
         if let Some(parent) = skill.path.parent() {
             let _ = fs::remove_dir(parent);

@@ -176,7 +176,7 @@ fn run_refresh(
 
         let proto_snapshot = snapshot.context("rate limit snapshot missing from response")?;
 
-        let snapshot: RateLimitSnapshotEvent = proto_snapshot.clone();
+        let snapshot: RateLimitSnapshotEvent = proto_snapshot;
 
         let (record_account_id, record_plan) = if let Some(account) = &stored_account {
             (
@@ -202,8 +202,8 @@ fn run_refresh(
             )
         };
 
-        if let Some(account_id) = record_account_id.as_deref() {
-            if let Err(err) = account_usage::record_rate_limit_snapshot(
+        if let Some(account_id) = record_account_id.as_deref()
+            && let Err(err) = account_usage::record_rate_limit_snapshot(
                 &config.code_home,
                 account_id,
                 record_plan.as_deref(),
@@ -212,7 +212,6 @@ fn run_refresh(
             ) {
                 tracing::warn!("Failed to persist rate limit snapshot: {err}");
             }
-        }
 
         #[cfg(feature = "code-fork")]
         handle_rate_limit(&snapshot, &app_event_tx);
@@ -237,12 +236,10 @@ fn run_refresh(
 }
 
 fn build_runtime() -> Result<Runtime> {
-    Ok(
-        tokio::runtime::Builder::new_multi_thread()
+    tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
-            .context("building rate limit refresh runtime")?,
-    )
+            .context("building rate limit refresh runtime")
 }
 
 fn build_model_client(

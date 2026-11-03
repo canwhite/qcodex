@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods, reason = "runtime auto-drive themes preserve configured RGB colors")]
+
 use std::env;
 
 use ratatui::style::{Color, Modifier, Style};

@@ -68,6 +68,12 @@ impl AutoContinueModeFixture {
     }
 }
 
+impl Default for ChatWidgetHarness {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChatWidgetHarness {
     pub fn new() -> Self {
         // Stabilize time-of-day dependent greeting so VT100 snapshots remain deterministic.
@@ -430,7 +436,7 @@ impl ChatWidgetHarness {
             .overlay
             .as_ref()
             .and_then(|overlay| overlay.agents_content())
-            .map(|content| content.is_agent_editor_active())
+            .map(super::settings_overlay::AgentsSettingsContent::is_agent_editor_active)
             .unwrap_or(false)
     }
 
@@ -458,12 +464,10 @@ impl ChatWidgetHarness {
             if let Some(running) = cell
                 .as_any_mut()
                 .downcast_mut::<history_cell::RunningToolCallCell>()
-            {
-                if running.state().call_id.as_deref() == Some(call_id) {
+                && running.state().call_id.as_deref() == Some(call_id) {
                     running.override_elapsed_for_testing(duration);
                     break;
                 }
-            }
         }
     }
 
@@ -493,7 +497,7 @@ impl ChatWidgetHarness {
         let mut rendered = render_markdown_text(&markdown);
         let mut lines: Vec<Line<'static>> = Vec::with_capacity(rendered.lines.len() + 1);
         lines.push(Line::from("assistant"));
-        lines.extend(rendered.lines.drain(..));
+        lines.append(&mut rendered.lines);
         let state = history_cell::plain_message_state_from_lines(lines, HistoryCellType::Assistant);
         self.chat.history_push_plain_state(state);
     }
@@ -664,7 +668,7 @@ impl ChatWidgetHarness {
                         seconds,
                     );
                 } else {
-                    let _ = chat.auto_handle_countdown(chat.auto_state.countdown_id, 0);
+                    chat.auto_handle_countdown(chat.auto_state.countdown_id, 0);
                 }
                 if countdown == Some(0) {
                     chat.auto_state.on_prompt_submitted();

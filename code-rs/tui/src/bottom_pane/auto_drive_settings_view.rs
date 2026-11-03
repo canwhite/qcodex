@@ -575,7 +575,7 @@ impl AutoDriveSettingsView {
                     }
                 }
             }
-            1 | 2 | 3 => {
+            1..=3 => {
                 let checkbox = if enabled { "[x]" } else { "[ ]" };
                 spans.push(Span::styled(format!("{checkbox} {label}"), label_style));
             }
