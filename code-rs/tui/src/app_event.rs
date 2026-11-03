@@ -271,7 +271,12 @@ pub(crate) enum AppEvent {
     SideConversationForked {
         parent_session_id: Uuid,
         request_id: u64,
-        new_conv: Redacted<code_core::EphemeralConversation>,
+        new_conv: Redacted<code_core::NewConversation>,
+        cleanup_owner: Redacted<
+            std::sync::Arc<
+                std::sync::Mutex<Option<code_core::EphemeralConversationCleanup>>,
+            >,
+        >,
         initial_message: Option<UserMessage>,
     },
 
@@ -284,6 +289,13 @@ pub(crate) enum AppEvent {
 
     /// Return from the active temporary side conversation to its parent.
     ReturnFromSide,
+
+    /// Cleanup for a returned temporary side conversation completed.
+    SideConversationCleanupFinished {
+        request_id: u64,
+        child_session_id: Uuid,
+        timed_out: bool,
+    },
 
     /// Restore workspace state according to the chosen undo scope.
     PerformUndoRestore {

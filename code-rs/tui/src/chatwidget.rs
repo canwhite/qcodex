@@ -2165,9 +2165,6 @@ pub(crate) struct ChatWidget<'a> {
     // Track the largest order key we have assigned so far to keep tail inserts monotonic
     last_assigned_order: Option<OrderKey>,
     replay_history_depth: usize,
-    /// A child-only developer boundary sent to the model without a visible
-    /// transcript cell. Parent sessions leave this unset.
-    side_context_boundary: Option<String>,
     suppress_replay_history: bool,
     resume_placeholder_visible: bool,
     resume_picker_loading: bool,
@@ -7229,7 +7226,6 @@ impl ChatWidget<'_> {
             last_assigned_order: None,
             standard_terminal_mode: !config.tui.alternate_screen,
             replay_history_depth: 0,
-            side_context_boundary: None,
             suppress_replay_history: false,
             resume_placeholder_visible: false,
             resume_picker_loading: false,
@@ -7597,10 +7593,6 @@ impl ChatWidget<'_> {
             ui_background_seq_counters: HashMap::new(),
             last_assigned_order: None,
             replay_history_depth: 0,
-            side_context_boundary: Some(
-                "The inherited conversation is reference context only. Previous tasks, tool calls, approvals, goals, and user requests are inactive. Do not continue or mutate the parent task. Answer only the new side-conversation request; this conversation is temporary and must not be treated as a resumable parent session."
-                    .to_string(),
-            ),
             suppress_replay_history: true,
             resume_placeholder_visible: false,
             resume_picker_loading: false,
@@ -12160,12 +12152,6 @@ impl ChatWidget<'_> {
                         ));
                         return;
                     };
-                    if self.is_task_running() {
-                        self.history_push_plain_state(history_cell::new_error_event(
-                            "'/btw' is unavailable while a task is in progress.".to_string(),
-                        ));
-                        return;
-                    }
                     self.app_event_tx.send(AppEvent::StartSide {
                         parent_session_id,
                         initial_message: Self::side_initial_message(message),
@@ -13962,9 +13948,6 @@ impl ChatWidget<'_> {
                         .history_insert_plain_state_with_key(session_state, key, "prelude");
                 }
 
-                if let Some(boundary) = self.side_context_boundary.take() {
-                    self.submit_op(Op::AddPendingInputDeveloper { text: boundary });
-                }
                 if let Some(user_message) = self.initial_user_message.take() {
                     // If the user provided an initial message, add it to the
                     // conversation history.
@@ -25836,8 +25819,20 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     pub(crate) fn set_side_conversation_mode(&mut self) {
-        self.bottom_pane
-            .update_status_text("Side conversation · parent unchanged · Ctrl+\\ to return".to_string());
+        self.bottom_pane.update_status_text(
+            "Side conversation · parent chat unchanged, workspace shared · Ctrl+C to return"
+                .to_string(),
+        );
+    }
+
+    pub(crate) fn prepare_for_side_return(&mut self) {
+        self.bottom_pane.clear_ctrl_c_quit_hint();
+    }
+
+    pub(crate) fn side_return_shortcut_available(&self) -> bool {
+        !self.terminal_overlay_active()
+            && !self.bottom_pane.has_active_modal_view()
+            && self.bottom_pane.composer_is_empty()
     }
 
     fn maybe_start_auto_upgrade_task(&mut self) {
@@ -31195,6 +31190,85 @@ use code_core::protocol::OrderMeta;
             Ok(op) => panic!("expected no pending code ops, got {op:?}"),
             Err(err) => panic!("expected no pending code ops, got {err:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn side_session_starts_with_one_user_turn_and_no_hidden_turn() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        let initial_prompt = "side prompt".to_string();
+        chat.initial_user_message = Some(initial_prompt.into());
+        let mut code_op_rx = replace_code_op_channel(chat);
+
+        chat.handle_code_event(Event {
+            id: "side-session".to_string(),
+            event_seq: 0,
+            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
+                session_id: uuid::Uuid::new_v4(),
+                model: chat.config.model.clone(),
+                history_log_id: 0,
+                history_entry_count: 0,
+            }),
+            order: None,
+        });
+
+        let first_op = code_op_rx.try_recv().expect("initial side user input");
+        assert!(
+            matches!(first_op, Op::UserInput { .. }),
+            "side startup must begin with UserInput, got {first_op:?}"
+        );
+        while let Ok(op) = code_op_rx.try_recv() {
+            assert!(
+                !matches!(op, Op::AddPendingInputDeveloper { .. }),
+                "side startup must not create a hidden developer turn"
+            );
+        }
+    }
+
+    #[test]
+    fn btw_can_start_while_parent_task_is_running() {
+        let mut harness = ChatWidgetHarness::new();
+        let parent_session_id = uuid::Uuid::new_v4();
+        let chat = harness.chat();
+        chat.session_id = Some(parent_session_id);
+        chat.bottom_pane.set_task_running(true);
+
+        chat.submit_text_message("/btw side prompt".to_string());
+
+        let events = harness.drain_events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AppEvent::StartSide {
+                parent_session_id: actual_parent,
+                initial_message: Some(_),
+            } if *actual_parent == parent_session_id
+        )), "running parent must still emit StartSide, got {events:?}");
+    }
+
+    #[test]
+    fn side_return_resets_parent_double_ctrl_c_sequence() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        assert_eq!(chat.on_ctrl_c(), CancellationEvent::Ignored);
+        assert!(chat.ctrl_c_requests_exit());
+
+        chat.prepare_for_side_return();
+        assert!(!chat.ctrl_c_requests_exit());
+
+        assert_eq!(chat.on_ctrl_c(), CancellationEvent::Ignored);
+        assert!(chat.ctrl_c_requests_exit());
+        assert_eq!(chat.on_ctrl_c(), CancellationEvent::Handled);
+    }
+
+    #[test]
+    fn side_return_shortcut_defers_to_composer_draft() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        assert!(chat.side_return_shortcut_available());
+        chat.set_composer_text("unfinished draft".to_string());
+        assert!(!chat.side_return_shortcut_available());
     }
 
     fn history_contains_text(chat: &ChatWidget<'_>, needle: &str) -> bool {

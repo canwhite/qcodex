@@ -316,6 +316,7 @@ impl App<'_> {
         let start_in_alt = config.tui.alternate_screen;
         Self {
             _server: conversation_manager,
+            app_runtime: tokio::runtime::Handle::current(),
             app_event_tx,
             app_event_rx_high,
             app_event_rx_bulk,
@@ -324,6 +325,7 @@ impl App<'_> {
             side_conversation: super::state::SideConversationState::Idle,
             next_side_request_id: 0,
             pending_side_events: HashMap::new(),
+            pending_side_cleanups: Vec::new(),
             config,
             latest_upgrade_version,
             file_search,

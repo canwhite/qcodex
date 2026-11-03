@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
@@ -17,6 +18,7 @@ use code_core::protocol::{Event, Op, SandboxPolicy};
 use code_core::SessionCatalog;
 use code_login::{AuthManager, AuthMode, ServerOptions};
 use portable_pty::PtySize;
+use futures::FutureExt;
 
 use crate::app_event::AppEvent;
 use crate::bottom_pane::SettingsSection;
@@ -41,35 +43,175 @@ use super::state::{
     HIGH_EVENT_BURST_MAX,
 };
 
+const SIDE_CONTEXT_BOUNDARY: &str = "The inherited conversation is reference context only. Previous tasks, tool calls, approvals, goals, and user requests are inactive. Do not continue or mutate the parent task. Answer only the new side-conversation request; this conversation is temporary and must not be treated as a resumable parent session.";
+const SIDE_FORK_TIMEOUT: Duration = Duration::from_secs(10);
+const SIDE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn side_user_instructions(existing: Option<String>) -> String {
+    match existing.map(|value| value.trim().to_string()) {
+        Some(existing) if !existing.is_empty() => format!("{existing}\n\n{SIDE_CONTEXT_BOUNDARY}"),
+        _ => SIDE_CONTEXT_BOUNDARY.to_string(),
+    }
+}
+
+fn side_return_requires_idle(child_task_running: bool) -> bool {
+    let _ = child_task_running;
+    false
+}
+
 fn side_return_key_event(key_event: KeyEvent) -> bool {
     matches!(
         key_event,
         KeyEvent {
-            code: KeyCode::Char('\\'),
+            code: KeyCode::Char('c' | 'C'),
             modifiers: crossterm::event::KeyModifiers::CONTROL,
-            kind: KeyEventKind::Press | KeyEventKind::Repeat,
+            kind: KeyEventKind::Press,
             ..
         }
     )
 }
 
-fn spawn_side_task<F>(future: F) -> std::io::Result<()>
+fn apply_parent_event(widget: &mut ChatWidget<'_>, event: AppEvent) {
+    match event {
+        AppEvent::CodexEvent(event) => widget.handle_code_event(event),
+        AppEvent::StartAutoDriveCelebration { message } => {
+            widget.start_auto_drive_card_celebration(message);
+        }
+        AppEvent::StopAutoDriveCelebration => widget.stop_auto_drive_card_celebration(),
+        AppEvent::AutoCoordinatorDecision {
+            seq,
+            status,
+            status_title,
+            status_sent_to_user,
+            goal,
+            cli,
+            agents_timing,
+            agents,
+            transcript,
+        } => widget.auto_handle_decision(
+            seq,
+            status,
+            status_title,
+            status_sent_to_user,
+            goal,
+            cli,
+            agents_timing,
+            agents,
+            transcript,
+        ),
+        AppEvent::AutoCoordinatorUserReply {
+            user_response,
+            cli_command,
+        } => widget.auto_handle_user_reply(user_response, cli_command),
+        AppEvent::AutoCoordinatorThinking { delta, summary_index } => {
+            widget.auto_handle_thinking(delta, summary_index);
+        }
+        AppEvent::AutoCoordinatorAction { message } => widget.auto_handle_action(message),
+        AppEvent::AutoCoordinatorTokenMetrics {
+            total_usage,
+            last_turn_usage,
+            turn_count,
+            duplicate_items,
+            replay_updates,
+        } => widget.auto_handle_token_metrics(
+            total_usage,
+            last_turn_usage,
+            turn_count,
+            duplicate_items,
+            replay_updates,
+        ),
+        AppEvent::AutoCoordinatorStopAck => {}
+        AppEvent::AutoCoordinatorCompactedHistory {
+            conversation,
+            show_notice,
+        } => widget.auto_handle_compacted_history(conversation, show_notice),
+        AppEvent::AutoCoordinatorCountdown {
+            countdown_id,
+            seconds_left,
+        } => widget.auto_handle_countdown(countdown_id, seconds_left),
+        AppEvent::AutoCoordinatorRestart { token, attempt } => {
+            widget.auto_handle_restart(token, attempt);
+        }
+        AppEvent::AutoReviewBaselineCaptured {
+            turn_sequence,
+            result,
+        } => widget.handle_auto_review_baseline_captured(turn_sequence, result),
+        _ => unreachable!("unsupported parent event"),
+    }
+}
+
+fn spawn_runtime_task<F>(runtime: &tokio::runtime::Handle, future: F) -> tokio::task::JoinHandle<()>
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    std::thread::Builder::new()
-        .name("side-conversation-fork".to_string())
-        .spawn(move || {
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .expect("side conversation runtime");
-            runtime.block_on(future);
-        })?;
-    Ok(())
+    runtime.spawn(future)
+}
+
+async fn supervise_side_fork<F, T>(future: F, deadline: Duration) -> Result<T, String>
+where
+    F: Future<Output = Result<T, String>>,
+{
+    match tokio::time::timeout(deadline, AssertUnwindSafe(future).catch_unwind()).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("side conversation fork panicked.".to_string()),
+        Err(_) => Err("side conversation fork timed out.".to_string()),
+    }
+}
+
+async fn supervise_side_cleanup<F, N>(cleanup: F, deadline: Duration, notify: N)
+where
+    F: Future<Output = ()>,
+    N: FnOnce(bool),
+{
+    tokio::pin!(cleanup);
+    let timed_out = tokio::select! {
+        () = &mut cleanup => false,
+        () = tokio::time::sleep(deadline) => true,
+    };
+    notify(timed_out);
+    if timed_out {
+        cleanup.await;
+    }
 }
 
 impl App<'_> {
+    fn begin_side_cleanup(
+        &mut self,
+        request_id: u64,
+        child_session_id: uuid::Uuid,
+        child_cleanup: code_core::EphemeralConversationCleanup,
+    ) {
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+        let server = self._server.clone();
+        let app_event_tx = self.app_event_tx.clone();
+        drop(spawn_runtime_task(&self.app_runtime, async move {
+            let cleanup = server.dispose_ephemeral_conversation(child_cleanup);
+            supervise_side_cleanup(cleanup, SIDE_CLEANUP_TIMEOUT, |timed_out| {
+                app_event_tx.send(AppEvent::SideConversationCleanupFinished {
+                    request_id,
+                    child_session_id,
+                    timed_out,
+                });
+            })
+            .await;
+            let _ = done_tx.send(());
+        }));
+        self.pending_side_cleanups.push(done_rx);
+    }
+
+    fn dispose_stale_side(
+        &mut self,
+        child_cleanup: code_core::EphemeralConversationCleanup,
+    ) {
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+        let server = self._server.clone();
+        drop(spawn_runtime_task(&self.app_runtime, async move {
+            server.dispose_ephemeral_conversation(child_cleanup).await;
+            let _ = done_tx.send(());
+        }));
+        self.pending_side_cleanups.push(done_rx);
+    }
+
     fn handle_login_mode_change(&mut self, using_chatgpt_auth: bool) {
         self.config.using_chatgpt_auth = using_chatgpt_auth;
         if let AppState::Chat { widget } = &mut self.app_state {
@@ -455,7 +597,12 @@ impl App<'_> {
                         }
                         key_event
                             if side_return_key_event(key_event)
-                                && matches!(self.side_conversation, SideConversationState::Active { .. }) => {
+                                && matches!(self.side_conversation, SideConversationState::Active { .. })
+                                && matches!(
+                                    &self.app_state,
+                                    AppState::Chat { widget }
+                                        if widget.side_return_shortcut_available()
+                                ) => {
                             self.app_event_tx.send(AppEvent::ReturnFromSide);
                         }
                         // Explicit image paste shortcut fallback.
@@ -642,7 +789,13 @@ impl App<'_> {
                     }
                 }
                 AppEvent::CodexEvent(event) => {
-                    if !matches!(self.side_conversation, SideConversationState::Active { .. }) {
+                    if let SideConversationState::Active {
+                        parent: Some(parent),
+                        ..
+                    } = &mut self.side_conversation
+                    {
+                        parent.handle_code_event(event);
+                    } else {
                         self.dispatch_code_event(event);
                     }
                 }
@@ -900,14 +1053,26 @@ impl App<'_> {
                         widget.handle_terminal_approval_decision(id, approved);
                     }
                 }
-                AppEvent::StartAutoDriveCelebration { message } => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.start_auto_drive_card_celebration(message);
-                    }
-                }
-                AppEvent::StopAutoDriveCelebration => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.stop_auto_drive_card_celebration();
+                event @ (AppEvent::StartAutoDriveCelebration { .. }
+                | AppEvent::StopAutoDriveCelebration
+                | AppEvent::AutoCoordinatorDecision { .. }
+                | AppEvent::AutoCoordinatorUserReply { .. }
+                | AppEvent::AutoCoordinatorThinking { .. }
+                | AppEvent::AutoCoordinatorAction { .. }
+                | AppEvent::AutoCoordinatorTokenMetrics { .. }
+                | AppEvent::AutoCoordinatorStopAck
+                | AppEvent::AutoCoordinatorCompactedHistory { .. }
+                | AppEvent::AutoCoordinatorCountdown { .. }
+                | AppEvent::AutoCoordinatorRestart { .. }
+                | AppEvent::AutoReviewBaselineCaptured { .. }) => {
+                    if let SideConversationState::Active {
+                        parent: Some(parent),
+                        ..
+                    } = &mut self.side_conversation
+                    {
+                        apply_parent_event(parent, event);
+                    } else if let AppState::Chat { widget } = &mut self.app_state {
+                        apply_parent_event(widget, event);
                     }
                 }
                 AppEvent::TerminalAfter(after) => {
@@ -1010,84 +1175,6 @@ impl App<'_> {
                         widget.on_request_user_input_answer(turn_id, response);
                     }
                 }
-                AppEvent::AutoCoordinatorDecision {
-                    seq,
-                    status,
-                    status_title,
-                    status_sent_to_user,
-                    goal,
-                    cli,
-                    agents_timing,
-                    agents,
-                    transcript,
-                } => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.auto_handle_decision(
-                            seq,
-                            status,
-                            status_title,
-                            status_sent_to_user,
-                            goal,
-                            cli,
-                            agents_timing,
-                            agents,
-                            transcript,
-                        );
-                    }
-                }
-                AppEvent::AutoCoordinatorUserReply {
-                    user_response,
-                    cli_command,
-                } => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.auto_handle_user_reply(user_response, cli_command);
-                    }
-                }
-                AppEvent::AutoCoordinatorThinking { delta, summary_index } => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.auto_handle_thinking(delta, summary_index);
-                    }
-                }
-                AppEvent::AutoCoordinatorAction { message } => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.auto_handle_action(message);
-                    }
-                }
-                AppEvent::AutoCoordinatorTokenMetrics {
-                    total_usage,
-                    last_turn_usage,
-                    turn_count,
-                    duplicate_items,
-                    replay_updates,
-                } => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.auto_handle_token_metrics(
-                            total_usage,
-                            last_turn_usage,
-                            turn_count,
-                            duplicate_items,
-                            replay_updates,
-                        );
-                    }
-                }
-                AppEvent::AutoCoordinatorStopAck => {
-                    // Coordinator acknowledged stop; no additional action required currently.
-                }
-                AppEvent::AutoCoordinatorCompactedHistory { conversation, show_notice } => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.auto_handle_compacted_history(conversation, show_notice);
-                    }
-                }
-                AppEvent::AutoCoordinatorCountdown { countdown_id, seconds_left } => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.auto_handle_countdown(countdown_id, seconds_left);
-                    }
-                }
-                AppEvent::AutoCoordinatorRestart { token, attempt } => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.auto_handle_restart(token, attempt);
-                    }
-                }
                 AppEvent::PerformUndoRestore {
                     commit,
                     restore_files,
@@ -1123,7 +1210,7 @@ impl App<'_> {
                     if side_command_blocked {
                         if let AppState::Chat { widget } = &mut self.app_state {
                             widget.debug_notice(format!(
-                                "'/{}' is unavailable in a side conversation. Press Ctrl+\\ to return.",
+                                "'/{}' is unavailable in a side conversation. Press Ctrl+C to return.",
                                 command.command()
                             ));
                         }
@@ -1340,7 +1427,7 @@ impl App<'_> {
                             if !matches!(self.side_conversation, SideConversationState::Idle) {
                                 if let AppState::Chat { widget } = &mut self.app_state {
                                     widget.debug_notice(
-                                        "A side conversation is already starting or active. Press Ctrl+\\ to return."
+                                        "A side conversation is already starting or active. Press Ctrl+C to return."
                                             .to_string(),
                                     );
                                 }
@@ -1351,12 +1438,6 @@ impl App<'_> {
                                     );
                                     continue;
                                 };
-                                if widget.is_task_running() {
-                                    widget.debug_notice(
-                                        "'/btw' is unavailable while a task is in progress.".to_string(),
-                                    );
-                                    continue;
-                                }
                                 self.app_event_tx.send(AppEvent::StartSide {
                                     parent_session_id,
                                     initial_message: (!command_args.trim().is_empty())
@@ -1538,15 +1619,13 @@ impl App<'_> {
                     if !matches!(self.side_conversation, SideConversationState::Idle) {
                         continue;
                     }
-                    let Some((config, code_home)) = (match &mut self.app_state {
+                    let Some((mut config, code_home)) = (match &mut self.app_state {
                         AppState::Chat { widget }
-                            if widget.session_id() == Some(parent_session_id)
-                                && !widget.is_task_running() =>
-                        {
+                            if widget.session_id() == Some(parent_session_id) => {
                             Some((widget.config_ref().clone(), widget.config_ref().code_home.clone()))
                         }
                         AppState::Chat { widget } => {
-                            widget.debug_notice("'/btw' needs an idle, saved parent session.".to_string());
+                            widget.debug_notice("'/btw' needs a saved parent session.".to_string());
                             None
                         }
                         AppState::Onboarding { .. } => None,
@@ -1555,84 +1634,105 @@ impl App<'_> {
                     };
                     self.next_side_request_id = self.next_side_request_id.wrapping_add(1);
                     let request_id = self.next_side_request_id;
+                    self.pending_side_events.clear();
+                    config.user_instructions = Some(side_user_instructions(
+                        config.user_instructions.take(),
+                    ));
+                    let server = self._server.clone();
+                    let tx = self.app_event_tx.clone();
+                    let cleanup_owner = std::sync::Arc::new(std::sync::Mutex::new(None));
+                    let task_cleanup_owner = cleanup_owner.clone();
+                    let (finished_tx, finished_rx) = std::sync::mpsc::sync_channel(1);
+                    let fork_task = spawn_runtime_task(&self.app_runtime, async move {
+                        let fork = async {
+                            let catalog = SessionCatalog::new(code_home);
+                            let entry = catalog
+                                .find_by_id(&parent_session_id.to_string())
+                                .await
+                                .map_err(|err| format!("failed to find parent session: {err}"))?
+                                .ok_or_else(|| "parent session is no longer available.".to_string())?;
+                            server
+                                .fork_conversation(0, config, catalog.entry_rollout_path(&entry))
+                                .await
+                                .map_err(|err| format!("failed to fork side conversation: {err}"))
+                        };
+                        let result = supervise_side_fork(fork, SIDE_FORK_TIMEOUT).await;
+                        match result {
+                            Ok(new_conv) => {
+                                let code_core::EphemeralConversation {
+                                    conversation,
+                                    cleanup,
+                                } = new_conv;
+                                task_cleanup_owner
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .replace(cleanup);
+                                tx.send(AppEvent::SideConversationForked {
+                                    parent_session_id,
+                                    request_id,
+                                    new_conv: crate::app_event::Redacted(conversation),
+                                    cleanup_owner: crate::app_event::Redacted(
+                                        task_cleanup_owner.clone(),
+                                    ),
+                                    initial_message,
+                                });
+                            }
+                            Err(message) => tx.send(AppEvent::SideConversationForkFailed {
+                                parent_session_id,
+                                request_id,
+                                message,
+                            }),
+                        }
+                        let _ = finished_tx.send(());
+                    });
+                    let abort_handle = fork_task.abort_handle();
+                    drop(fork_task);
                     self.side_conversation = SideConversationState::Forking {
                         parent_session_id,
                         request_id,
+                        abort_handle,
+                        cleanup_owner,
+                        finished_rx,
                     };
-                    let server = self._server.clone();
-                    let tx = self.app_event_tx.clone();
-                    if let Err(err) = spawn_side_task(async move {
-                            let result = async {
-                                let catalog = SessionCatalog::new(code_home);
-                                let entry = catalog
-                                    .find_by_id(&parent_session_id.to_string())
-                                    .await
-                                    .map_err(|err| format!("failed to find parent session: {err}"))?
-                                    .ok_or_else(|| "parent session is no longer available.".to_string())?;
-                                server
-                                    .fork_conversation(0, config, catalog.entry_rollout_path(&entry))
-                                    .await
-                                    .map_err(|err| format!("failed to fork side conversation: {err}"))
-                            }
-                            .await;
-                            match result {
-                                Ok(new_conv) => tx.send(AppEvent::SideConversationForked {
-                                    parent_session_id,
-                                    request_id,
-                                    new_conv: crate::app_event::Redacted(new_conv),
-                                    initial_message,
-                                }),
-                                Err(message) => tx.send(AppEvent::SideConversationForkFailed {
-                                    parent_session_id,
-                                    request_id,
-                                    message,
-                                }),
-                            }
-                        }) {
-                        self.side_conversation = SideConversationState::Idle;
-                        if let AppState::Chat { widget } = &mut self.app_state {
-                            widget.debug_notice(format!("Failed to start side conversation: {err}"));
-                        }
-                    }
                 }
                 AppEvent::SideConversationForked {
                     parent_session_id,
                     request_id,
                     new_conv,
+                    cleanup_owner,
                     initial_message,
                 } => {
-                    let child_session_id = new_conv.0.conversation.session_configured.session_id;
-                    let child_rollout_path = new_conv.0.rollout_path.clone();
+                    let new_conversation = new_conv.0;
+                    let Some(child_cleanup) = cleanup_owner
+                        .0
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                    else {
+                        continue;
+                    };
+                    let child_session_id = new_conversation.session_configured.session_id;
                     if !matches!(
                         self.side_conversation,
                         SideConversationState::Forking {
                             parent_session_id: expected_parent,
                             request_id: expected_request,
+                            ..
                         } if expected_parent == parent_session_id && expected_request == request_id
                     ) {
-                        let server = self._server.clone();
-                        let rollout_path = child_rollout_path;
-                        tokio::spawn(async move {
-                            let conversation_id = child_session_id.into();
-                            server.dispose_ephemeral_conversation(&conversation_id, rollout_path).await;
-                        });
+                        self.dispose_stale_side(child_cleanup);
                         continue;
                     }
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        if widget.session_id() != Some(parent_session_id) || widget.is_task_running() {
+                        if widget.session_id() != Some(parent_session_id) {
                             self.side_conversation = SideConversationState::Idle;
-                            let server = self._server.clone();
-                            let rollout_path = child_rollout_path;
-                            tokio::spawn(async move {
-                                let conversation_id = child_session_id.into();
-                                server.dispose_ephemeral_conversation(&conversation_id, rollout_path).await;
-                            });
+                            self.dispose_stale_side(child_cleanup);
                             continue;
                         }
                         let mut side_widget = ChatWidget::new_from_existing(
                             widget.config_ref().clone(),
-                            new_conv.0.conversation.conversation.clone(),
-                            new_conv.0.conversation.session_configured.clone(),
+                            new_conversation.conversation.clone(),
+                            new_conversation.session_configured.clone(),
                             self.app_event_tx.clone(),
                             self.enhanced_keys_supported,
                             self.terminal_info.clone(),
@@ -1648,28 +1748,23 @@ impl App<'_> {
                         let parent = std::mem::replace(widget, Box::new(side_widget));
                         self.side_conversation = SideConversationState::Active {
                             parent: Some(parent),
+                            request_id,
                             child_session_id,
-                            child_rollout_path,
+                            child_cleanup: Some(child_cleanup),
                         };
                         let pending_events = self
                             .pending_side_events
                             .remove(&child_session_id)
                             .unwrap_or_default();
+                        self.pending_side_events.clear();
                         for event in pending_events {
                             self.dispatch_code_event(event);
                         }
-                        self.terminal_runs.clear();
                         self.clear_on_first_frame = true;
                         self.app_event_tx.send(AppEvent::RequestRedraw);
                     } else {
                         self.side_conversation = SideConversationState::Idle;
-                        let server = self._server.clone();
-                        tokio::spawn(async move {
-                            let conversation_id = child_session_id.into();
-                            server
-                                .dispose_ephemeral_conversation(&conversation_id, child_rollout_path)
-                                .await;
-                        });
+                        self.dispose_stale_side(child_cleanup);
                     }
                 }
                 AppEvent::SideConversationForkFailed {
@@ -1682,11 +1777,13 @@ impl App<'_> {
                         SideConversationState::Forking {
                             parent_session_id: expected_parent,
                             request_id: expected_request,
+                            ..
                         } if expected_parent == parent_session_id && expected_request == request_id
                     ) {
                         continue;
                     }
                     self.side_conversation = SideConversationState::Idle;
+                    self.pending_side_events.clear();
                     if let AppState::Chat { widget } = &mut self.app_state
                         && widget.session_id() == Some(parent_session_id)
                     {
@@ -1694,47 +1791,70 @@ impl App<'_> {
                     }
                 }
                 AppEvent::ReturnFromSide => {
-                    let (mut parent, child_session_id, child_rollout_path) = match &mut self.side_conversation {
+                    let (mut parent, request_id, child_session_id, child_cleanup) = match &mut self.side_conversation {
                         SideConversationState::Active {
                             parent,
+                            request_id,
                             child_session_id,
-                            child_rollout_path,
+                            child_cleanup,
                         } => {
                             let Some(parent) = parent.take() else {
                                 continue;
                             };
-                            (parent, *child_session_id, child_rollout_path.take())
+                            let Some(child_cleanup) = child_cleanup.take() else {
+                                continue;
+                            };
+                            (parent, *request_id, *child_session_id, child_cleanup)
                         }
                         _ => continue,
                     };
-                    self.side_conversation = SideConversationState::Idle;
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        if widget.is_task_running() {
-                            widget.debug_notice("Stop the side conversation task before returning.".to_string());
-                            self.side_conversation = SideConversationState::Active {
-                                parent: Some(parent),
-                                child_session_id,
-                                child_rollout_path,
-                            };
-                            continue;
-                        }
+                        debug_assert!(!side_return_requires_idle(widget.is_task_running()));
+                        parent.prepare_for_side_return();
                         parent.debug_notice("Returned from side conversation.".to_string());
                         let _child = std::mem::replace(widget, parent);
-                        let server = self._server.clone();
-                        tokio::spawn(async move {
-                            let conversation_id = child_session_id.into();
-                            server.dispose_ephemeral_conversation(&conversation_id, child_rollout_path).await;
-                        });
-                        self.terminal_runs.clear();
+                        self.begin_side_cleanup(
+                            request_id,
+                            child_session_id,
+                            child_cleanup,
+                        );
+                        self.side_conversation = SideConversationState::Returning {
+                            request_id,
+                            child_session_id,
+                        };
                         self.clear_on_first_frame = true;
                         self.app_event_tx.send(AppEvent::RequestRedraw);
+                    }
+                }
+                AppEvent::SideConversationCleanupFinished {
+                    request_id,
+                    child_session_id,
+                    timed_out,
+                } => {
+                    if matches!(
+                        self.side_conversation,
+                        SideConversationState::Returning {
+                            request_id: expected_request,
+                            child_session_id: expected_child,
+                            ..
+                        } if expected_request == request_id && expected_child == child_session_id
+                    ) {
+                        self.side_conversation = SideConversationState::Idle;
+                        if timed_out
+                            && let AppState::Chat { widget } = &mut self.app_state
+                        {
+                            widget.debug_notice(
+                                "Side conversation cleanup timed out; it was detached from this session."
+                                    .to_string(),
+                            );
+                        }
                     }
                 }
                 AppEvent::SwitchCwd(new_cwd, initial_prompt) => {
                     if !matches!(self.side_conversation, SideConversationState::Idle) {
                         if let AppState::Chat { widget } = &mut self.app_state {
                             widget.debug_notice(
-                                "Working-directory changes are unavailable during a side conversation. Press Ctrl+\\ to return."
+                                "Working-directory changes are unavailable during a side conversation. Press Ctrl+C to return."
                                     .to_string(),
                             );
                         }
@@ -2611,32 +2731,20 @@ impl App<'_> {
                         self.pending_jump_back_ghost_state = Some(ghost_state);
                         self.pending_jump_back_history_snapshot = history_snapshot;
 
-                        // Perform the fork off the UI thread to avoid nested runtimes
+                        // Create the replacement conversation on the app runtime so its
+                        // submission loop outlives this setup future.
                         let server = self._server.clone();
                         let tx = self.app_event_tx.clone();
                         let prefill_clone = prefill.clone();
-                        if let Err(err) = std::thread::Builder::new()
-                            .name("jump-back-fork".to_string())
-                            .spawn(move || {
-                                let rt = tokio::runtime::Builder::new_multi_thread()
-                                    .enable_all()
-                                    .build()
-                                    .expect("build tokio runtime");
-                                // Clone cfg for the async block to keep original for the event
-                                let cfg_for_rt = cfg.clone();
-                                let result = rt.block_on(async move {
-                                    // Fallback: start a new conversation instead of forking
-                                    server.new_conversation(cfg_for_rt).await
-                                });
-                                if let Ok(new_conv) = result {
-                                    tx.send(AppEvent::JumpBackForked { cfg, new_conv: crate::app_event::Redacted(new_conv), prefix_items, prefill: prefill_clone });
-                                } else if let Err(e) = result {
-                                    tracing::error!("error forking conversation: {e:#}");
-                                }
-                            })
-                        {
-                            tracing::error!("jump-back fork spawn failed: {err}");
-                        }
+                        let cfg_for_runtime = cfg.clone();
+                        drop(spawn_runtime_task(&self.app_runtime, async move {
+                            let result = server.new_conversation(cfg_for_runtime).await;
+                            if let Ok(new_conv) = result {
+                                tx.send(AppEvent::JumpBackForked { cfg, new_conv: crate::app_event::Redacted(new_conv), prefix_items, prefill: prefill_clone });
+                            } else if let Err(error) = result {
+                                tracing::error!("error forking conversation: {error:#}");
+                            }
+                        }));
                     }
                 }
                 AppEvent::JumpBackForked { cfg, new_conv, prefix_items, prefill } => {
@@ -2741,30 +2849,48 @@ impl App<'_> {
                         widget.handle_ghost_snapshot_finished(job_id, result, elapsed);
                     }
                 }
-                AppEvent::AutoReviewBaselineCaptured { turn_sequence, result } => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.handle_auto_review_baseline_captured(turn_sequence, result);
-                    }
-                }
             }
         }
-        let side_cleanup = match &mut self.side_conversation {
+        let side_state = std::mem::replace(
+            &mut self.side_conversation,
+            SideConversationState::Idle,
+        );
+        match side_state {
             SideConversationState::Active {
+                request_id,
                 child_session_id,
-                child_rollout_path,
+                child_cleanup,
                 ..
-            } => Some((*child_session_id, child_rollout_path.take())),
-            _ => None,
-        };
-        self.side_conversation = SideConversationState::Idle;
-        if let Some((child_session_id, child_rollout_path)) = side_cleanup {
-            let server = self._server.clone();
-            tokio::spawn(async move {
-                let conversation_id = child_session_id.into();
-                server
-                    .dispose_ephemeral_conversation(&conversation_id, child_rollout_path)
-                    .await;
-            });
+            } => {
+                if let Some(child_cleanup) = child_cleanup {
+                    self.begin_side_cleanup(request_id, child_session_id, child_cleanup);
+                }
+            }
+            SideConversationState::Returning { .. } => {}
+            SideConversationState::Forking {
+                abort_handle,
+                cleanup_owner,
+                finished_rx,
+                ..
+            } => {
+                if finished_rx
+                    .recv_timeout(SIDE_FORK_TIMEOUT + Duration::from_secs(1))
+                    .is_err()
+                {
+                    abort_handle.abort();
+                }
+                if let Some(child_cleanup) = cleanup_owner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    self.dispose_stale_side(child_cleanup);
+                }
+            }
+            SideConversationState::Idle => {}
+        }
+        for cleanup_done in self.pending_side_cleanups.drain(..) {
+            let _ = cleanup_done.recv_timeout(SIDE_CLEANUP_TIMEOUT + Duration::from_secs(1));
         }
         if self.alt_screen_active {
             terminal.clear()?;
@@ -2857,6 +2983,15 @@ mod next_event_priority_tests {
             crossterm::event::KeyModifiers::CONTROL,
             KeyEventKind::Repeat,
         )));
+        assert!(!side_return_key_event(KeyEvent::new_with_kind(
+            KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+            KeyEventKind::Release,
+        )));
+        assert!(side_return_key_event(KeyEvent::new(
+            KeyCode::Char('C'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )));
         assert!(!side_return_key_event(KeyEvent::new(
             KeyCode::Char('\\'),
             crossterm::event::KeyModifiers::CONTROL,
@@ -2864,11 +2999,89 @@ mod next_event_priority_tests {
     }
 
     #[tokio::test]
+    async fn side_fork_supervisor_reports_success_error_panic_and_timeout() {
+        let success = supervise_side_fork(
+            async { Ok::<_, String>("child") },
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(success.as_deref(), Ok("child"));
+
+        let returned_error = supervise_side_fork(
+            async { Err::<(), _>("fork failed".to_string()) },
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(returned_error.expect_err("fork should fail"), "fork failed");
+
+        let panic_result: Result<(), String> = supervise_side_fork(
+            async {
+                if std::hint::black_box(true) {
+                    panic!("fork panic");
+                }
+                Ok(())
+            },
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(
+            panic_result.expect_err("panic should become an error"),
+            "side conversation fork panicked."
+        );
+
+        let timeout_result = supervise_side_fork(
+            std::future::pending::<Result<(), String>>(),
+            Duration::from_millis(1),
+        )
+        .await;
+        assert_eq!(
+            timeout_result.expect_err("timeout should become an error"),
+            "side conversation fork timed out."
+        );
+    }
+
+    #[tokio::test]
+    async fn side_cleanup_timeout_notifies_without_cancelling_cleanup() {
+        let completed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let completed_by_task = completed.clone();
+        let (notice_tx, notice_rx) = tokio::sync::oneshot::channel();
+
+        supervise_side_cleanup(
+            async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                completed_by_task.store(true, std::sync::atomic::Ordering::SeqCst);
+            },
+            Duration::from_millis(1),
+            move |timed_out| {
+                let _ = notice_tx.send(timed_out);
+            },
+        )
+        .await;
+
+        assert!(notice_rx.await.expect("cleanup notice"));
+        assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn side_boundary_follows_existing_user_instructions() {
+        let instructions = side_user_instructions(Some("existing instructions".to_string()));
+        assert!(instructions.starts_with("existing instructions\n\n"));
+        assert!(instructions.ends_with(SIDE_CONTEXT_BOUNDARY));
+        assert!(instructions.contains("reference context only"));
+    }
+
+    #[test]
+    fn side_return_does_not_wait_for_running_child() {
+        assert!(!side_return_requires_idle(true));
+    }
+
+    #[tokio::test]
     async fn side_task_keeps_child_agent_loop_alive_after_fork_finishes() {
         let (handoff_tx, handoff_rx) = tokio::sync::oneshot::channel();
         let (processed_tx, processed_rx) = tokio::sync::oneshot::channel();
 
-        spawn_side_task(async move {
+        let runtime = tokio::runtime::Handle::current();
+        drop(spawn_runtime_task(&runtime, async move {
             let (op_tx, mut op_rx) = tokio::sync::mpsc::unbounded_channel();
             tokio::spawn(async move {
                 if op_rx.recv().await.is_some() {
@@ -2876,14 +3089,13 @@ mod next_event_priority_tests {
                 }
             });
             handoff_tx.send(op_tx).expect("hand off op sender");
-        })
-        .expect("spawn side task");
+        }));
 
         let op_tx = tokio::time::timeout(Duration::from_secs(1), handoff_rx)
             .await
             .expect("receive op sender")
             .expect("side task should hand off op sender");
-        std::thread::sleep(Duration::from_millis(50));
+        tokio::task::yield_now().await;
         op_tx.send(()).expect("child agent loop should still be alive");
         tokio::time::timeout(Duration::from_secs(1), processed_rx)
             .await

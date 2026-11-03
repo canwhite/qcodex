@@ -29,11 +29,17 @@ pub struct NewConversation {
     pub session_configured: SessionConfiguredEvent,
 }
 
-/// A fork created for a temporary side conversation. The rollout path is owned
-/// by the caller and must be passed to `dispose_ephemeral_conversation`.
+/// Opaque ownership proof for cleaning up a temporary side conversation.
+pub struct EphemeralConversationCleanup {
+    conversation_id: ConversationId,
+    rollout_path: Option<PathBuf>,
+}
+
+/// A fork created for a temporary side conversation. Its cleanup token must be
+/// returned to [`ConversationManager::dispose_ephemeral_conversation`].
 pub struct EphemeralConversation {
     pub conversation: NewConversation,
-    pub rollout_path: Option<PathBuf>,
+    pub cleanup: EphemeralConversationCleanup,
 }
 
 /// [`ConversationManager`] is responsible for creating conversations and
@@ -176,9 +182,13 @@ impl ConversationManager {
 
         // If there is no prior history to seed, just start a fresh conversation.
         if matches!(history, InitialHistory::New) {
+            let conversation = self.spawn_conversation(config, self.auth_manager.clone()).await?;
             return Ok(EphemeralConversation {
-                conversation: self.spawn_conversation(config, self.auth_manager.clone()).await?,
-                rollout_path: None,
+                cleanup: EphemeralConversationCleanup {
+                    conversation_id: conversation.conversation_id,
+                    rollout_path: None,
+                },
+                conversation,
             });
         }
 
@@ -230,8 +240,11 @@ impl ConversationManager {
             }
         };
         Ok(EphemeralConversation {
+            cleanup: EphemeralConversationCleanup {
+                conversation_id,
+                rollout_path: Some(rollout_path),
+            },
             conversation,
-            rollout_path: Some(rollout_path),
         })
     }
 
@@ -240,13 +253,13 @@ impl ConversationManager {
     /// can call the same cleanup routine.
     pub async fn dispose_ephemeral_conversation(
         &self,
-        conversation_id: &ConversationId,
-        rollout_path: Option<PathBuf>,
+        cleanup: EphemeralConversationCleanup,
     ) {
-        if let Some(conversation) = self.remove_conversation(conversation_id).await {
+        if let Some(conversation) = self.remove_conversation(&cleanup.conversation_id).await {
+            let _ = conversation.submit(crate::protocol::Op::Interrupt).await;
             let _ = conversation.submit(crate::protocol::Op::Shutdown).await;
         }
-        if let Some(path) = rollout_path {
+        if let Some(path) = cleanup.rollout_path {
             remove_ephemeral_rollout(&path).await;
         }
     }

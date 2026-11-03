@@ -23,6 +23,7 @@ use crate::tui::TerminalInfo;
 use code_core::config::Config;
 use code_core::protocol::Event;
 use code_core::ConversationManager;
+use code_core::EphemeralConversationCleanup;
 use code_login::ShutdownHandle;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -197,16 +198,25 @@ pub(super) enum SideConversationState<'a> {
     Forking {
         parent_session_id: uuid::Uuid,
         request_id: u64,
+        abort_handle: tokio::task::AbortHandle,
+        cleanup_owner: Arc<Mutex<Option<EphemeralConversationCleanup>>>,
+        finished_rx: Receiver<()>,
     },
     Active {
         parent: Option<Box<ChatWidget<'a>>>,
+        request_id: u64,
         child_session_id: uuid::Uuid,
-        child_rollout_path: Option<std::path::PathBuf>,
+        child_cleanup: Option<EphemeralConversationCleanup>,
+    },
+    Returning {
+        request_id: u64,
+        child_session_id: uuid::Uuid,
     },
 }
 
 pub(crate) struct App<'a> {
     pub(super) _server: Arc<ConversationManager>,
+    pub(super) app_runtime: tokio::runtime::Handle,
     pub(super) app_event_tx: AppEventSender,
     // Split event receivers: high‑priority (input) and bulk (streaming)
     pub(super) app_event_rx_high: Receiver<AppEvent>,
@@ -216,6 +226,7 @@ pub(crate) struct App<'a> {
     pub(super) side_conversation: SideConversationState<'a>,
     pub(super) next_side_request_id: u64,
     pub(super) pending_side_events: HashMap<uuid::Uuid, Vec<Event>>,
+    pub(super) pending_side_cleanups: Vec<Receiver<()>>,
 
     /// Config is stored here so we can recreate ChatWidgets as needed.
     pub(super) config: Config,
