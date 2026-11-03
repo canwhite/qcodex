@@ -1,0 +1,1 @@
+从桌面上'/Users/doing/Desktop/codex'的学习拓展，给当前项目也加上/goal 功能
