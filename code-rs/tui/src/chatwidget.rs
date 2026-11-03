@@ -26361,6 +26361,10 @@ Have we met every part of this goal and is there no further work to do?"#
             || (wait_running && wait_blocks)
     }
 
+    pub(crate) fn has_active_parent_turn(&self) -> bool {
+        self.is_task_running() || self.auto_state.is_active()
+    }
+
     #[inline]
     fn wait_running(&self) -> bool {
         !self.tools_state.running_wait_tools.is_empty()
@@ -31318,6 +31322,17 @@ use code_core::protocol::OrderMeta;
             .expect_err("aborted side forwarder should not complete normally");
         assert!(error.is_cancelled());
         assert!(chat.conversation_event_forwarder.is_none());
+    }
+
+    #[test]
+    fn active_auto_drive_marks_parent_turn_as_unfinished() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        chat.bottom_pane.set_task_running(false);
+        chat.auto_state.set_phase(AutoRunPhase::Active);
+
+        assert!(!chat.is_task_running());
+        assert!(chat.has_active_parent_turn());
     }
 
     fn history_contains_text(chat: &ChatWidget<'_>, needle: &str) -> bool {

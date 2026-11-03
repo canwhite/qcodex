@@ -1671,7 +1671,7 @@ impl App<'_> {
                             Some((
                                 widget.config_ref().clone(),
                                 widget.config_ref().code_home.clone(),
-                                widget.is_task_running(),
+                                widget.has_active_parent_turn(),
                             ))
                         }
                         AppState::Chat { widget } => {
