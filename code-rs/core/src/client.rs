@@ -318,6 +318,19 @@ impl Clone for ModelClient {
     }
 }
 
+fn reasoning_effort_for_provider(
+    provider: &ModelProviderInfo,
+    model_provider_id: &str,
+    model: &str,
+    effort: ReasoningEffortConfig,
+) -> ReasoningEffortConfig {
+    if model_provider_id == "openai" && provider.is_public_openai_responses_endpoint() {
+        clamp_reasoning_effort_for_model(model, effort)
+    } else {
+        effort
+    }
+}
+
 impl ModelClient {
     pub fn new(
         config: Arc<Config>,
@@ -331,7 +344,12 @@ impl ModelClient {
         debug_logger: Arc<Mutex<DebugLogger>>,
     ) -> Self {
         let effective_verbosity = clamp_text_verbosity_for_model(config.model.as_str(), verbosity);
-        let clamped_effort = clamp_reasoning_effort_for_model(config.model.as_str(), effort);
+        let effective_effort = reasoning_effort_for_provider(
+            &provider,
+            &config.model_provider_id,
+            config.model.as_str(),
+            effort,
+        );
         let client = create_client(&config.responses_originator_header);
 
         Self {
@@ -341,7 +359,7 @@ impl ModelClient {
             client,
             provider,
             session_id,
-            effort: clamped_effort,
+            effort: effective_effort,
             summary,
             reasoning_summary_disabled: AtomicBool::new(false),
             websockets_disabled: AtomicBool::new(false),
@@ -401,6 +419,19 @@ impl ModelClient {
         // proxy/custom endpoints must not inherit embedded OpenAI capabilities.
         self.config.model_provider_id == "openai"
             && self.provider.is_public_openai_responses_endpoint()
+    }
+
+    fn reasoning_effort_for_model(
+        &self,
+        model: &str,
+        effort: ReasoningEffortConfig,
+    ) -> ReasoningEffortConfig {
+        reasoning_effort_for_provider(
+            &self.provider,
+            &self.config.model_provider_id,
+            model,
+            effort,
+        )
     }
 
     fn model_family_for_request(&self, prompt: &Prompt, model: &str) -> ModelFamily {
@@ -825,7 +856,7 @@ impl ModelClient {
             .model_override
             .as_deref()
             .unwrap_or(self.config.model.as_str());
-        let effective_effort = clamp_reasoning_effort_for_model(request_model, self.effort);
+        let effective_effort = self.reasoning_effort_for_model(request_model, self.effort);
         let request_family = self.model_family_for_request(prompt, request_model);
         let store = should_store_responses(prompt, &self.provider, &request_family);
 
@@ -1308,7 +1339,7 @@ impl ModelClient {
             .model_override
             .as_deref()
             .unwrap_or(self.config.model.as_str());
-        let effective_effort = clamp_reasoning_effort_for_model(request_model, self.effort);
+        let effective_effort = self.reasoning_effort_for_model(request_model, self.effort);
         let request_family = self.model_family_for_request(prompt, request_model);
         let store = should_store_responses(prompt, &self.provider, &request_family);
 
@@ -3372,6 +3403,21 @@ mod tests {
 
         prompt.store = true;
         assert!(should_store_responses(&prompt, &provider, &family));
+    }
+
+    #[test]
+    fn custom_openai_compatible_provider_preserves_reasoning_effort() {
+        let mut provider = responses_test_provider("openai", WireApi::Responses);
+        provider.base_url = Some("https://compatible.example/v1".to_string());
+
+        let effort = reasoning_effort_for_provider(
+            &provider,
+            "openai",
+            "gpt-5-compatible",
+            ReasoningEffortConfig::XHigh,
+        );
+
+        assert_eq!(effort, ReasoningEffortConfig::XHigh);
     }
 
     #[test]

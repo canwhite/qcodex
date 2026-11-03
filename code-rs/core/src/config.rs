@@ -2294,6 +2294,30 @@ theme = "catppuccin-mocha"
 
     #[test]
     #[serial_test::serial]
+    fn custom_openai_compatible_provider_preserves_reasoning_effort() -> std::io::Result<()> {
+        let _effort_guard = EnvVarGuard::new(OPENAI_REASONING_EFFORT_ENV_VAR);
+        unsafe {
+            std::env::set_var(OPENAI_REASONING_EFFORT_ENV_VAR, "xhigh");
+        }
+
+        let cfg = ConfigToml {
+            model: Some("gpt-5-compatible".to_string()),
+            openai_base_url: Some("https://compatible.example/v1".to_string()),
+            ..Default::default()
+        };
+        let code_home = TempDir::new()?;
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            code_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_reasoning_effort, ReasoningEffort::XHigh);
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn invalid_openai_reasoning_effort_is_rejected() {
         let _effort_guard = EnvVarGuard::new(OPENAI_REASONING_EFFORT_ENV_VAR);
         unsafe {
