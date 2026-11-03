@@ -13,6 +13,7 @@ use crate::protocol::SessionConfiguredEvent;
 use crate::rollout::RolloutRecorder;
 use code_protocol::ConversationId;
 use code_protocol::protocol::SessionSource;
+use code_protocol::models::DeveloperInstructions;
 use code_protocol::models::ResponseItem;
 use code_protocol::protocol::InitialHistory;
 use code_protocol::protocol::RolloutItem;
@@ -175,6 +176,7 @@ impl ConversationManager {
         num_messages_to_drop: usize,
         mut config: Config,
         path: PathBuf,
+        trailing_developer_instructions: Option<&str>,
     ) -> CodexResult<EphemeralConversation> {
         // Compute the prefix up to the cut point.
         let history = RolloutRecorder::get_rollout_history(&path).await?;
@@ -207,7 +209,8 @@ impl ConversationManager {
         .map_err(CodexErr::Io)?;
 
         // Persist rollout items to seed the resumed conversation.
-        let rollout_items = history.get_rollout_items();
+        let rollout_items =
+            rollout_items_for_fork(history, trailing_developer_instructions);
         if !rollout_items.is_empty() {
             recorder
                 .record_items(&rollout_items)
@@ -274,6 +277,22 @@ async fn remove_ephemeral_rollout(path: &PathBuf) {
             tracing::warn!(?path, ?error, "failed to remove ephemeral side rollout");
         }
     }
+}
+
+fn rollout_items_for_fork(
+    history: InitialHistory,
+    trailing_developer_instructions: Option<&str>,
+) -> Vec<RolloutItem> {
+    let mut items = history.get_rollout_items();
+    if let Some(instructions) = trailing_developer_instructions
+        .map(str::trim)
+        .filter(|instructions| !instructions.is_empty())
+    {
+        items.push(RolloutItem::ResponseItem(
+            DeveloperInstructions::new(instructions).into(),
+        ));
+    }
+    items
 }
 
 /// Return a prefix of `items` obtained by dropping the last `n` user messages
@@ -387,5 +406,24 @@ mod tests {
             .collect();
         let truncated2 = truncate_after_dropping_last_messages(InitialHistory::Forked(initial2), 2);
         assert!(matches!(truncated2, InitialHistory::New));
+    }
+
+    #[test]
+    fn side_boundary_follows_inherited_parent_history() {
+        let inherited = InitialHistory::Forked(vec![RolloutItem::ResponseItem(user_msg(
+            "continue the parent goal",
+        ))]);
+
+        let items = rollout_items_for_fork(inherited, Some("parent work is inactive"));
+
+        assert!(matches!(
+            items.last(),
+            Some(RolloutItem::ResponseItem(ResponseItem::Message { role, content, .. }))
+                if role == "developer"
+                    && content.iter().any(|item| matches!(
+                        item,
+                        ContentItem::InputText { text } if text == "parent work is inactive"
+                    ))
+        ));
     }
 }

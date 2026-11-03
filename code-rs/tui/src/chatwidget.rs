@@ -25819,6 +25819,11 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     pub(crate) fn set_side_conversation_mode(&mut self) {
+        self.ghost_snapshots_disabled = true;
+        self.ghost_snapshots_disabled_reason = Some(GhostSnapshotsDisabledReason {
+            message: "temporary side conversation".to_string(),
+            hint: None,
+        });
         self.bottom_pane.update_status_text(
             "Side conversation · parent chat unchanged, workspace shared · Ctrl+C to return"
                 .to_string(),
@@ -31269,6 +31274,22 @@ use code_core::protocol::OrderMeta;
         assert!(chat.side_return_shortcut_available());
         chat.set_composer_text("unfinished draft".to_string());
         assert!(!chat.side_return_shortcut_available());
+    }
+
+    #[test]
+    fn side_mode_disables_unscoped_ghost_snapshot_jobs() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.set_side_conversation_mode();
+
+        assert!(chat.ghost_snapshots_disabled);
+        assert_eq!(
+            chat.ghost_snapshots_disabled_reason
+                .as_ref()
+                .map(|reason| reason.message.as_str()),
+            Some("temporary side conversation")
+        );
     }
 
     fn history_contains_text(chat: &ChatWidget<'_>, needle: &str) -> bool {

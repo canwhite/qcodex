@@ -201,20 +201,23 @@ impl SlashCommand {
     /// conversation is visible. New mutating commands are unavailable by
     /// default until explicitly reviewed here.
     pub fn available_in_side_conversation(self) -> bool {
-        !matches!(
+        matches!(
             self,
-            Self::New
-                | Self::Clear
-                | Self::Resume
-                | Self::Rename
-                | Self::Goal
-                | Self::Branch
-                | Self::Merge
-                | Self::Push
-                | Self::Auto
-                | Self::Review
-                | Self::Cloud
-                | Self::Btw
+            Self::Browser
+                | Self::Chrome
+                | Self::Init
+                | Self::Compact
+                | Self::Copy
+                | Self::Diff
+                | Self::Mention
+                | Self::Cmd
+                | Self::Status
+                | Self::Perf
+                | Self::Plan
+                | Self::Solve
+                | Self::Code
+                | Self::Quit
+                | Self::Exit
         )
     }
 
@@ -424,6 +427,11 @@ mod tests {
         assert!(!SlashCommand::New.available_in_side_conversation());
         assert!(!SlashCommand::Goal.available_in_side_conversation());
         assert!(!SlashCommand::Btw.available_in_side_conversation());
+        assert!(!SlashCommand::Undo.available_in_side_conversation());
+        assert!(!SlashCommand::Settings.available_in_side_conversation());
+        assert!(!SlashCommand::Login.available_in_side_conversation());
+        assert!(!SlashCommand::Mcp.available_in_side_conversation());
         assert!(SlashCommand::Status.available_in_side_conversation());
+        assert!(SlashCommand::Plan.available_in_side_conversation());
     }
 }

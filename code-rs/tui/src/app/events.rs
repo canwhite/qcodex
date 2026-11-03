@@ -1652,7 +1652,12 @@ impl App<'_> {
                                 .map_err(|err| format!("failed to find parent session: {err}"))?
                                 .ok_or_else(|| "parent session is no longer available.".to_string())?;
                             server
-                                .fork_conversation(0, config, catalog.entry_rollout_path(&entry))
+                                .fork_conversation(
+                                    0,
+                                    config,
+                                    catalog.entry_rollout_path(&entry),
+                                    Some(SIDE_CONTEXT_BOUNDARY),
+                                )
                                 .await
                                 .map_err(|err| format!("failed to fork side conversation: {err}"))
                         };
