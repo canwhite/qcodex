@@ -206,7 +206,7 @@ impl ConversationManager {
     ) -> CodexResult<EphemeralConversation> {
         // Compute the prefix up to the cut point.
         let history = RolloutRecorder::get_rollout_history(&path).await?;
-        let history = truncate_after_dropping_last_messages(history, num_messages_to_drop);
+        let history = truncate_history_for_fork(history, num_messages_to_drop);
 
         // If there is no prior history to seed, just start a fresh conversation.
         if matches!(history, InitialHistory::New) {
@@ -354,6 +354,28 @@ fn rollout_items_for_fork(
     items
 }
 
+fn truncate_history_for_fork(
+    history: InitialHistory,
+    requested_messages_to_drop: usize,
+) -> InitialHistory {
+    let unfinished_turn = history.get_rollout_items().iter().rev().find_map(|item| {
+        let event = match item {
+            RolloutItem::Event(event) => Some(&event.msg),
+            RolloutItem::EventMsg(event) => Some(event),
+            _ => None,
+        };
+        match event {
+            Some(code_protocol::protocol::EventMsg::TurnStarted(_)) => Some(true),
+            Some(code_protocol::protocol::EventMsg::TurnComplete(_)) => Some(false),
+            _ => None,
+        }
+    });
+    let messages_to_drop = requested_messages_to_drop.max(usize::from(
+        unfinished_turn.unwrap_or(false),
+    ));
+    truncate_after_dropping_last_messages(history, messages_to_drop)
+}
+
 /// Return a prefix of `items` obtained by dropping the last `n` user messages
 /// and all items that follow them.
 fn truncate_after_dropping_last_messages(history: InitialHistory, n: usize) -> InitialHistory {
@@ -396,6 +418,11 @@ mod tests {
     use code_protocol::models::ContentItem;
     use code_protocol::models::ReasoningItemReasoningSummary;
     use code_protocol::models::ResponseItem;
+    use code_protocol::protocol::EventMsg;
+    use code_protocol::config_types::ModeKind;
+    use code_protocol::protocol::RecordedEvent;
+    use code_protocol::protocol::TurnCompleteEvent;
+    use code_protocol::protocol::TurnStartedEvent;
 
     fn user_msg(text: &str) -> ResponseItem {
         ResponseItem::Message {
@@ -507,6 +534,72 @@ mod tests {
                 ))
         )));
         assert!(items.iter().any(|item| matches!(
+            item,
+            RolloutItem::ResponseItem(ResponseItem::Message { content, .. })
+                if content.iter().any(|part| matches!(
+                    part,
+                    ContentItem::OutputText { text } if text == "completed parent answer"
+                ))
+        )));
+    }
+
+    #[test]
+    fn persisted_unfinished_turn_is_not_inherited_when_tui_state_lags() {
+        let history = InitialHistory::Forked(vec![
+            RolloutItem::ResponseItem(user_msg("completed parent question")),
+            RolloutItem::ResponseItem(assistant_msg("completed parent answer")),
+            RolloutItem::ResponseItem(user_msg("unfinished parent goal")),
+            RolloutItem::Event(RecordedEvent {
+                id: "parent-turn".to_string(),
+                event_seq: 1,
+                order: None,
+                msg: EventMsg::TurnStarted(TurnStartedEvent {
+                    model_context_window: None,
+                    collaboration_mode_kind: ModeKind::Default,
+                }),
+            }),
+            RolloutItem::ResponseItem(assistant_msg("partial parent analysis")),
+        ]);
+
+        let history = truncate_history_for_fork(history, 0);
+        let items = rollout_items_for_fork(history, Some("answer only the side request"));
+
+        assert!(!items.iter().any(|item| matches!(
+            item,
+            RolloutItem::ResponseItem(ResponseItem::Message { content, .. })
+                if content.iter().any(|part| matches!(
+                    part,
+                    ContentItem::InputText { text } | ContentItem::OutputText { text }
+                        if text == "unfinished parent goal" || text == "partial parent analysis"
+                ))
+        )));
+        assert!(items.iter().any(|item| matches!(
+            item,
+            RolloutItem::ResponseItem(ResponseItem::Message { content, .. })
+                if content.iter().any(|part| matches!(
+                    part,
+                    ContentItem::OutputText { text } if text == "completed parent answer"
+                ))
+        )));
+    }
+
+    #[test]
+    fn completed_persisted_turn_remains_available_to_side_fork() {
+        let history = InitialHistory::Forked(vec![
+            RolloutItem::ResponseItem(user_msg("completed parent question")),
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                model_context_window: None,
+                collaboration_mode_kind: ModeKind::Default,
+            })),
+            RolloutItem::ResponseItem(assistant_msg("completed parent answer")),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                last_agent_message: Some("completed parent answer".to_string()),
+            })),
+        ]);
+
+        let history = truncate_history_for_fork(history, 0);
+
+        assert!(history.get_rollout_items().iter().any(|item| matches!(
             item,
             RolloutItem::ResponseItem(ResponseItem::Message { content, .. })
                 if content.iter().any(|part| matches!(

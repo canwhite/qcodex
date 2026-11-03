@@ -207,6 +207,7 @@ pub(super) enum SideConversationState<'a> {
         request_id: u64,
         child_session_id: uuid::Uuid,
         child_cleanup: Option<EphemeralConversationCleanup>,
+        pending_parent_events: Vec<AppEvent>,
     },
     Returning {
         request_id: u64,

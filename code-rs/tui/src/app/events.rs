@@ -824,11 +824,11 @@ impl App<'_> {
                 }
                 AppEvent::CodexEvent(event) => {
                     if let SideConversationState::Active {
-                        parent: Some(parent),
+                        pending_parent_events,
                         ..
                     } = &mut self.side_conversation
                     {
-                        parent.handle_code_event(event);
+                        pending_parent_events.push(AppEvent::CodexEvent(event));
                     } else {
                         self.dispatch_code_event(event);
                     }
@@ -1103,11 +1103,11 @@ impl App<'_> {
                 | AppEvent::BackgroundReviewFinished { .. }
                 | AppEvent::GhostSnapshotFinished { .. }) => {
                     if let SideConversationState::Active {
-                        parent: Some(parent),
+                        pending_parent_events,
                         ..
                     } = &mut self.side_conversation
                     {
-                        apply_parent_event(parent, event);
+                        pending_parent_events.push(event);
                     } else if let AppState::Chat { widget } = &mut self.app_state {
                         apply_parent_event(widget, event);
                     }
@@ -1806,6 +1806,7 @@ impl App<'_> {
                             request_id,
                             child_session_id,
                             child_cleanup: Some(child_cleanup),
+                            pending_parent_events: Vec::new(),
                         };
                         let pending_events = self
                             .pending_side_events
@@ -1846,12 +1847,19 @@ impl App<'_> {
                     }
                 }
                 AppEvent::ReturnFromSide => {
-                    let (mut parent, request_id, child_session_id, child_cleanup) = match &mut self.side_conversation {
+                    let (
+                        mut parent,
+                        request_id,
+                        child_session_id,
+                        child_cleanup,
+                        pending_parent_events,
+                    ) = match &mut self.side_conversation {
                         SideConversationState::Active {
                             parent,
                             request_id,
                             child_session_id,
                             child_cleanup,
+                            pending_parent_events,
                         } => {
                             let Some(parent) = parent.take() else {
                                 continue;
@@ -1859,7 +1867,13 @@ impl App<'_> {
                             let Some(child_cleanup) = child_cleanup.take() else {
                                 continue;
                             };
-                            (parent, *request_id, *child_session_id, child_cleanup)
+                            (
+                                parent,
+                                *request_id,
+                                *child_session_id,
+                                child_cleanup,
+                                std::mem::take(pending_parent_events),
+                            )
                         }
                         _ => continue,
                     };
@@ -1880,6 +1894,16 @@ impl App<'_> {
                             request_id,
                             child_session_id,
                         };
+                        for event in pending_parent_events {
+                            match event {
+                                AppEvent::CodexEvent(event) => self.dispatch_code_event(event),
+                                event => {
+                                    if let AppState::Chat { widget } = &mut self.app_state {
+                                        apply_parent_event(widget, event);
+                                    }
+                                }
+                            }
+                        }
                         self.clear_on_first_frame = true;
                         self.app_event_tx.send(AppEvent::RequestRedraw);
                     }
