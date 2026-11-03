@@ -616,7 +616,24 @@ impl App<'_> {
                     }
                 }
                 AppEvent::CodexEvent(event) => {
-                    self.dispatch_code_event(event);
+                    if !matches!(self.side_conversation, SideConversationState::Active { .. }) {
+                        self.dispatch_code_event(event);
+                    }
+                }
+                AppEvent::CodexEventForConversation { session_id, event } => {
+                    let is_active_child = matches!(
+                        self.side_conversation,
+                        SideConversationState::Active { child_session_id, .. }
+                            if child_session_id == session_id
+                    );
+                    if is_active_child {
+                        self.dispatch_code_event(event);
+                    } else if matches!(self.side_conversation, SideConversationState::Forking { .. }) {
+                        self.pending_side_events
+                            .entry(session_id)
+                            .or_default()
+                            .push(event);
+                    }
                 }
                 AppEvent::ExitRequest => {
                     // Stop background threads and break the UI loop.
@@ -1056,20 +1073,7 @@ impl App<'_> {
                 }
                 AppEvent::DispatchCommand(command, command_text) => {
                     let side_command_blocked = matches!(self.side_conversation, SideConversationState::Active { .. })
-                        && matches!(
-                            command,
-                            SlashCommand::New
-                                | SlashCommand::Clear
-                                | SlashCommand::Resume
-                                | SlashCommand::Rename
-                                | SlashCommand::Goal
-                                | SlashCommand::Branch
-                                | SlashCommand::Merge
-                                | SlashCommand::Push
-                                | SlashCommand::Auto
-                                | SlashCommand::Review
-                                | SlashCommand::Cloud
-                        );
+                        && !command.available_in_side_conversation();
                     // Persist UI-only slash commands to cross-session history.
                     // For prompt-expanding commands (/plan, /solve, /code) we let the
                     // expanded prompt be recorded by the normal submission path.
@@ -1577,7 +1581,8 @@ impl App<'_> {
                     new_conv,
                     initial_message,
                 } => {
-                    let child_session_id = new_conv.0.session_configured.session_id;
+                    let child_session_id = new_conv.0.conversation.session_configured.session_id;
+                    let child_rollout_path = new_conv.0.rollout_path.clone();
                     if !matches!(
                         self.side_conversation,
                         SideConversationState::Forking {
@@ -1586,26 +1591,28 @@ impl App<'_> {
                         } if expected_parent == parent_session_id && expected_request == request_id
                     ) {
                         let server = self._server.clone();
+                        let rollout_path = child_rollout_path;
                         tokio::spawn(async move {
                             let conversation_id = child_session_id.into();
-                            server.remove_conversation(&conversation_id).await;
+                            server.dispose_ephemeral_conversation(&conversation_id, rollout_path).await;
                         });
                         continue;
                     }
-                    self.side_conversation = SideConversationState::Idle;
                     if let AppState::Chat { widget } = &mut self.app_state {
                         if widget.session_id() != Some(parent_session_id) || widget.is_task_running() {
+                            self.side_conversation = SideConversationState::Idle;
                             let server = self._server.clone();
+                            let rollout_path = child_rollout_path;
                             tokio::spawn(async move {
                                 let conversation_id = child_session_id.into();
-                                server.remove_conversation(&conversation_id).await;
+                                server.dispose_ephemeral_conversation(&conversation_id, rollout_path).await;
                             });
                             continue;
                         }
                         let mut side_widget = ChatWidget::new_from_existing(
                             widget.config_ref().clone(),
-                            new_conv.0.conversation.clone(),
-                            new_conv.0.session_configured.clone(),
+                            new_conv.0.conversation.conversation.clone(),
+                            new_conv.0.conversation.session_configured.clone(),
                             self.app_event_tx.clone(),
                             self.enhanced_keys_supported,
                             self.terminal_info.clone(),
@@ -1615,16 +1622,34 @@ impl App<'_> {
                             false,
                             initial_message,
                         );
+                        side_widget.set_side_conversation_mode();
                         side_widget.enable_perf(self.timing_enabled);
                         side_widget.check_for_initial_animations();
                         let parent = std::mem::replace(widget, Box::new(side_widget));
                         self.side_conversation = SideConversationState::Active {
-                            parent,
+                            parent: Some(parent),
                             child_session_id,
+                            child_rollout_path,
                         };
+                        let pending_events = self
+                            .pending_side_events
+                            .remove(&child_session_id)
+                            .unwrap_or_default();
+                        for event in pending_events {
+                            self.dispatch_code_event(event);
+                        }
                         self.terminal_runs.clear();
                         self.clear_on_first_frame = true;
                         self.app_event_tx.send(AppEvent::RequestRedraw);
+                    } else {
+                        self.side_conversation = SideConversationState::Idle;
+                        let server = self._server.clone();
+                        tokio::spawn(async move {
+                            let conversation_id = child_session_id.into();
+                            server
+                                .dispose_ephemeral_conversation(&conversation_id, child_rollout_path)
+                                .await;
+                        });
                     }
                 }
                 AppEvent::SideConversationForkFailed {
@@ -1649,18 +1674,27 @@ impl App<'_> {
                     }
                 }
                 AppEvent::ReturnFromSide => {
-                    let SideConversationState::Active {
-                        mut parent,
-                        child_session_id,
-                    } = std::mem::replace(&mut self.side_conversation, SideConversationState::Idle) else {
-                        continue;
+                    let (mut parent, child_session_id, child_rollout_path) = match &mut self.side_conversation {
+                        SideConversationState::Active {
+                            parent,
+                            child_session_id,
+                            child_rollout_path,
+                        } => {
+                            let Some(parent) = parent.take() else {
+                                continue;
+                            };
+                            (parent, *child_session_id, child_rollout_path.take())
+                        }
+                        _ => continue,
                     };
+                    self.side_conversation = SideConversationState::Idle;
                     if let AppState::Chat { widget } = &mut self.app_state {
                         if widget.is_task_running() {
                             widget.debug_notice("Stop the side conversation task before returning.".to_string());
                             self.side_conversation = SideConversationState::Active {
-                                parent,
+                                parent: Some(parent),
                                 child_session_id,
+                                child_rollout_path,
                             };
                             continue;
                         }
@@ -1669,7 +1703,7 @@ impl App<'_> {
                         let server = self._server.clone();
                         tokio::spawn(async move {
                             let conversation_id = child_session_id.into();
-                            server.remove_conversation(&conversation_id).await;
+                            server.dispose_ephemeral_conversation(&conversation_id, child_rollout_path).await;
                         });
                         self.terminal_runs.clear();
                         self.clear_on_first_frame = true;
@@ -1677,6 +1711,15 @@ impl App<'_> {
                     }
                 }
                 AppEvent::SwitchCwd(new_cwd, initial_prompt) => {
+                    if !matches!(self.side_conversation, SideConversationState::Idle) {
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            widget.debug_notice(
+                                "Working-directory changes are unavailable during a side conversation. Press Ctrl+\\ to return."
+                                    .to_string(),
+                            );
+                        }
+                        continue;
+                    }
                     let target = new_cwd.clone();
                     self.config.cwd = target.clone();
                     if let AppState::Chat { widget } = &mut self.app_state {
@@ -2684,6 +2727,24 @@ impl App<'_> {
                     }
                 }
             }
+        }
+        let side_cleanup = match &mut self.side_conversation {
+            SideConversationState::Active {
+                child_session_id,
+                child_rollout_path,
+                ..
+            } => Some((*child_session_id, child_rollout_path.take())),
+            _ => None,
+        };
+        self.side_conversation = SideConversationState::Idle;
+        if let Some((child_session_id, child_rollout_path)) = side_cleanup {
+            let server = self._server.clone();
+            tokio::spawn(async move {
+                let conversation_id = child_session_id.into();
+                server
+                    .dispose_ephemeral_conversation(&conversation_id, child_rollout_path)
+                    .await;
+            });
         }
         if self.alt_screen_active {
             terminal.clear()?;

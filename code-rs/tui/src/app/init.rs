@@ -323,6 +323,7 @@ impl App<'_> {
             app_state,
             side_conversation: super::state::SideConversationState::Idle,
             next_side_request_id: 0,
+            pending_side_events: HashMap::new(),
             config,
             latest_upgrade_version,
             file_search,

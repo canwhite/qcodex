@@ -21,6 +21,7 @@ use crate::onboarding::onboarding_screen::OnboardingScreen;
 use crate::thread_spawner;
 use crate::tui::TerminalInfo;
 use code_core::config::Config;
+use code_core::protocol::Event;
 use code_core::ConversationManager;
 use code_login::ShutdownHandle;
 use tokio::sync::oneshot;
@@ -198,8 +199,9 @@ pub(super) enum SideConversationState<'a> {
         request_id: u64,
     },
     Active {
-        parent: Box<ChatWidget<'a>>,
+        parent: Option<Box<ChatWidget<'a>>>,
         child_session_id: uuid::Uuid,
+        child_rollout_path: Option<std::path::PathBuf>,
     },
 }
 
@@ -213,6 +215,7 @@ pub(crate) struct App<'a> {
     pub(super) app_state: AppState<'a>,
     pub(super) side_conversation: SideConversationState<'a>,
     pub(super) next_side_request_id: u64,
+    pub(super) pending_side_events: HashMap<uuid::Uuid, Vec<Event>>,
 
     /// Config is stored here so we can recreate ChatWidgets as needed.
     pub(super) config: Config,

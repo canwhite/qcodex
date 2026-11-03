@@ -94,7 +94,7 @@ pub mod review_format;
 #[cfg(test)]
 mod prompt_assembly_tests;
 pub use code_protocol::protocol::InitialHistory;
-pub use conversation_manager::ConversationManager;
+pub use conversation_manager::{ConversationManager, EphemeralConversation};
 pub use conversation_manager::NewConversation;
 // Re-export common auth types for workspace consumers
 pub use auth::AuthManager;

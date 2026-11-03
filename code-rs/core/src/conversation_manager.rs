@@ -29,6 +29,13 @@ pub struct NewConversation {
     pub session_configured: SessionConfiguredEvent,
 }
 
+/// A fork created for a temporary side conversation. The rollout path is owned
+/// by the caller and must be passed to `dispose_ephemeral_conversation`.
+pub struct EphemeralConversation {
+    pub conversation: NewConversation,
+    pub rollout_path: Option<PathBuf>,
+}
+
 /// [`ConversationManager`] is responsible for creating conversations and
 /// maintaining them in memory.
 pub struct ConversationManager {
@@ -162,14 +169,17 @@ impl ConversationManager {
         num_messages_to_drop: usize,
         mut config: Config,
         path: PathBuf,
-    ) -> CodexResult<NewConversation> {
+    ) -> CodexResult<EphemeralConversation> {
         // Compute the prefix up to the cut point.
         let history = RolloutRecorder::get_rollout_history(&path).await?;
         let history = truncate_after_dropping_last_messages(history, num_messages_to_drop);
 
         // If there is no prior history to seed, just start a fresh conversation.
         if matches!(history, InitialHistory::New) {
-            return self.spawn_conversation(config, self.auth_manager.clone()).await;
+            return Ok(EphemeralConversation {
+                conversation: self.spawn_conversation(config, self.auth_manager.clone()).await?,
+                rollout_path: None,
+            });
         }
 
         // Otherwise, create a temporary rollout with the truncated items and resume from it.
@@ -184,7 +194,7 @@ impl ConversationManager {
             ),
         )
         .await
-        .map_err(|e| CodexErr::Io(e))?;
+        .map_err(CodexErr::Io)?;
 
         // Persist rollout items to seed the resumed conversation.
         let rollout_items = history.get_rollout_items();
@@ -195,17 +205,61 @@ impl ConversationManager {
                 .map_err(CodexErr::Io)?;
         }
         // Ensure data is flushed to disk before resuming.
-        recorder.shutdown().await.map_err(|e| CodexErr::Io(e))?;
+        recorder.shutdown().await.map_err(CodexErr::Io)?;
 
         // Now spawn a conversation resuming from the newly created rollout.
-        config.experimental_resume = Some(recorder.rollout_path.clone());
+        let rollout_path = recorder.rollout_path.clone();
+        config.experimental_resume = Some(rollout_path.clone());
         let CodexSpawnOk {
             codex,
             init_id: _,
             session_id,
-        } = Codex::spawn_with_auth_manager(config, Some(self.auth_manager.clone())).await?;
+        } = match Codex::spawn_with_auth_manager(config, Some(self.auth_manager.clone())).await {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                remove_ephemeral_rollout(&rollout_path).await;
+                return Err(error);
+            }
+        };
         let conversation_id: code_protocol::ConversationId = session_id.into();
-        self.finalize_spawn(codex, conversation_id).await
+        let conversation = match self.finalize_spawn(codex, conversation_id).await {
+            Ok(conversation) => conversation,
+            Err(error) => {
+                remove_ephemeral_rollout(&rollout_path).await;
+                return Err(error);
+            }
+        };
+        Ok(EphemeralConversation {
+            conversation,
+            rollout_path: Some(rollout_path),
+        })
+    }
+
+    /// Stop and unregister a temporary fork, then remove its rollout files.
+    /// This operation is intentionally idempotent so every terminal side path
+    /// can call the same cleanup routine.
+    pub async fn dispose_ephemeral_conversation(
+        &self,
+        conversation_id: &ConversationId,
+        rollout_path: Option<PathBuf>,
+    ) {
+        if let Some(conversation) = self.remove_conversation(conversation_id).await {
+            let _ = conversation.submit(crate::protocol::Op::Shutdown).await;
+        }
+        if let Some(path) = rollout_path {
+            remove_ephemeral_rollout(&path).await;
+        }
+    }
+}
+
+async fn remove_ephemeral_rollout(path: &PathBuf) {
+    let snapshot = path.with_extension("snapshot.json");
+    for path in [path, &snapshot] {
+        if let Err(error) = tokio::fs::remove_file(path).await
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(?path, ?error, "failed to remove ephemeral side rollout");
+        }
     }
 }
 

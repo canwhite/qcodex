@@ -116,6 +116,12 @@ pub(crate) use code_auto_drive_core::{
 #[derive(Debug, AsRefStr)]
 pub(crate) enum AppEvent {
     CodexEvent(Event),
+    /// Event emitted by a temporary side conversation. The id is checked
+    /// before it can reach the visible widget.
+    CodexEventForConversation {
+        session_id: Uuid,
+        event: Event,
+    },
 
     /// Request a redraw which will be debounced by the [`App`].
     RequestRedraw,
@@ -265,7 +271,7 @@ pub(crate) enum AppEvent {
     SideConversationForked {
         parent_session_id: Uuid,
         request_id: u64,
-        new_conv: Redacted<code_core::NewConversation>,
+        new_conv: Redacted<code_core::EphemeralConversation>,
         initial_message: Option<UserMessage>,
     },
 

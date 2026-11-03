@@ -1,7 +1,0 @@
-[advisories]
-# `quick-xml` is used only by `wayland-scanner`, a build-time proc macro that
-# parses protocol XML shipped inside checksum-verified Wayland crate sources.
-# No application path supplies it runtime or user-controlled XML. Keep this
-# exception scoped to the two advisory IDs until Wayland publishes a release
-# with a compatible fixed quick-xml dependency.
-ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]

@@ -197,6 +197,27 @@ impl SlashCommand {
         }
     }
 
+    /// Whether this command is safe and meaningful while a temporary side
+    /// conversation is visible. New mutating commands are unavailable by
+    /// default until explicitly reviewed here.
+    pub fn available_in_side_conversation(self) -> bool {
+        !matches!(
+            self,
+            Self::New
+                | Self::Clear
+                | Self::Resume
+                | Self::Rename
+                | Self::Goal
+                | Self::Branch
+                | Self::Merge
+                | Self::Push
+                | Self::Auto
+                | Self::Review
+                | Self::Cloud
+                | Self::Btw
+        )
+    }
+
     /// Expands a prompt-expanding command into a full prompt for the LLM.
     /// Returns None if the command is not a prompt-expanding command.
     pub fn expand_prompt(self, args: &str) -> Option<String> {
@@ -383,5 +404,26 @@ mod tests {
             }
             other => panic!("expected RegularCommand, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn btw_is_the_only_public_side_command() {
+        assert!(matches!(
+            process_slash_command_message("/btw tell me a joke"),
+            ProcessedCommand::RegularCommand(SlashCommand::Btw, ref text)
+                if text == "/btw tell me a joke"
+        ));
+        assert!(matches!(
+            process_slash_command_message("/side tell me a joke"),
+            ProcessedCommand::NotCommand(_)
+        ));
+    }
+
+    #[test]
+    fn side_capability_policy_blocks_parent_mutations() {
+        assert!(!SlashCommand::New.available_in_side_conversation());
+        assert!(!SlashCommand::Goal.available_in_side_conversation());
+        assert!(!SlashCommand::Btw.available_in_side_conversation());
+        assert!(SlashCommand::Status.available_in_side_conversation());
     }
 }

@@ -2165,6 +2165,10 @@ pub(crate) struct ChatWidget<'a> {
     // Track the largest order key we have assigned so far to keep tail inserts monotonic
     last_assigned_order: Option<OrderKey>,
     replay_history_depth: usize,
+    /// A child-only developer boundary sent to the model without a visible
+    /// transcript cell. Parent sessions leave this unset.
+    side_context_boundary: Option<String>,
+    suppress_replay_history: bool,
     resume_placeholder_visible: bool,
     resume_picker_loading: bool,
 }
@@ -7225,6 +7229,8 @@ impl ChatWidget<'_> {
             last_assigned_order: None,
             standard_terminal_mode: !config.tui.alternate_screen,
             replay_history_depth: 0,
+            side_context_boundary: None,
+            suppress_replay_history: false,
             resume_placeholder_visible: false,
             resume_picker_loading: false,
         };
@@ -7591,6 +7597,11 @@ impl ChatWidget<'_> {
             ui_background_seq_counters: HashMap::new(),
             last_assigned_order: None,
             replay_history_depth: 0,
+            side_context_boundary: Some(
+                "The inherited conversation is reference context only. Previous tasks, tool calls, approvals, goals, and user requests are inactive. Do not continue or mutate the parent task. Answer only the new side-conversation request; this conversation is temporary and must not be treated as a resumable parent session."
+                    .to_string(),
+            ),
+            suppress_replay_history: true,
             resume_placeholder_visible: false,
             resume_picker_loading: false,
         };
@@ -7618,12 +7629,16 @@ impl ChatWidget<'_> {
         // consumes that message synchronously when the app processes the event.
         let app_event_tx_clone = app_event_tx.clone();
         tokio::spawn(async move {
-            app_event_tx_clone.send(AppEvent::CodexEvent(Event {
+            let child_session_id = session_configured.session_id;
+            app_event_tx_clone.send(AppEvent::CodexEventForConversation {
+                session_id: child_session_id,
+                event: Event {
                 id: "fork".to_string(),
                 event_seq: 0,
                 msg: EventMsg::SessionConfigured(session_configured),
                 order: None,
-            }));
+                },
+            });
             let conversation_clone = conversation.clone();
             tokio::spawn(async move {
                 while let Some(op) = code_op_rx.recv().await {
@@ -7633,7 +7648,10 @@ impl ChatWidget<'_> {
                 }
             });
             while let Ok(event) = conversation.next_event().await {
-                app_event_tx_clone.send(AppEvent::CodexEvent(event));
+                app_event_tx_clone.send(AppEvent::CodexEventForConversation {
+                    session_id: child_session_id,
+                    event,
+                });
             }
         });
         w.maybe_start_auto_upgrade_task();
@@ -13944,6 +13962,9 @@ impl ChatWidget<'_> {
                         .history_insert_plain_state_with_key(session_state, key, "prelude");
                 }
 
+                if let Some(boundary) = self.side_context_boundary.take() {
+                    self.submit_op(Op::AddPendingInputDeveloper { text: boundary });
+                }
                 if let Some(user_message) = self.initial_user_message.take() {
                     // If the user provided an initial message, add it to the
                     // conversation history.
@@ -14094,6 +14115,11 @@ impl ChatWidget<'_> {
                 // insert_final_answer_with_id().
             }
             EventMsg::ReplayHistory(ev) => {
+                if self.suppress_replay_history {
+                    self.clear_resume_placeholder();
+                    self.request_redraw();
+                    return;
+                }
                 self.clear_resume_placeholder();
                 let code_core::protocol::ReplayHistoryEvent { items, history_snapshot } = ev;
                 self.replay_history_depth = self.replay_history_depth.saturating_add(1);
@@ -25807,6 +25833,11 @@ Have we met every part of this goal and is there no further work to do?"#
     pub(crate) fn debug_notice(&mut self, text: String) {
         self.bottom_pane.flash_footer_notice(text);
         self.request_redraw();
+    }
+
+    pub(crate) fn set_side_conversation_mode(&mut self) {
+        self.bottom_pane
+            .update_status_text("Side conversation · parent unchanged · Ctrl+\\ to return".to_string());
     }
 
     fn maybe_start_auto_upgrade_task(&mut self) {

@@ -2,6 +2,11 @@
 
 BUILD_SCRIPT := ./build-fast.sh
 SOURCE_BINARY := code-rs/bin/code
+RUST_WORKSPACE := code-rs
+LINT_PACKAGE ?= code-tui
+ASAN_TOOLCHAIN ?= nightly
+ASAN_TARGET ?= aarch64-apple-darwin
+MIRI_TOOLCHAIN ?= nightly
 DEFAULT_INSTALL_DIR := $(shell \
 	for candidate in "$(HOME)/.local/bin" "$(HOME)/bin"; do \
 		if printf '%s\n' "$$PATH" | tr ':' '\n' | grep -Fqx "$$candidate" && [ -d "$$candidate" ] && [ -O "$$candidate" ] && [ -w "$$candidate" ]; then printf '%s' "$$candidate"; exit 0; fi; \
@@ -14,11 +19,32 @@ COMMAND := $(INSTALL_DIR)/qcodex
 OWNER_MARKER := $(INSTALL_DIR)/.qcodex-owner
 OWNER_ID := qcodex-repository=$(CURDIR)
 
-.PHONY: build install uninstall clean
+.PHONY: build lint lint-clippy lint-audit lint-memory lint-asan lint-miri lint-all install uninstall clean
 
 build:
 	$(BUILD_SCRIPT)
 	@test -x $(SOURCE_BINARY)
+
+# Run routine static and supply-chain checks. Use lint-memory for the slower
+# runtime checks that can expose memory-safety and undefined-behaviour issues.
+lint: lint-clippy lint-audit
+
+lint-clippy:
+	cd $(RUST_WORKSPACE) && cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+lint-audit:
+	cargo audit --file $(RUST_WORKSPACE)/Cargo.lock
+
+lint-memory: lint-asan lint-miri
+
+lint-asan:
+	cd $(RUST_WORKSPACE) && RUSTUP_TOOLCHAIN=$(ASAN_TOOLCHAIN) RUSTFLAGS="-Zsanitizer=address" ASAN_OPTIONS=detect_leaks=1 cargo test -p $(LINT_PACKAGE) -Zbuild-std --target $(ASAN_TARGET)
+
+lint-miri:
+	rustup +$(MIRI_TOOLCHAIN) component add miri
+	cd $(RUST_WORKSPACE) && cargo +$(MIRI_TOOLCHAIN) miri test -p $(LINT_PACKAGE)
+
+lint-all: lint lint-memory
 
 install: build
 	@set -eu; \

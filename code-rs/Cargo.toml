@@ -97,7 +97,7 @@ mcp-types = { path = "mcp-types", package = "code-mcp-types" }
 upstream-mcp-types = { git = "https://github.com/openai/codex.git", package = "mcp-types", rev = "6c384eb9c610f9a83037d9cad120fb792e782c7c" }
 
 # External
-allocative = "0.3.3"
+allocative = "=0.3.4"
 ansi-to-tui = "7.0.0"
 anyhow = "1"
 arboard = { version = "3", features = ["wayland-data-control"] }
@@ -141,7 +141,7 @@ landlock = "0.4.1"
 lazy_static = "1"
 libc = "0.2.175"
 log = "0.4"
-lru = "0.12"
+lru = "0.18"
 maplit = "1.0.2"
 mime_guess = "2.0.5"
 multimap = "0.10.0"
@@ -273,8 +273,9 @@ strip = "symbols"
 # See https://github.com/openai/codex/issues/1411 for details.
 codegen-units = 1
 
+# The patched 0.29 branch exposes the viewport-area control required by the
+# TUI's terminal integration.
 [patch.crates-io]
-# ratatui = { path = "../../ratatui" }
 ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
 
 # Custom build profiles used by build-fast.sh
