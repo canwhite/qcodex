@@ -4,7 +4,6 @@ use crate::config_profile::ConfigProfile;
 use crate::config_types::AgentConfig;
 use std::collections::HashMap;
 use crate::config_types::AutoDriveSettings;
-use crate::config_types::AutoDriveModelRoutingEntry;
 use crate::config_types::AllowedCommand;
 use crate::config_types::AllowedCommandMatchKind;
 use crate::config_types::BrowserConfig;
@@ -21,6 +20,7 @@ use crate::config_types::OtelConfig;
 use crate::config_types::OtelConfigToml;
 use crate::config_types::OtelExporterKind;
 use crate::config_types::default_auto_drive_model_routing_entries;
+use crate::config_types::normalize_auto_drive_model_routing_entries;
 use crate::config_types::ProjectCommandConfig;
 use crate::config_types::ProjectHookConfig;
 use crate::config_types::SandboxWorkspaceWrite;
@@ -185,60 +185,6 @@ pub(crate) const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024; // 32 KiB
 pub(crate) const CONFIG_TOML_FILE: &str = "config.toml";
 
 const DEFAULT_RESPONSES_ORIGINATOR_HEADER: &str = "code_cli_rs";
-
-fn normalize_auto_drive_routing_reasoning_levels(
-    levels: &[ReasoningEffort],
-) -> Vec<ReasoningEffort> {
-    let mut normalized = Vec::new();
-    for level in [
-        ReasoningEffort::Minimal,
-        ReasoningEffort::Low,
-        ReasoningEffort::Medium,
-        ReasoningEffort::High,
-        ReasoningEffort::XHigh,
-    ] {
-        if levels.contains(&level) {
-            normalized.push(level);
-        }
-    }
-    normalized
-}
-
-fn normalize_auto_drive_routing_model(model: &str) -> Option<String> {
-    let trimmed = model.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let normalized = trimmed.to_ascii_lowercase();
-    if !normalized.starts_with("gpt-") {
-        return None;
-    }
-
-    Some(normalized)
-}
-
-fn sanitize_auto_drive_routing_entries(entries: &mut Vec<AutoDriveModelRoutingEntry>) {
-    let mut normalized_entries = Vec::new();
-    for entry in entries.drain(..) {
-        let Some(model) = normalize_auto_drive_routing_model(&entry.model) else {
-            continue;
-        };
-
-        let reasoning_levels = normalize_auto_drive_routing_reasoning_levels(&entry.reasoning_levels);
-        if reasoning_levels.is_empty() {
-            continue;
-        }
-
-        normalized_entries.push(AutoDriveModelRoutingEntry {
-            model,
-            enabled: entry.enabled,
-            reasoning_levels,
-            description: entry.description.trim().to_string(),
-        });
-    }
-    *entries = normalized_entries;
-}
 
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
@@ -1665,7 +1611,9 @@ impl Config {
                 }
                 defaults
             });
-        sanitize_auto_drive_routing_entries(&mut auto_drive.model_routing_entries);
+        auto_drive.model_routing_entries = normalize_auto_drive_model_routing_entries(
+            auto_drive.model_routing_entries,
+        );
         if auto_drive.model_routing_entries.is_empty() {
             auto_drive.model_routing_entries = default_auto_drive_model_routing_entries();
         }

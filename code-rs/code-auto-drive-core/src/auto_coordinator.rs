@@ -14,11 +14,12 @@ use code_core::agent_defaults::{
     provider_supports_builtin_agent_defaults,
 };
 use code_core::config_types::{
-    AutoDriveModelRoutingEntry,
     AutoDriveSettings,
     ReasoningEffort,
     TextVerbosity,
 };
+#[cfg(test)]
+use code_core::config_types::AutoDriveModelRoutingEntry;
 use code_core::debug_logger::DebugLogger;
 use code_core::codex::compact::resolve_compact_prompt_text;
 use code_core::model_family::{derive_default_model_family, find_family_for_model};
@@ -49,6 +50,15 @@ use crate::auto_compact::{
     estimate_item_tokens,
 };
 use crate::coordinator_user_schema::{parse_user_turn_reply, user_turn_schema};
+use crate::coordinator_routing::{
+    CliRoutingEntry as AutoDriveCliRoutingEntry,
+    default_entries as default_auto_drive_cli_routing_entries,
+    format_reasoning_levels as format_cli_reasoning_levels,
+    reasoning_effort_label as cli_reasoning_effort_to_str,
+    resolve_entries as resolve_auto_drive_cli_routing_entries,
+};
+#[cfg(test)]
+use crate::coordinator_routing::models_for_auth as auto_drive_cli_models_for_auth;
 use crate::session_metrics::SessionMetrics;
 use crate::retry::{retry_with_backoff, RetryDecision, RetryError, RetryOptions};
 #[cfg(feature = "dev-faults")]
@@ -67,12 +77,10 @@ const MAX_QUEUED_CONVERSATION_UPDATES: usize = 24;
 const DEBUG_JSON_MAX_CHARS: usize = 1200;
 const CLI_PROMPT_MIN_CHARS: usize = 4;
 const CLI_PROMPT_MAX_CHARS: usize = 600;
+#[cfg(test)]
 const AUTO_DRIVE_CLI_MODEL_PRIMARY: &str = "gpt-5.5";
+#[cfg(test)]
 const AUTO_DRIVE_CLI_MODEL_FAST: &str = "gpt-5.6-luna";
-const AUTO_DRIVE_PRIMARY_ROUTING_DESCRIPTION: &str =
-    "Hard planning and complex problem solving";
-const AUTO_DRIVE_SPARK_ROUTING_DESCRIPTION: &str =
-    "Fast implementation loops and failing-test iteration";
 
 static HARD_LIMIT_TRIMMED_ITEMS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static QUEUED_UPDATE_DROPS_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -98,181 +106,6 @@ fn supported_text_verbosity_for_model(model: &str) -> &'static [TextVerbosity] {
     } else {
         ALL_TEXT_VERBOSITY
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AutoDriveCliRoutingEntry {
-    model: String,
-    reasoning_levels: Vec<ReasoningEffort>,
-    description: String,
-}
-
-fn cli_routing_reasoning_priority(level: ReasoningEffort) -> u8 {
-    match level {
-        ReasoningEffort::Minimal => 0,
-        ReasoningEffort::Low => 1,
-        ReasoningEffort::Medium => 2,
-        ReasoningEffort::High => 3,
-        ReasoningEffort::XHigh => 4,
-        ReasoningEffort::None => 5,
-    }
-}
-
-fn normalize_cli_routing_reasoning_levels(levels: &[ReasoningEffort]) -> Vec<ReasoningEffort> {
-    let mut normalized = Vec::new();
-    for level in [
-        ReasoningEffort::Minimal,
-        ReasoningEffort::Low,
-        ReasoningEffort::Medium,
-        ReasoningEffort::High,
-        ReasoningEffort::XHigh,
-    ] {
-        if levels.contains(&level) {
-            normalized.push(level);
-        }
-    }
-    normalized
-}
-
-fn cli_reasoning_effort_to_str(level: ReasoningEffort) -> &'static str {
-    match level {
-        ReasoningEffort::Minimal => "minimal",
-        ReasoningEffort::Low => "low",
-        ReasoningEffort::Medium => "medium",
-        ReasoningEffort::High => "high",
-        ReasoningEffort::XHigh => "xhigh",
-        ReasoningEffort::None => "minimal",
-    }
-}
-
-fn format_cli_reasoning_levels(levels: &[ReasoningEffort]) -> String {
-    levels
-        .iter()
-        .map(|level| cli_reasoning_effort_to_str(*level))
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-fn default_auto_drive_cli_routing_entries() -> Vec<AutoDriveCliRoutingEntry> {
-    vec![
-        AutoDriveCliRoutingEntry {
-            model: AUTO_DRIVE_CLI_MODEL_PRIMARY.to_string(),
-            reasoning_levels: vec![ReasoningEffort::High, ReasoningEffort::XHigh],
-            description: AUTO_DRIVE_PRIMARY_ROUTING_DESCRIPTION.to_string(),
-        },
-        AutoDriveCliRoutingEntry {
-            model: AUTO_DRIVE_CLI_MODEL_FAST.to_string(),
-            reasoning_levels: vec![ReasoningEffort::High],
-            description: AUTO_DRIVE_SPARK_ROUTING_DESCRIPTION.to_string(),
-        },
-    ]
-}
-
-fn auto_drive_cli_routing_entries_for_auth(
-    _auth_mode: Option<code_app_server_protocol::AuthMode>,
-    _supports_pro_only_models: bool,
-) -> Vec<AutoDriveCliRoutingEntry> {
-    default_auto_drive_cli_routing_entries()
-}
-
-#[cfg(test)]
-fn auto_drive_cli_models_for_auth(
-    auth_mode: Option<code_app_server_protocol::AuthMode>,
-    supports_pro_only_models: bool,
-) -> Vec<String> {
-    auto_drive_cli_routing_entries_for_auth(auth_mode, supports_pro_only_models)
-        .into_iter()
-        .map(|entry| entry.model)
-        .collect()
-}
-
-fn normalize_routing_entry_model(model: &str) -> Option<String> {
-    let trimmed = model.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let normalized = trimmed.to_ascii_lowercase();
-    if !normalized.starts_with("gpt-") {
-        return None;
-    }
-
-    Some(normalized)
-}
-
-fn normalize_auto_drive_cli_routing_entries(
-    entries: &[AutoDriveModelRoutingEntry],
-) -> Vec<AutoDriveCliRoutingEntry> {
-    let mut normalized: Vec<AutoDriveCliRoutingEntry> = Vec::new();
-
-    for entry in entries {
-        if !entry.enabled {
-            continue;
-        }
-
-        let Some(model) = normalize_routing_entry_model(&entry.model) else {
-            continue;
-        };
-
-        let reasoning_levels = normalize_cli_routing_reasoning_levels(&entry.reasoning_levels);
-        if reasoning_levels.is_empty() {
-            continue;
-        }
-
-        let description = entry.description.trim().to_string();
-        if let Some(existing) = normalized
-            .iter_mut()
-            .find(|candidate| candidate.model.eq_ignore_ascii_case(&model))
-        {
-            let mut combined = existing.reasoning_levels.clone();
-            for level in reasoning_levels {
-                if !combined.contains(&level) {
-                    combined.push(level);
-                }
-            }
-            combined.sort_by_key(|level| cli_routing_reasoning_priority(*level));
-            existing.reasoning_levels = combined;
-            if existing.description.is_empty() && !description.is_empty() {
-                existing.description = description;
-            }
-            continue;
-        }
-
-        normalized.push(AutoDriveCliRoutingEntry {
-            model,
-            reasoning_levels,
-            description,
-        });
-    }
-
-    normalized
-}
-
-fn resolve_auto_drive_cli_routing_entries(
-    settings: &AutoDriveSettings,
-    auth_mode: Option<code_app_server_protocol::AuthMode>,
-    supports_pro_only_models: bool,
-    available_models: &[String],
-) -> Vec<AutoDriveCliRoutingEntry> {
-    let mut entries = normalize_auto_drive_cli_routing_entries(&settings.model_routing_entries);
-    entries.retain(|entry| {
-        available_models
-            .iter()
-            .any(|model| model.eq_ignore_ascii_case(&entry.model))
-    });
-
-    if entries.is_empty() {
-        return auto_drive_cli_routing_entries_for_auth(auth_mode, supports_pro_only_models)
-            .into_iter()
-            .filter(|entry| {
-                available_models
-                    .iter()
-                    .any(|model| model.eq_ignore_ascii_case(&entry.model))
-            })
-            .collect();
-    }
-
-    entries
 }
 
 fn spark_fallback_model(model: &str) -> Option<&'static str> {

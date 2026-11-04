@@ -43,7 +43,10 @@ use code_core::config::Config;
 use code_core::git_info::CommitLogEntry;
 use code_core::config_types::AgentConfig;
 use code_core::config_types::AutoDriveContinueMode;
-use code_core::config_types::AutoDriveModelRoutingEntry;
+use code_core::config_types::{
+    AutoDriveModelRoutingEntry,
+    normalize_auto_drive_model_routing_entries,
+};
 use code_core::config_types::ContextMode;
 use code_core::config_types::Notifications;
 use code_core::config_types::ReasoningEffort;
@@ -98,6 +101,7 @@ mod browser_sessions;
 mod agent_runs;
 mod web_search_sessions;
 mod auto_drive_cards;
+mod auto_transcript;
 pub(crate) mod tool_cards;
 mod running_tools;
 #[cfg(any(test, feature = "test-helpers"))]
@@ -106,6 +110,7 @@ pub mod smoke_helpers;
 #[cfg(test)]
 pub(crate) use self::esc::EscIntent;
 use self::agent_summary::agent_summary_counts;
+use self::auto_transcript::{CompactionOverlay, derive_compaction_overlay};
 use self::esc::AutoGoalEscState;
 use self::agent_install::{
     start_agent_install_session,
@@ -124,7 +129,6 @@ use code_auto_drive_core::{
     AutoDriveHistory,
     AutoDriveController,
     AutoRunSummary,
-    AutoRunPhase,
     AutoControllerEffect,
     AutoTurnAgentsAction,
     AutoTurnAgentsTiming,
@@ -139,6 +143,8 @@ use code_auto_drive_core::{
     TurnConfig,
     TurnDescriptor,
 };
+#[cfg(any(test, feature = "test-helpers"))]
+use code_auto_drive_core::AutoRunPhase;
 use self::limits_overlay::{LimitsOverlayContent, LimitsTab};
 use crate::chrome_launch::ChromeLaunchOption;
 use crate::insert_history::word_wrap_lines;
@@ -2107,7 +2113,7 @@ pub(crate) struct ChatWidget<'a> {
     auto_handle: Option<AutoCoordinatorHandle>,
     auto_drive_pid_guard: Option<AutoDrivePidFile>,
     auto_history: AutoDriveHistory,
-    auto_compaction_overlay: Option<AutoCompactionOverlay>,
+    auto_compaction_overlay: Option<CompactionOverlay>,
     auto_turn_review_state: Option<AutoTurnReviewState>,
     auto_pending_goal_request: bool,
     auto_goal_bootstrap_done: bool,
@@ -2180,17 +2186,6 @@ struct ContextSummary {
     deltas: Vec<ContextDeltaRecord>,
     browser_snapshot: Option<ContextBrowserSnapshotRecord>,
     expanded: bool,
-}
-
-#[derive(Clone, Debug)]
-struct AutoCompactionOverlay {
-    /// Snapshot of the conversation prefix (including the latest compact summary)
-    /// that should be injected ahead of any history-derived tail when exporting
-    /// the next Auto Drive request.
-    prefix_items: Vec<code_protocol::models::ResponseItem>,
-    /// History cell index that marks the beginning of the still-live tail that
-    /// we continue to mirror directly from the UI.
-    tail_start_cell: usize,
 }
 
 #[derive(Clone)]
@@ -8002,67 +7997,6 @@ impl ChatWidget<'_> {
             items.push((idx, item));
         }
         items
-    }
-
-    fn derive_compaction_overlay(
-        &self,
-        previous_items: &[code_protocol::models::ResponseItem],
-        previous_indices: &[Option<usize>],
-        new_items: &[code_protocol::models::ResponseItem],
-    ) -> Option<AutoCompactionOverlay> {
-        if previous_items == new_items {
-            return self.auto_compaction_overlay.clone();
-        }
-
-        if new_items.is_empty() {
-            return Some(AutoCompactionOverlay {
-                prefix_items: Vec::new(),
-                tail_start_cell: self.history_cells.len(),
-            });
-        }
-
-        let max_prefix = previous_items.len().min(new_items.len());
-        let mut prefix_len = 0;
-        while prefix_len < max_prefix && previous_items[prefix_len] == new_items[prefix_len] {
-            prefix_len += 1;
-        }
-
-        let remaining_prev = previous_items.len().saturating_sub(prefix_len);
-        let remaining_new = new_items.len().saturating_sub(prefix_len);
-        let mut suffix_len = 0;
-        while suffix_len < remaining_prev && suffix_len < remaining_new {
-            let prev_idx = previous_items.len() - 1 - suffix_len;
-            let new_idx = new_items.len() - 1 - suffix_len;
-            if previous_items[prev_idx] != new_items[new_idx] {
-                break;
-            }
-            suffix_len += 1;
-        }
-
-        let mut prefix_items_end = new_items.len().saturating_sub(suffix_len);
-
-        let tail_start_cell = if suffix_len == 0 {
-            self.history_cells.len()
-        } else {
-            let start = previous_items.len() - suffix_len;
-            previous_indices[start..]
-                .iter()
-                .find_map(|idx| *idx)
-                .unwrap_or(self.history_cells.len())
-        };
-
-        if suffix_len > 0 && tail_start_cell == self.history_cells.len() {
-            // Suffix items no longer map to on-screen cells (e.g., after repeated compactions),
-            // so treat the whole conversation as the overlay prefix.
-            prefix_items_end = new_items.len();
-        }
-
-        let prefix_items = new_items[..prefix_items_end].to_vec();
-
-        Some(AutoCompactionOverlay {
-            prefix_items,
-            tail_start_cell,
-        })
     }
 
     fn rebuild_auto_history(&mut self) -> Vec<code_protocol::models::ResponseItem> {
@@ -19056,7 +18990,7 @@ fi\n\
     }
 
     fn auto_show_goal_entry_panel(&mut self) {
-        self.auto_state.set_phase(AutoRunPhase::AwaitingGoalEntry);
+        self.auto_state.show_goal_entry();
         self.auto_state.goal = None;
         self.auto_pending_goal_request = false;
         self.auto_goal_bootstrap_done = false;
@@ -19124,7 +19058,7 @@ fi\n\
         self.auto_state.last_decision_status_title = last_decision_status_title;
         self.auto_state.last_decision_display = last_decision_display;
         self.auto_state.last_decision_display_is_summary = last_decision_display_is_summary;
-        self.auto_state.set_phase(AutoRunPhase::Idle);
+        self.auto_state.return_to_idle();
         self.auto_goal_escape_state = AutoGoalEscState::Inactive;
         self.bottom_pane.clear_auto_coordinator_view(true);
         self.bottom_pane.clear_live_ring();
@@ -19320,7 +19254,6 @@ fi\n\
             let started = self.auto_start_bootstrap_from_history();
             if !started {
                 self.auto_state.reset();
-                self.auto_state.set_phase(AutoRunPhase::Idle);
                 self.auto_show_goal_entry_panel();
             }
             self.request_redraw();
@@ -19897,7 +19830,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 self.submit_user_message(message);
             }
         } else {
-            self.auto_state.set_phase(AutoRunPhase::Active);
+            self.auto_state.on_turn_continues();
             self.auto_state.placeholder_phrase = None;
         }
 
@@ -19936,8 +19869,13 @@ Have we met every part of this goal and is there no further work to do?"#
     ) {
         let (previous_items, previous_indices) = self.export_auto_drive_items_with_indices();
         let conversation = conversation.as_ref().to_vec();
-        self.auto_compaction_overlay = self
-            .derive_compaction_overlay(&previous_items, &previous_indices, &conversation);
+        self.auto_compaction_overlay = derive_compaction_overlay(
+            self.auto_compaction_overlay.as_ref(),
+            self.history_cells.len(),
+            &previous_items,
+            &previous_indices,
+            &conversation,
+        );
         self.auto_history.replace_all(conversation);
         if show_notice {
             self.history_push_plain_paragraphs(
@@ -20010,7 +19948,7 @@ Have we met every part of this goal and is there no further work to do?"#
                         && self.auto_state.is_paused_manual()
                     {
                         self.auto_state.clear_bypass_coordinator_flag();
-                        self.auto_state.set_phase(AutoRunPhase::Active);
+                        self.auto_state.on_turn_continues();
                     }
                     if !self.auto_state.should_bypass_coordinator_next_submit() {
                         self.auto_submit_prompt();
@@ -23611,48 +23549,14 @@ Have we met every part of this goal and is there no further work to do?"#
         entries: Vec<AutoDriveModelRoutingEntry>,
         available_models: &[String],
     ) -> Vec<AutoDriveModelRoutingEntry> {
-        fn normalize_reasoning(levels: &[ReasoningEffort]) -> Vec<ReasoningEffort> {
-            let mut normalized = Vec::new();
-            for level in [
-                ReasoningEffort::Minimal,
-                ReasoningEffort::Low,
-                ReasoningEffort::Medium,
-                ReasoningEffort::High,
-                ReasoningEffort::XHigh,
-            ] {
-                if levels.contains(&level) {
-                    normalized.push(level);
-                }
-            }
-            normalized
-        }
-
-        let mut normalized_entries = Vec::new();
-        for entry in entries {
-            let model = entry.model.trim().to_ascii_lowercase();
-            if !model.starts_with("gpt-") {
-                continue;
-            }
-
-            if !available_models
-                .iter()
-                .any(|available| available.eq_ignore_ascii_case(&model))
-            {
-                continue;
-            }
-
-            let reasoning_levels = normalize_reasoning(&entry.reasoning_levels);
-            if reasoning_levels.is_empty() {
-                continue;
-            }
-
-            normalized_entries.push(AutoDriveModelRoutingEntry {
-                model,
-                enabled: entry.enabled,
-                reasoning_levels,
-                description: entry.description.trim().to_string(),
-            });
-        }
+        let normalized_entries = normalize_auto_drive_model_routing_entries(entries)
+            .into_iter()
+            .filter(|entry| {
+                available_models
+                    .iter()
+                    .any(|available| available.eq_ignore_ascii_case(&entry.model))
+            })
+            .collect::<Vec<_>>();
 
         if normalized_entries.is_empty() {
             let mut defaults = code_core::config_types::default_auto_drive_model_routing_entries();
@@ -27055,7 +26959,7 @@ Have we met every part of this goal and is there no further work to do?"#
                     // Re-run the conversation through the normal decision pipeline so the
                     // coordinator produces a full finish_status/progress/cli turn rather than
                     // falling back to the user-response schema.
-                    self.auto_state.set_phase(AutoRunPhase::Active);
+                    self.auto_state.on_turn_continues();
                     self.auto_send_conversation_force();
                     self.stop_spinner();
                     return;

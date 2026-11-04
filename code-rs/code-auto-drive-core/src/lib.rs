@@ -3,6 +3,7 @@ mod auto_drive_history;
 mod auto_compact;
 mod session_metrics;
 mod coordinator_router;
+mod coordinator_routing;
 mod coordinator_user_schema;
 mod controller;
 mod retry;

@@ -329,7 +329,7 @@ pub struct AutoDriveController {
     pub elapsed_override: Option<Duration>,
     pub pending_stop_message: Option<String>,
     pub last_completion_explanation: Option<String>,
-    pub phase: AutoRunPhase,
+    phase: AutoRunPhase,
     // Non-cloneable guard is kept separately; controller stays Clone.
     pub review_lock: Option<std::sync::Arc<code_core::review_coord::ReviewGuard>>, 
 }
@@ -368,6 +368,18 @@ impl AutoDriveController {
 
     pub fn on_prompt_ready(&mut self, prompt_ready: bool) {
         self.apply_phase(AutoRunPhase::AwaitingCoordinator { prompt_ready });
+    }
+
+    pub fn show_goal_entry(&mut self) {
+        self.apply_phase(AutoRunPhase::AwaitingGoalEntry);
+    }
+
+    pub fn return_to_idle(&mut self) {
+        self.apply_phase(AutoRunPhase::Idle);
+    }
+
+    pub fn on_turn_continues(&mut self) {
+        self.apply_phase(AutoRunPhase::Active);
     }
 
     pub fn on_prompt_submitted(&mut self) {
@@ -823,6 +835,7 @@ impl AutoDriveController {
         }
     }
 
+    #[cfg(any(test, feature = "test-helpers"))]
     pub fn set_phase(&mut self, phase: AutoRunPhase) {
         self.phase = phase;
     }
@@ -970,9 +983,12 @@ mod tests {
         assert!(!controller.should_show_goal_entry());
         assert!(!controller.is_active());
 
-        controller.set_phase(AutoRunPhase::AwaitingGoalEntry);
+        controller.show_goal_entry();
         assert!(controller.should_show_goal_entry());
         assert!(!controller.is_active());
+
+        controller.return_to_idle();
+        assert!(matches!(controller.current_phase(), AutoRunPhase::Idle));
     }
 
     #[test]

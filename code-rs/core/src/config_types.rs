@@ -956,6 +956,45 @@ pub fn default_auto_drive_model_routing_entries() -> Vec<AutoDriveModelRoutingEn
     ]
 }
 
+/// Canonicalize persisted Auto Drive routing entries without applying runtime
+/// availability or authentication policy. Those policies belong to consumers;
+/// this function only defines the representation stored and shared by them.
+pub fn normalize_auto_drive_model_routing_entries(
+    entries: impl IntoIterator<Item = AutoDriveModelRoutingEntry>,
+) -> Vec<AutoDriveModelRoutingEntry> {
+    let mut normalized_entries = Vec::new();
+    for entry in entries {
+        let model = entry.model.trim().to_ascii_lowercase();
+        if !model.starts_with("gpt-") {
+            continue;
+        }
+
+        let mut reasoning_levels = Vec::new();
+        for level in [
+            ReasoningEffort::Minimal,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::XHigh,
+        ] {
+            if entry.reasoning_levels.contains(&level) {
+                reasoning_levels.push(level);
+            }
+        }
+        if reasoning_levels.is_empty() {
+            continue;
+        }
+
+        normalized_entries.push(AutoDriveModelRoutingEntry {
+            model,
+            enabled: entry.enabled,
+            reasoning_levels,
+            description: entry.description.trim().to_string(),
+        });
+    }
+    normalized_entries
+}
+
 /// Auto Drive behavioral defaults persisted via `config.toml`.
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct AutoDriveSettings {
@@ -1778,6 +1817,36 @@ impl From<code_protocol::config_types::ReasoningSummary> for ReasoningSummary {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn auto_drive_routing_normalization_is_canonical_and_lossless_for_valid_entries() {
+        let entries = normalize_auto_drive_model_routing_entries(vec![
+            AutoDriveModelRoutingEntry {
+                model: " GPT-5.5 ".to_string(),
+                enabled: true,
+                reasoning_levels: vec![
+                    ReasoningEffort::XHigh,
+                    ReasoningEffort::High,
+                    ReasoningEffort::High,
+                ],
+                description: " primary ".to_string(),
+            },
+            AutoDriveModelRoutingEntry {
+                model: "other-model".to_string(),
+                enabled: true,
+                reasoning_levels: vec![ReasoningEffort::High],
+                description: String::new(),
+            },
+        ]);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].model, "gpt-5.5");
+        assert_eq!(entries[0].description, "primary");
+        assert_eq!(
+            entries[0].reasoning_levels,
+            vec![ReasoningEffort::High, ReasoningEffort::XHigh]
+        );
+    }
 
     #[test]
     fn deserialize_stdio_command_server_config() {
