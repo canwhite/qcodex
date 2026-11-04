@@ -40,7 +40,8 @@ qcodex config status --json
 ```
 
 Import requires `--confirm` because it may place `OPENAI_API_KEY` into secure
-global credential storage. It never prints the key.
+global credential storage. It never prints the key. Import creates a new
+profile; use `qcodex config update <id>` to change an existing one.
 
 ## What a profile contains
 

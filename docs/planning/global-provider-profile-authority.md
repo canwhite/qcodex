@@ -196,6 +196,7 @@ working directory's `.env` and selected a different request family.
 | 3 | High | Credential consistency | `cli/src/config_cmd.rs`, `core/src/provider_profiles/config_center/` |
 | 4 | High | Configuration injection | `arg0/src/lib.rs` |
 | 5 | Medium | Observability gap | `cli/src/config_cmd.rs`, `docs/provider-configuration.md` |
+| 6 | High | Credential overwrite on duplicate import | `cli/src/config_cmd.rs` |
 
 1. An active global profile could coexist with unconditional project dotenv
    loading. Startup now suppresses project dotenv provider loading while a
@@ -219,6 +220,10 @@ working directory's `.env` and selected a different request family.
    profile situations hard to distinguish. It now exposes `profile_count` and
    `profile_state`; configuration documentation covers global authority,
    explicit override, deactivation, and one-time dotenv import.
+6. `config import-dotenv --id <existing-id>` could write a credential under
+   the existing profile's secret identity before the repository rejected the
+   duplicate profile. Import now rejects an existing id before any credential
+   operation; a regression test proves the existing profile remains unchanged.
 
 ### Verification Evidence
 
@@ -244,6 +249,8 @@ working directory's `.env` and selected a different request family.
    replacement impossible to roll back safely.
 4. The dotenv allow-list protected `CODEX_*` variables but had no boundary for
    qcodex-specific process controls introduced later.
+5. Dotenv import validated profile uniqueness only at the final repository
+   write, after credential storage had already used the caller-provided id.
 
 ### Prevention Tasks
 
@@ -253,6 +260,6 @@ working directory's `.env` and selected a different request family.
 | Keep fresh credential references for replacements | AFK | A failed metadata update leaves the prior secret reference loadable. |
 | Document process controls separately from project dotenv settings | AFK | Every new `QCODEX_*` control is rejected from project dotenv and has a regression test. |
 
-All four originally HIGH issues have fixes and regression coverage. A final
+All five HIGH issues have fixes and regression coverage. A final
 post-mortem sweep found no unmitigated residual score above 12: **HIGH risks
 remaining: 0**.

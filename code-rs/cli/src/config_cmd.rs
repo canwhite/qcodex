@@ -266,6 +266,12 @@ fn import_dotenv_profile(
                 .collect(),
         )
     });
+    if existing.iter().any(|profile| profile.id == id) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("provider profile `{id}` already exists; use `config update` instead"),
+        ));
+    }
     let display_name = name.unwrap_or_else(|| id.clone());
     let mut profile = ProviderProfile::new(id.clone(), display_name, base_url, wire_api, model);
 
@@ -368,6 +374,51 @@ mod tests {
             .expect("write dotenv");
 
         assert!(read_dotenv_provider_settings(path.path()).is_err());
+    }
+
+    #[test]
+    fn dotenv_import_rejects_an_existing_profile_before_writing_a_secret() {
+        let home = tempfile::tempdir().expect("profile home");
+        let repository = ProviderProfileRepository::new(home.path());
+        repository
+            .add(
+                ProviderProfile::new(
+                    "existing",
+                    "Existing",
+                    "https://existing.example/v1",
+                    code_core::WireApi::Chat,
+                    "existing-model",
+                ),
+                None,
+            )
+            .expect("existing profile");
+        let dotenv = tempfile::NamedTempFile::new().expect("dotenv file");
+        std::fs::write(
+            dotenv.path(),
+            "OPENAI_BASE_URL=https://import.example/v1\nOPENAI_MODEL=import-model\nOPENAI_API_KEY=test-key\n",
+        )
+        .expect("write dotenv");
+        let secret_store = ProviderSecretStore::new(home.path());
+
+        let error = import_dotenv_profile(
+            &repository,
+            &secret_store,
+            Some(dotenv.path().to_path_buf()),
+            Some("existing".to_string()),
+            None,
+            true,
+        )
+        .expect_err("duplicate id must fail");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            repository
+                .get("existing")
+                .expect("read profile")
+                .expect("profile")
+                .model,
+            "existing-model"
+        );
     }
 
     #[test]
