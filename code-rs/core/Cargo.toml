@@ -18,6 +18,7 @@ async-channel = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
+chacha20poly1305 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 chardetng = { workspace = true }
 code-apply-patch = { workspace = true }
@@ -47,6 +48,7 @@ fs2 = "0.4"
 htmd = "0.1"
 httpdate = "1"
 image = { workspace = true }
+keyring = { workspace = true, features = ["crypto-rust"] }
 once_cell = { workspace = true }
 portable-pty = { workspace = true }
 rand = { workspace = true }
@@ -65,6 +67,7 @@ similar = { workspace = true }
 strum_macros = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
+tiny_http = { workspace = true }
 time = { workspace = true, features = [
     "formatting",
     "parsing",
@@ -94,9 +97,18 @@ wildmatch = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.9"
-
+keyring = { workspace = true, features = ["apple-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+keyring = { workspace = true, features = ["sync-secret-service"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
 landlock = "0.4.1"
 seccompiler = "0.5.0"
 
@@ -107,12 +119,6 @@ openssl-sys = { version = "*", features = ["vendored"] }
 # Build OpenSSL from source for musl builds.
 [target.aarch64-unknown-linux-musl.dependencies]
 openssl-sys = { version = "*", features = ["vendored"] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61.2", features = [
-    "Win32_Foundation",
-    "Win32_System_Threading",
-] }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

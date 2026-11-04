@@ -183,6 +183,19 @@ pub(crate) enum AppEvent {
     /// short grace period.
     RecheckSpinnerIfIdle,
 
+    /// The active qcodex provider profile changed.
+    ///
+    /// The widget applies the new provider at the next turn boundary, so a
+    /// turn that is already running keeps the provider it started with.
+    ProviderProfileChanged {
+        /// Id of the profile that is now active.
+        profile_id: Option<String>,
+        /// Model the new profile requests.
+        model: Option<String>,
+        /// A human-readable description of what happened.
+        message: String,
+    },
+
     KeyEvent(KeyEvent),
 
     MouseEvent(MouseEvent),

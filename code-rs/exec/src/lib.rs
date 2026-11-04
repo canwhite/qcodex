@@ -82,13 +82,18 @@ use code_core::{entry_to_rollout_path, AutoDriveMode, AutoDrivePidFile, SessionC
 use code_core::protocol::SandboxPolicy;
 
 fn build_auto_drive_exec_config(config: &Config) -> Config {
-	    let mut auto_config = config.clone();
-	    auto_config.model = config.auto_drive.model.trim().to_string();
-	    if auto_config.model.is_empty() {
-	        auto_config.model = MODEL_SLUG.to_string();
-	    }
-	    auto_config.model_reasoning_effort = config.auto_drive.model_reasoning_effort;
-	    auto_config
+    let mut auto_config = config.clone();
+    // An active qcodex provider profile owns the model. Auto Drive must not
+    // silently replace it with the built-in Auto Drive slug, because the
+    // provider may not serve that model.
+    if config.active_provider_profile_id.is_none() {
+        auto_config.model = config.auto_drive.model.trim().to_string();
+        if auto_config.model.is_empty() {
+            auto_config.model = MODEL_SLUG.to_string();
+        }
+    }
+    auto_config.model_reasoning_effort = config.auto_drive.model_reasoning_effort;
+    auto_config
 }
 use code_core::git_info::current_branch_name;
 use code_core::timeboxed_exec_guidance::{

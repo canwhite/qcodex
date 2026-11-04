@@ -480,6 +480,15 @@ impl App<'_> {
                         widget.recheck_spinner_if_idle();
                     }
                 }
+                AppEvent::ProviderProfileChanged {
+                    profile_id,
+                    model,
+                    message,
+                } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.handle_provider_profile_changed(profile_id, model, message);
+                    }
+                }
                 AppEvent::Redraw => {
                     if self.timing_enabled { self.timing.on_redraw_begin(); }
                     let t0 = Instant::now();
@@ -985,6 +994,9 @@ impl App<'_> {
                     // Stop background threads and break the UI loop.
                     self.commit_anim_running.store(false, Ordering::Release);
                     self.input_running.store(false, Ordering::Release);
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.stop_provider_profile_poll();
+                    }
                     break 'main;
                 }
                 AppEvent::ClearUi => {
@@ -1000,6 +1012,7 @@ impl App<'_> {
                     terminal.clear()?;
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.abort_active_turn_for_new_chat();
+                        widget.stop_provider_profile_poll();
                     }
                     let mut new_widget = ChatWidget::new(
                         self.config.clone(),
@@ -2161,6 +2174,7 @@ impl App<'_> {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         debug_assert!(!side_return_requires_idle(widget.is_task_running()));
                         let event_forwarder = widget.stop_conversation_event_forwarder();
+                        widget.stop_provider_profile_poll();
                         parent.prepare_for_side_return();
                         parent.debug_notice("Returned from side conversation.".to_string());
                         parent.set_side_closing_status();

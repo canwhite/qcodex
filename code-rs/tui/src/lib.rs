@@ -124,6 +124,7 @@ mod markdown_render;
 mod markdown_renderer;
 mod memory_citation;
 mod remote_model_presets;
+mod provider_profile_watcher;
 mod markdown_stream;
 mod syntax_highlight;
 pub mod onboarding;

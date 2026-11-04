@@ -146,6 +146,14 @@ pub struct ModelProviderInfo {
     /// Optional OpenRouter-specific configuration for routing preferences and metadata.
     #[serde(default)]
     pub openrouter: Option<OpenRouterConfig>,
+
+    /// Reference to a credential held in the provider secret store.
+    ///
+    /// This is the credential path used by qcodex provider profiles: the
+    /// secret never appears in `config.toml`, and the reference itself
+    /// carries no secret material.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_ref: Option<crate::provider_profiles::ProviderSecretRef>,
 }
 
 /// OpenRouter-specific configuration, allowing users to control routing and pricing metadata.
@@ -232,6 +240,11 @@ pub struct OpenRouterMaxPrice {
 }
 
 impl ModelProviderInfo {
+    /// Returns a human-readable label for the provider's wire API.
+    pub fn wire_api_label(&self) -> &'static str {
+        crate::provider_profiles::wire_api_label(self.wire_api)
+    }
+
     pub(crate) fn validate(&self) -> std::result::Result<(), String> {
         let Some(auth) = self.auth.as_ref() else {
             return Ok(());
@@ -389,6 +402,11 @@ impl ModelProviderInfo {
         &self,
         auth: &Option<CodexAuth>,
     ) -> crate::error::Result<Option<CodexAuth>> {
+        if let Some(secret_ref) = self.secret_ref.as_ref() {
+            let secret = crate::provider_profiles::resolve_secret(secret_ref)?;
+            return Ok(Some(CodexAuth::from_api_key(&secret)));
+        }
+
         if let Some(token) = self
             .experimental_bearer_token
             .as_deref()
@@ -791,6 +809,7 @@ pub fn built_in_model_providers(
                 supports_websockets: true,
                 requires_openai_auth: true,
                 openrouter: None,
+                secret_ref: None,
             },
         ),
         (BUILT_IN_OSS_MODEL_PROVIDER_ID, create_oss_provider()),
@@ -840,6 +859,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str) -> ModelProviderInfo {
         supports_websockets: false,
         requires_openai_auth: false,
         openrouter: None,
+        secret_ref: None,
     }
 }
 
@@ -888,6 +908,7 @@ base_url = "http://localhost:11434/v1"
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -922,6 +943,7 @@ query_params = { api-version = "2025-04-01-preview" }
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -959,6 +981,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -986,6 +1009,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 supports_websockets: false,
                 requires_openai_auth: false,
                 openrouter: None,
+                secret_ref: None,
             }
         }
 
@@ -1023,6 +1047,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
         assert!(named_provider.is_azure_responses_endpoint());
 
@@ -1061,6 +1086,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 supports_websockets: false,
                 requires_openai_auth: false,
                 openrouter: None,
+                secret_ref: None,
             }
         }
 
@@ -1179,6 +1205,7 @@ refresh_interval_ms = 0
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         assert_eq!(

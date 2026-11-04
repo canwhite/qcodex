@@ -67,6 +67,7 @@ fn provider_for(base_url: String) -> ModelProviderInfo {
         supports_websockets: false,
         requires_openai_auth: false,
         openrouter: None,
+        secret_ref: None,
     }
 }
 

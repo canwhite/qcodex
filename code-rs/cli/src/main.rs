@@ -21,6 +21,7 @@ use code_cli::login::run_login_with_chatgpt;
 use code_cli::login::run_login_with_device_code;
 use code_cli::login::run_logout;
 mod bridge;
+mod config_cmd;
 mod llm;
 use llm::{LlmCli, run_llm};
 use code_common::CliConfigOverrides;
@@ -33,6 +34,7 @@ use code_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use code_tui::Cli as TuiCli;
 use code_tui::ExitSummary;
 use code_tui::resume_command_name;
+use config_cmd::ConfigCli;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -165,6 +167,17 @@ enum Subcommand {
 
     /// Manage Code Bridge subscription for this workspace.
     Bridge(BridgeCommand),
+
+    /// Manage OpenAI-compatible provider profiles.
+    Config(ConfigCli),
+
+    /// Open the local provider configuration center.
+    #[clap(name = "config-start")]
+    ConfigStart(config_cmd::ConfigStartArgs),
+
+    /// Stop the local provider configuration center.
+    #[clap(name = "config-close")]
+    ConfigClose(config_cmd::ConfigCloseArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -634,6 +647,21 @@ async fn cli_main(code_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()>
                 root_config_overrides.clone(),
             );
             run_llm(llm_cli).await?;
+        }
+        Some(Subcommand::Config(config_cli)) => {
+            let code_home = code_core::config::find_code_home()
+                .map_err(|err| anyhow::anyhow!("failed to resolve CODEX_HOME: {err}"))?;
+            config_cmd::run_config_cli(code_home, config_cli)?;
+        }
+        Some(Subcommand::ConfigStart(args)) => {
+            let code_home = code_core::config::find_code_home()
+                .map_err(|err| anyhow::anyhow!("failed to resolve CODEX_HOME: {err}"))?;
+            config_cmd::run_config_start(code_home, args)?;
+        }
+        Some(Subcommand::ConfigClose(args)) => {
+            let code_home = code_core::config::find_code_home()
+                .map_err(|err| anyhow::anyhow!("failed to resolve CODEX_HOME: {err}"))?;
+            config_cmd::run_config_close(code_home, args)?;
         }
     }
 

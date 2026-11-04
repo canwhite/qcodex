@@ -934,6 +934,8 @@ fn describe_cloud_error(err: &CloudTaskError) -> String {
 }
 
 use crate::account_label::{account_display_label, account_mode_priority};
+use crate::provider_profile_watcher::new_provider_profile_watcher;
+use crate::provider_profile_watcher::spawn_provider_profile_poll;
 use crate::app_event::{
     AppEvent,
     AutoContinueMode,
@@ -1851,6 +1853,21 @@ struct RenderRequestSeed {
     kind: RenderRequestKind,
 }
 
+/// A provider profile change that is waiting for a safe turn boundary.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingProviderProfileChange {
+    /// Id of the profile that is now active.
+    pub profile_id: Option<String>,
+    /// Model the new profile requests.
+    pub model: Option<String>,
+    /// A human-readable description of what happened.
+    pub message: String,
+    /// The provider to apply.
+    pub provider: code_core::ModelProviderInfo,
+    /// The provider id to apply.
+    pub provider_id: String,
+}
+
 pub(crate) struct ChatWidget<'a> {
     /// Stable for this widget instance, even before core assigns a session id.
     event_route_id: uuid::Uuid,
@@ -1883,6 +1900,21 @@ pub(crate) struct ChatWidget<'a> {
     context_last_sequence: Option<u64>,
     context_browser_sequence: Option<u64>,
     config: Config,
+    /// Watches the qcodex provider profile store for changes.
+    ///
+    /// The watcher observes the store off the request path. A detected
+    /// change is applied at the next turn boundary, so a turn that already
+    /// started keeps the provider it began with.
+    provider_profile_watcher: Option<Arc<code_core::provider_profiles::ProviderProfileWatcher>>,
+    /// The background task that polls the provider profile store.
+    ///
+    /// It is aborted when the widget stops, so a closed session does not
+    /// keep polling.
+    provider_profile_poll: Option<tokio::task::JoinHandle<()>>,
+    /// A provider profile change that arrived while a turn was running.
+    ///
+    /// It is applied once the turn reaches a terminal state.
+    pending_provider_profile_change: Option<PendingProviderProfileChange>,
     mcp_tools_by_server: HashMap<String, Vec<String>>,
     mcp_server_failures: HashMap<String, McpServerFailure>,
 
@@ -6712,6 +6744,113 @@ impl ChatWidget<'_> {
         self.interrupts = mgr;
     }
 
+    /// Handles a provider profile change reported by the watcher.
+    ///
+    /// A change that arrives while a turn is running is queued and applied
+    /// when the turn reaches a terminal state, so the running turn keeps the
+    /// provider it started with.
+    pub(crate) fn handle_provider_profile_changed(
+        &mut self,
+        profile_id: Option<String>,
+        model: Option<String>,
+        message: String,
+    ) {
+        let change = match self.resolve_provider_profile_change(profile_id, model) {
+            Ok(Some(change)) => change,
+            Ok(None) => {
+                self.push_background_tail(message);
+                return;
+            }
+            Err(err) => {
+                self.push_background_tail(format!("{message} ({err})"));
+                return;
+            }
+        };
+
+        if self.is_task_running() {
+            self.pending_provider_profile_change = Some(change);
+            self.push_background_tail(format!(
+                "{message} It will apply after the current turn finishes."
+            ));
+            return;
+        }
+
+        self.apply_provider_profile_change(change);
+    }
+
+    /// Resolves the profile that should become active.
+    fn resolve_provider_profile_change(
+        &self,
+        profile_id: Option<String>,
+        model: Option<String>,
+    ) -> Result<Option<PendingProviderProfileChange>, String> {
+        let Some(profile_id) = profile_id else {
+            // The profile was deactivated: fall back to the config.toml
+            // provider by reloading the configuration.
+            return Ok(None);
+        };
+
+        let resolver =
+            code_core::provider_profiles::ProviderProfileResolver::new(&self.config.code_home);
+        let Some(profile) = resolver.active_profile().map_err(|err| err.to_string())? else {
+            return Err(format!("profile `{profile_id}` is no longer available"));
+        };
+        let provider = profile.to_model_provider_info();
+        let provider_id = profile
+            .provider_id
+            .clone()
+            .unwrap_or_else(|| format!("qcodex-profile-{}", profile.id));
+        Ok(Some(PendingProviderProfileChange {
+            profile_id: Some(profile.id),
+            model: Some(model.unwrap_or(profile.model)),
+            message: String::new(),
+            provider,
+            provider_id,
+        }))
+    }
+
+    /// Applies a provider profile change to the session.
+    fn apply_provider_profile_change(&mut self, change: PendingProviderProfileChange) {
+        let provider_id = change.provider_id.clone();
+        self.config.model_provider = change.provider;
+        self.config.model_provider_id = provider_id.clone();
+        if let Some(model) = change.model.as_ref() {
+            self.config.model = model.clone();
+            self.config.model_explicit = true;
+        }
+        self.config.active_provider_profile_id = change.profile_id.clone();
+        self.config.active_provider_profile_revision = None;
+
+        // Rebuild the session against the new provider.
+        self.submit_configure_session_op();
+
+        self.push_background_tail(if change.message.is_empty() {
+            format!("Provider profile switched to `{provider_id}`.")
+        } else {
+            change.message
+        });
+        self.refresh_settings_overview_rows();
+    }
+
+    /// Applies a queued provider profile change once the turn has finished.
+    fn apply_pending_provider_profile_change(&mut self) {
+        self.apply_pending_provider_profile_change_inner(false)
+    }
+
+    /// Applies a queued provider profile change.
+    ///
+    /// When `force` is set the change is applied even if a background task is
+    /// still running, which is what the turn-start path needs: the turn that
+    /// is about to start must use the new provider.
+    fn apply_pending_provider_profile_change_inner(&mut self, force: bool) {
+        if !force && self.is_task_running() {
+            return;
+        }
+        if let Some(change) = self.pending_provider_profile_change.take() {
+            self.apply_provider_profile_change(change);
+        }
+    }
+
     fn on_error(&mut self, message: String) {
         // Treat transient stream errors (which the core will retry) differently
         // from fatal errors so the status spinner remains visible while we wait.
@@ -6960,6 +7099,9 @@ impl ChatWidget<'_> {
             history_cells,
             clipboard_lease: None,
             config: config.clone(),
+            provider_profile_watcher: new_provider_profile_watcher(&config),
+            provider_profile_poll: None,
+            pending_provider_profile_change: None,
             mcp_tools_by_server: HashMap::new(),
             mcp_server_failures: HashMap::new(),
             remote_model_presets: None,
@@ -7214,6 +7356,10 @@ impl ChatWidget<'_> {
             conversation_manager,
             code_op_rx,
         );
+        if let Some(watcher) = new_widget.provider_profile_watcher.clone() {
+            new_widget.provider_profile_poll =
+                Some(spawn_provider_profile_poll(watcher, new_widget.app_event_tx.clone()));
+        }
         if let Ok(Some(active_id)) = auth_accounts::get_active_account_id(&config.code_home)
             && let Ok(records) = account_usage::list_rate_limit_snapshots(&config.code_home)
                 && let Some(record) = records.into_iter().find(|r| r.account_id == active_id) {
@@ -7315,6 +7461,9 @@ impl ChatWidget<'_> {
             history_cells,
             clipboard_lease: None,
             config: config.clone(),
+            provider_profile_watcher: new_provider_profile_watcher(&config),
+            provider_profile_poll: None,
+            pending_provider_profile_change: None,
             mcp_tools_by_server: HashMap::new(),
             mcp_server_failures: HashMap::new(),
             remote_model_presets: None,
@@ -11676,6 +11825,10 @@ impl ChatWidget<'_> {
     }
 
     fn submit_user_message(&mut self, user_message: UserMessage) {
+        // A provider profile change that arrived while the previous turn was
+        // running is applied before the new turn starts, so the new turn
+        // uses the new provider and no in-flight turn is interrupted.
+        self.apply_pending_provider_profile_change_inner(true);
         if self.layout.scroll_offset.get() > 0 {
             layout_scroll::to_bottom(self);
         }
@@ -14399,7 +14552,12 @@ impl ChatWidget<'_> {
                     );
                 }
                 // Now that streaming is complete, flush any queued interrupts
-        self.flush_interrupt_queue();
+                self.flush_interrupt_queue();
+
+                // The turn reached a terminal state, so a provider profile
+                // change that arrived while it was running can now be
+                // applied safely.
+                self.apply_pending_provider_profile_change();
 
         // Only drop the working status if nothing is actually running.
         let any_tools_running = !self.exec.running_commands.is_empty()
@@ -19163,9 +19321,14 @@ fi\n\
         };
 
         let mut auto_config = self.config.clone();
-        auto_config.model = self.config.auto_drive.model.trim().to_string();
-        if auto_config.model.is_empty() {
-            auto_config.model = code_auto_drive_core::MODEL_SLUG.to_string();
+        // An active qcodex provider profile owns the model. Auto Drive must
+        // not silently replace it with the built-in Auto Drive slug, because
+        // the provider may not serve that model.
+        if self.config.active_provider_profile_id.is_none() {
+            auto_config.model = self.config.auto_drive.model.trim().to_string();
+            if auto_config.model.is_empty() {
+                auto_config.model = code_auto_drive_core::MODEL_SLUG.to_string();
+            }
         }
         auto_config.model_reasoning_effort = self.config.auto_drive.model_reasoning_effort;
         let available_gpt_models = self
@@ -25664,6 +25827,13 @@ Have we met every part of this goal and is there no further work to do?"#
         let forwarder = self.conversation_event_forwarder.take()?;
         forwarder.abort();
         Some(forwarder)
+    }
+
+    /// Stops the provider profile polling task.
+    pub(crate) fn stop_provider_profile_poll(&mut self) {
+        if let Some(handle) = self.provider_profile_poll.take() {
+            handle.abort();
+        }
     }
 
     pub(crate) fn side_return_shortcut_available(&self) -> bool {

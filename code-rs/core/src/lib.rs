@@ -90,6 +90,7 @@ pub use model_provider_info::built_in_model_providers;
 pub use model_provider_info::create_oss_provider_with_base_url;
 mod conversation_manager;
 pub mod protocol;
+pub mod provider_profiles;
 mod event_mapping;
 pub mod review_format;
 #[cfg(test)]

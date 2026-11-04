@@ -271,6 +271,15 @@ pub struct Config {
     /// Name of the active profile, if any, that populated this configuration.
     pub active_profile: Option<String>,
 
+    /// Id of the active qcodex provider profile, if any.
+    ///
+    /// This is distinct from [`Self::active_profile`], which names a
+    /// `config.toml` `[profiles.*]` entry.
+    pub active_provider_profile_id: Option<String>,
+
+    /// Revision of the active qcodex provider profile that was applied.
+    pub active_provider_profile_revision: Option<u64>,
+
     /// Approval policy for executing commands.
     pub approval_policy: AskForApproval,
 
@@ -1103,6 +1112,13 @@ impl Config {
             cfg.dynamic_tools = Some(dynamic_tools);
         }
 
+        // Register the credential store so provider profile secrets can be
+        // resolved when a request is built.
+        crate::provider_profiles::register_secret_store(
+            &code_home,
+            std::sync::Arc::new(crate::provider_profiles::ProviderSecretStore::new(&code_home)),
+        );
+
         let (active_profile_name, config_profile) =
             match config_profile_key.as_ref().or(cfg.profile.as_ref()) {
                 Some(key) => {
@@ -1149,19 +1165,60 @@ impl Config {
             model_providers.entry(key).or_insert(provider);
         }
 
-        let model_provider_id = model_provider
+        let config_selected_provider_id = model_provider
+            .clone()
             .or(config_profile.model_provider)
             .or(cfg.model_provider)
-            .unwrap_or_else(|| "openai".to_string());
-        let model_provider = model_providers
-            .get(&model_provider_id)
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("Model provider `{model_provider_id}` not found"),
-                )
-            })?
-            .clone();
+            .map(|id| id.to_string());
+
+        // A qcodex provider profile owns the endpoint, model and credential
+        // when one is active. Invocation overrides win, and a `config.toml`
+        // provider selection that disagrees with the profile is reported as
+        // a conflict rather than silently merged.
+        let profile_resolution = crate::provider_profiles::ProviderProfileResolver::new(&code_home)
+            .resolve(&crate::provider_profiles::ProviderResolutionInputs {
+                override_provider_id: model_provider.clone(),
+                override_model: model.clone(),
+                config_provider_id: config_selected_provider_id.clone(),
+                config_model: None,
+            })
+            .map_err(std::io::Error::other)?;
+
+        let (
+            model_provider_id,
+            model_provider,
+            active_provider_profile,
+            profile_model,
+        ) =
+            match profile_resolution {
+                Some(resolved) => (
+                    resolved.provider_id.clone(),
+                    resolved.provider,
+                    Some((
+                        resolved.profile.as_ref().map(|profile| profile.id.clone()),
+                        resolved
+                            .profile
+                            .as_ref()
+                            .map(|profile| profile.revision),
+                    )),
+                    resolved.profile.as_ref().map(|profile| profile.model.clone()),
+                ),
+                None => {
+                    let id = config_selected_provider_id
+                        .clone()
+                        .unwrap_or_else(|| "openai".to_string());
+                    let provider = model_providers
+                        .get(&id)
+                        .ok_or_else(|| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::NotFound,
+                                format!("Model provider `{id}` not found"),
+                            )
+                        })?
+                        .clone();
+                    (id, provider, None, None)
+                }
+            };
 
         // Capture workspace-write details early to avoid borrow after partial moves
         let cfg_workspace = cfg.sandbox_workspace_write.clone();
@@ -1332,12 +1389,14 @@ impl Config {
         let model_explicit = model.is_some()
             || config_profile.model.is_some()
             || cfg.model.is_some()
-            || openai_model_from_env.is_some();
+            || openai_model_from_env.is_some()
+            || profile_model.is_some();
 
         let model = model
             .or(config_profile.model)
             .or(openai_model_from_env)
             .or(cfg.model)
+            .or(profile_model)
             .unwrap_or_else(|| default_model_slug.to_string());
 
         let model_personality = config_profile
@@ -1726,6 +1785,12 @@ impl Config {
             auto_drive_use_chat_model,
             code_linux_sandbox_exe,
             active_profile: active_profile_name,
+            active_provider_profile_id: active_provider_profile
+                .as_ref()
+                .and_then(|(profile_id, _)| profile_id.clone()),
+            active_provider_profile_revision: active_provider_profile
+                .as_ref()
+                .and_then(|(_, revision)| *revision),
 
             hide_agent_reasoning: cfg.hide_agent_reasoning.unwrap_or(false),
             show_raw_agent_reasoning: cfg
@@ -2746,6 +2811,7 @@ model_verbosity = "high"
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
         let model_provider_map = {
             let mut model_provider_map = built_in_model_providers(None);

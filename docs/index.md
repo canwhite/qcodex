@@ -21,6 +21,7 @@ Use these docs to install, configure, and operate Every Code (Code).
 
 ## Configuration & Security
 - [Configuration](config.md)
+- [Provider configuration](provider-configuration.md)
 - [Sandboxing overview](sandbox.md)
 - [Platform sandboxing](platform-sandboxing.md)
 - [Windows sandbox security](platform-sandboxing.md#windows)

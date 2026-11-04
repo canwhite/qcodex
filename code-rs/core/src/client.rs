@@ -3371,6 +3371,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         }
     }
 
@@ -3511,6 +3512,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let client = reqwest::Client::builder()
@@ -3562,6 +3564,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let client = reqwest::Client::builder()
@@ -3615,6 +3618,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let client = reqwest::Client::builder()
@@ -3658,6 +3662,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let client = reqwest::Client::builder()
@@ -3809,6 +3814,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let events = collect_events(
@@ -3899,6 +3905,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let events = collect_events(
@@ -3948,6 +3955,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let events = collect_events(&[sse1.as_bytes()], provider).await;
@@ -4003,6 +4011,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let events = collect_events(&[sse1.as_bytes()], provider).await;
@@ -4101,6 +4110,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let events = collect_events(&[sse1.as_bytes()], provider).await;
@@ -4211,6 +4221,7 @@ mod tests {
                 supports_websockets: false,
                 requires_openai_auth: false,
                 openrouter: None,
+                secret_ref: None,
             };
 
             let out = run_sse(evs, provider).await;
@@ -4464,6 +4475,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let events = collect_events(&[sse1.as_bytes()], provider).await;
@@ -4498,6 +4510,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let events = collect_events(&[sse1.as_bytes()], provider).await;
@@ -4538,6 +4551,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let events = collect_events(&[sse1.as_bytes()], provider).await;
@@ -4575,6 +4589,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let events = collect_events(&[sse1.as_bytes()], provider).await;
@@ -4609,6 +4624,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let events = collect_events(&[sse1.as_bytes()], provider).await;
@@ -4643,6 +4659,7 @@ mod tests {
             supports_websockets: false,
             requires_openai_auth: false,
             openrouter: None,
+            secret_ref: None,
         };
 
         let events = collect_events(&[sse1.as_bytes()], provider).await;
