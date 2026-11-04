@@ -196,7 +196,7 @@ pub(crate) enum AppEvent {
         message: String,
     },
 
-    KeyEvent(KeyEvent),
+    KeyEvent(KeyEvent, std::time::Instant),
 
     MouseEvent(MouseEvent),
 
@@ -309,12 +309,6 @@ pub(crate) enum AppEvent {
         request_id: u64,
         message: String,
     },
-
-    /// Return from the active temporary side conversation to its parent.
-    ReturnFromSide,
-
-    /// Switch focus between an open side conversation and its retained parent.
-    ToggleSideConversation,
 
     /// Cleanup for a returned temporary side conversation completed.
     SideConversationCleanupFinished {

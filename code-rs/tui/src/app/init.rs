@@ -162,7 +162,7 @@ impl App<'_> {
                                             || matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
                                         {
                                             last_key_time = Instant::now();
-                                            app_event_tx.send(AppEvent::KeyEvent(key_event));
+                                            app_event_tx.send(AppEvent::KeyEvent(key_event, last_key_time));
                                         }
                                     }
                                     crossterm::event::Event::Resize(_, _) => {
@@ -327,7 +327,7 @@ impl App<'_> {
             next_side_request_id: 0,
             pending_side_events: HashMap::new(),
             pending_side_cleanups: Vec::new(),
-            side_focus_input_quarantine: false,
+            side_focus_changed_at: None,
             config,
             latest_upgrade_version,
             file_search,

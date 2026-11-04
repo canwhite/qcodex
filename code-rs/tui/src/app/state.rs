@@ -253,9 +253,8 @@ pub(crate) struct App<'a> {
     pub(super) next_side_request_id: u64,
     pub(super) pending_side_events: HashMap<uuid::Uuid, Vec<Event>>,
     pub(super) pending_side_cleanups: Vec<Receiver<()>>,
-    /// Drops one post-switch key before a parent approval/input modal can
-    /// consume keystrokes that were intended for the side conversation.
-    pub(super) side_focus_input_quarantine: bool,
+    /// Input received before this focus transition belongs to the old view.
+    pub(super) side_focus_changed_at: Option<Instant>,
 
     /// Config is stored here so we can recreate ChatWidgets as needed.
     pub(super) config: Config,

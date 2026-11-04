@@ -436,3 +436,19 @@ All pre-mortem HIGH risks now have an ownership mechanism plus deterministic or 
 
 - **AFK**: Keep the side lifecycle tests and the global scan for temporary runtimes that return long-lived conversations as release gates.
 - **HITL**: When changing global key routing, review modal/draft precedence explicitly against the product interaction contract.
+
+## PP8 Follow-up Audit — 2026-11-04
+
+Scope: commit `2d1131aab` and its direct side-focus, command-admission, and composer-rendering paths. This is not a whole-repository risk assessment. The user's intermittent Ctrl+C/reopen report did not reproduce in the isolated terminal run; the findings below are independently reproducible.
+
+| Finding | Severity | Root cause | Fix and regression evidence |
+| --- | --- | --- | --- |
+| Switching back to the parent drops the first new key; `/btw` becomes ordinary `btw` input. Queued input can also cross the focus boundary. | High | A one-key quarantine cannot distinguish old input from new input; deferred focus events let later keys run first. | Timestamp input at receipt, change focus synchronously on shortcuts, and reject all input received before the transition. Regression: `side_focus_preserves_new_input_and_rejects_all_queued_old_input`; terminal sequence: open side → Ctrl+/ → type `/btw`. |
+| Bare `/btw` rejects an existing hidden child although the message-bearing entry can restore it. | Medium | Command admission equates any active side lifecycle with side focus. | Admit parent-focused active sessions to the existing restore path; retain nested-side and closing guards. Regression: `side_btw_reopens_hidden_child_but_rejects_nested_side_and_closing`. |
+| The persistent identity disappears in the footer-only renderer. | Medium | Only the full composer border renders the new identity field. | Reserve a context row in footer-only layout and clip it to available height. Regression: `conversation_context_survives_footer_only_layout`, with and without ordinary footer hints. |
+
+Prevention (AFK): retain the three regression checks above. Acceptance: fresh input is preserved, multiple stale inputs are rejected, hidden-side admission differs from nested-side admission, and both composer render modes retain identity. Prevention (HITL): when changing terminal input handling, repeat the shortcut/input sequence on the affected terminal; passing a model-free fixture does not prove the original intermittent production symptom is resolved.
+
+Verification: 21 focused side tests and the footer-only regression passed. After the final synchronous-routing change, `./build-fast.sh` passed with zero warnings/errors. The rebuilt binary passed isolated PTY checks for Ctrl+/ → intact `/btw` → hidden-child restoration, and Ctrl+C → cleanup → fresh `/btw` → new side. The fixture used no live model; it exited cleanly.
+
+Convergence: a second review of the scoped input, ownership, admission, and rendering paths found no new High finding. All three findings above are fixed; residual High constraints within this audit scope: **0**. The original intermittent production report remains unconfirmed, not declared resolved.

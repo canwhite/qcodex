@@ -84,6 +84,17 @@ fn side_toggle_key_event(key_event: KeyEvent) -> bool {
     )
 }
 
+fn side_focus_input_is_stale(changed_at: Option<Instant>, received_at: Instant) -> bool {
+    changed_at.is_some_and(|changed_at| received_at < changed_at)
+}
+
+fn side_btw_can_start(state: &SideConversationState<'_>) -> bool {
+    matches!(state, SideConversationState::Idle | SideConversationState::Active {
+        focused: SideConversationFocus::Parent,
+        ..
+    })
+}
+
 fn side_command_is_blocked(
     side_is_focused: bool,
     side_lifecycle_is_active: bool,
@@ -243,6 +254,77 @@ where
 }
 
 impl App<'_> {
+    fn return_from_side(&mut self) {
+        let (parent, request_id, child_session_id, child_cleanup) =
+            match &mut self.side_conversation {
+                SideConversationState::Active {
+                    parent,
+                    focused: SideConversationFocus::Side,
+                    request_id,
+                    child_session_id,
+                    child_cleanup,
+                    ..
+                } if parent.is_some() && child_cleanup.is_some() => (
+                    parent.take().expect("checked parent"),
+                    *request_id,
+                    *child_session_id,
+                    child_cleanup.take().expect("checked cleanup owner"),
+                ),
+                _ => return,
+            };
+        if let AppState::Chat { widget } = &mut self.app_state {
+            debug_assert!(!side_return_requires_idle(widget.is_task_running()));
+            let event_forwarder = widget.stop_conversation_event_forwarder();
+            widget.stop_provider_profile_poll();
+            let mut parent = parent;
+            parent.prepare_for_side_return();
+            parent.debug_notice("Returned from side conversation.".to_string());
+            parent.set_side_closing_status();
+            let child = std::mem::replace(widget, parent);
+            drop(child);
+            self.begin_side_cleanup(request_id, child_session_id, child_cleanup, event_forwarder);
+            self.side_conversation = SideConversationState::Closing {
+                request_id,
+                child_session_id,
+                cleanup_timed_out: false,
+            };
+            self.side_focus_changed_at = Some(Instant::now());
+            self.clear_on_first_frame = true;
+            self.app_event_tx.send(AppEvent::RequestRedraw);
+        }
+    }
+
+    fn toggle_side_conversation_focus(&mut self) {
+        if let AppState::Chat { widget } = &mut self.app_state {
+            let SideConversationState::Active {
+                parent, child, focused, parent_status, captured_sequence, boundary_version, ..
+            } = &mut self.side_conversation else {
+                return;
+            };
+            tracing::trace!(captured_sequence, boundary_version, "switching side conversation focus");
+            match *focused {
+                SideConversationFocus::Side => {
+                    let Some(parent_widget) = parent.take() else { return; };
+                    let mut previous = std::mem::replace(widget, parent_widget);
+                    previous.set_side_conversation_mode();
+                    *child = Some(previous);
+                    widget.set_parent_with_side_mode();
+                    *focused = SideConversationFocus::Parent;
+                }
+                SideConversationFocus::Parent => {
+                    let Some(child_widget) = child.take() else { return; };
+                    let previous = std::mem::replace(widget, child_widget);
+                    *parent = Some(previous);
+                    widget.set_side_parent_status(parent_status.as_deref());
+                    *focused = SideConversationFocus::Side;
+                }
+            }
+            self.side_focus_changed_at = Some(Instant::now());
+            self.clear_on_first_frame = true;
+            self.app_event_tx.send(AppEvent::RequestRedraw);
+        }
+    }
+
     fn begin_side_cleanup(
         &mut self,
         request_id: u64,
@@ -598,7 +680,10 @@ impl App<'_> {
                         widget.on_commit_tick();
                     }
                 }
-                AppEvent::KeyEvent(mut key_event) => {
+                AppEvent::KeyEvent(mut key_event, received_at) => {
+                    if side_focus_input_is_stale(self.side_focus_changed_at, received_at) {
+                        continue;
+                    }
                     if self.timing_enabled { self.timing.on_key(); }
                     #[cfg(windows)]
                     {
@@ -669,11 +754,6 @@ impl App<'_> {
                         self.last_esc_time = None;
                     }
 
-                    if self.side_focus_input_quarantine && !side_toggle_key_event(key_event) {
-                        self.side_focus_input_quarantine = false;
-                        continue;
-                    }
-
                     match key_event {
                         KeyEvent { code: KeyCode::Esc, kind: KeyEventKind::Press | KeyEventKind::Repeat, .. } => {
                             if let AppState::Chat { widget } = &mut self.app_state
@@ -690,7 +770,7 @@ impl App<'_> {
                                     AppState::Chat { widget }
                                         if widget.side_return_shortcut_available()
                                 ) => {
-                            self.app_event_tx.send(AppEvent::ToggleSideConversation);
+                            self.toggle_side_conversation_focus();
                         }
                         key_event
                             if side_return_key_event(key_event)
@@ -706,7 +786,7 @@ impl App<'_> {
                                     AppState::Chat { widget }
                                         if widget.side_return_shortcut_available()
                                 ) => {
-                            self.app_event_tx.send(AppEvent::ReturnFromSide);
+                            self.return_from_side();
                         }
                         // Explicit image paste shortcut fallback.
                         //
@@ -1705,7 +1785,7 @@ impl App<'_> {
                             }
                         }
                         SlashCommand::Btw => {
-                            if !matches!(self.side_conversation, SideConversationState::Idle) {
+                            if !side_btw_can_start(&self.side_conversation) {
                                 if let AppState::Chat { widget } = &mut self.app_state {
                                     widget.debug_notice(
                                         "A side conversation is already starting or active. Press Ctrl+C to return."
@@ -1935,6 +2015,7 @@ impl App<'_> {
                         {
                             *focused = SideConversationFocus::Side;
                         }
+                        self.side_focus_changed_at = Some(Instant::now());
                         self.clear_on_first_frame = true;
                         self.app_event_tx.send(AppEvent::RequestRedraw);
                         continue;
@@ -2111,6 +2192,7 @@ impl App<'_> {
                         for event in pending_events {
                             self.dispatch_code_event(event);
                         }
+                        self.side_focus_changed_at = Some(Instant::now());
                         self.clear_on_first_frame = true;
                         self.app_event_tx.send(AppEvent::RequestRedraw);
                     } else {
@@ -2139,107 +2221,6 @@ impl App<'_> {
                         && widget.session_id() == Some(parent_session_id)
                     {
                         widget.debug_notice(message);
-                    }
-                }
-                AppEvent::ReturnFromSide => {
-                    let (
-                        mut parent,
-                        request_id,
-                        child_session_id,
-                        child_cleanup,
-                    ) = match &mut self.side_conversation {
-                        SideConversationState::Active {
-                            parent,
-                            focused: SideConversationFocus::Side,
-                            request_id,
-                            child_session_id,
-                            child_cleanup,
-                            ..
-                        } => {
-                            let Some(parent) = parent.take() else {
-                                continue;
-                            };
-                            let Some(child_cleanup) = child_cleanup.take() else {
-                                continue;
-                            };
-                            (
-                                parent,
-                                *request_id,
-                                *child_session_id,
-                                child_cleanup,
-                            )
-                        }
-                        _ => continue,
-                    };
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        debug_assert!(!side_return_requires_idle(widget.is_task_running()));
-                        let event_forwarder = widget.stop_conversation_event_forwarder();
-                        widget.stop_provider_profile_poll();
-                        parent.prepare_for_side_return();
-                        parent.debug_notice("Returned from side conversation.".to_string());
-                        parent.set_side_closing_status();
-                        let child = std::mem::replace(widget, parent);
-                        drop(child);
-                        self.begin_side_cleanup(
-                            request_id,
-                            child_session_id,
-                            child_cleanup,
-                            event_forwarder,
-                        );
-                        self.side_conversation = SideConversationState::Closing {
-                            request_id,
-                            child_session_id,
-                            cleanup_timed_out: false,
-                        };
-                        self.clear_on_first_frame = true;
-                        self.app_event_tx.send(AppEvent::RequestRedraw);
-                    }
-                }
-                AppEvent::ToggleSideConversation => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        match &mut self.side_conversation {
-                            SideConversationState::Active {
-                                parent,
-                                child,
-                                focused,
-                                parent_status,
-                                captured_sequence,
-                                boundary_version,
-                                ..
-                            } => {
-                                tracing::trace!(
-                                    captured_sequence,
-                                    boundary_version,
-                                    "switching side conversation focus"
-                                );
-                                match *focused {
-                                SideConversationFocus::Side => {
-                                    let Some(parent_widget) = parent.take() else {
-                                        continue;
-                                    };
-                                    let mut previous = std::mem::replace(widget, parent_widget);
-                                    previous.set_side_conversation_mode();
-                                    *child = Some(previous);
-                                    widget.set_parent_with_side_mode();
-                                    *focused = SideConversationFocus::Parent;
-                                    self.side_focus_input_quarantine = true;
-                                }
-                                SideConversationFocus::Parent => {
-                                    let Some(child_widget) = child.take() else {
-                                        continue;
-                                    };
-                                    let previous = std::mem::replace(widget, child_widget);
-                                    *parent = Some(previous);
-                                    widget.set_side_parent_status(parent_status.as_deref());
-                                    *focused = SideConversationFocus::Side;
-                                    self.side_focus_input_quarantine = false;
-                                }
-                                }
-                            }
-                            _ => continue,
-                        }
-                        self.clear_on_first_frame = true;
-                        self.app_event_tx.send(AppEvent::RequestRedraw);
                     }
                 }
                 AppEvent::SideConversationCleanupFinished {
@@ -3423,6 +3404,42 @@ fn next_event_priority_impl(
 mod next_event_priority_tests {
     use super::*;
     use std::sync::mpsc::channel;
+
+    #[test]
+    fn side_btw_reopens_hidden_child_but_rejects_nested_side_and_closing() {
+        assert!(side_btw_can_start(&SideConversationState::Idle));
+        for focused in [SideConversationFocus::Parent, SideConversationFocus::Side] {
+            let state = SideConversationState::Active {
+                parent: None,
+                child: None,
+                focused,
+                parent_status: None,
+                captured_sequence: 0,
+                boundary_version: 1,
+                request_id: 1,
+                child_session_id: uuid::Uuid::new_v4(),
+                child_cleanup: None,
+            };
+            assert_eq!(side_btw_can_start(&state), focused == SideConversationFocus::Parent);
+        }
+        assert!(!side_btw_can_start(&SideConversationState::Closing {
+            request_id: 1,
+            child_session_id: uuid::Uuid::new_v4(),
+            cleanup_timed_out: false,
+        }));
+    }
+
+    #[test]
+    fn side_focus_preserves_new_input_and_rejects_all_queued_old_input() {
+        let switched_at = Instant::now();
+        let before = switched_at - Duration::from_millis(1);
+        let after = switched_at + Duration::from_millis(1);
+        assert!(!side_focus_input_is_stale(None, before));
+        assert!(side_focus_input_is_stale(Some(switched_at), before));
+        assert!(!side_focus_input_is_stale(Some(switched_at), after));
+        assert!(!side_focus_input_is_stale(Some(switched_at), switched_at));
+        assert!(side_focus_input_is_stale(Some(switched_at), before));
+    }
 
     #[test]
     fn side_return_uses_one_ctrl_c_press_only() {

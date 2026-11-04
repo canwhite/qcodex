@@ -2365,7 +2365,8 @@ impl ChatComposer {
 
     pub(crate) fn footer_height(&self) -> u16 {
         if self.render_mode == ComposerRenderMode::FooterOnly {
-            return if self.standard_terminal_hint.is_some() { 1 } else { 0 };
+            return u16::from(self.standard_terminal_hint.is_some())
+                + u16::from(self.conversation_context.is_some());
         }
 
         match (&self.active_popup, self.embedded_mode) {
@@ -2894,16 +2895,23 @@ impl ChatComposer {
 impl WidgetRef for ChatComposer {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         if self.render_mode == ComposerRenderMode::FooterOnly {
-            let footer_height = self.footer_height();
+            let footer_height = self.footer_height().min(area.height);
             if footer_height == 0 {
                 return;
             }
-            let footer_area = Rect {
+            let mut footer_area = Rect {
                 x: area.x,
                 y: area.y + area.height.saturating_sub(footer_height),
                 width: area.width,
                 height: footer_height,
             };
+            if let Some(context) = &self.conversation_context {
+                Line::from(context.as_str()).render_ref(
+                    Rect { height: 1, ..footer_area }, buf,
+                );
+                footer_area.y = footer_area.y.saturating_add(1);
+                footer_area.height = footer_area.height.saturating_sub(1);
+            }
             self.render_footer(footer_area, buf);
             return;
         }
@@ -3135,6 +3143,27 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use std::path::PathBuf;
+
+    #[test]
+    fn conversation_context_survives_footer_only_layout() {
+        let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let mut composer = ChatComposer::new(true, AppEventSender::new(tx), true, false);
+        composer.set_render_mode(ComposerRenderMode::FooterOnly);
+        composer.set_conversation_context(Some("Main conversation · closing side conversation".to_string()));
+        for hint in [None, Some("Esc stop".to_string())] {
+            composer.set_standard_terminal_hint(hint.clone());
+            let area = Rect::new(0, 0, 80, composer.footer_height());
+            let mut buf = Buffer::empty(area);
+            composer.render_ref(area, &mut buf);
+            let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+            assert!(text.contains("Main conversation · closing side conversation"), "{text}");
+            if let Some(hint) = hint {
+                assert!(text.contains(&hint), "{text}");
+            }
+        }
+        composer.set_conversation_context(None);
+        assert_eq!(composer.footer_height(), 1);
+    }
 
     #[test]
     fn slash_popup_includes_loaded_skill() {

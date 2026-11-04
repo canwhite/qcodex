@@ -42,7 +42,7 @@ impl AppEventSender {
         }
         let is_high = matches!(
             event,
-            AppEvent::KeyEvent(_)
+            AppEvent::KeyEvent(..)
                 | AppEvent::MouseEvent(_)
                 | AppEvent::Paste(_)
                 | AppEvent::RequestRedraw
