@@ -15,11 +15,9 @@ pub enum IntroArtSize {
 const LARGE_MIN_WIDTH: u16 = 80;
 const MEDIUM_MIN_WIDTH: u16 = 56;
 const SMALL_MIN_WIDTH: u16 = 50;
-const LARGE_MIN_HEIGHT: u16 = 28;
-const MEDIUM_MIN_HEIGHT: u16 = 21;
-const SMALL_MIN_HEIGHT: u16 = 19;
-const LARGE_VERSION_COLUMN: usize = 65;
-const MEDIUM_VERSION_COLUMN: usize = 43;
+const LARGE_MIN_HEIGHT: u16 = 6;
+const MEDIUM_MIN_HEIGHT: u16 = 6;
+const SMALL_MIN_HEIGHT: u16 = 6;
 const ANIMATED_CHARS: &[char] = &['█'];
 
 pub fn intro_art_size_for_width(width: u16) -> IntroArtSize {
@@ -48,10 +46,7 @@ pub(crate) fn intro_art_size_for_area(width: u16, height: u16) -> IntroArtSize {
 
 pub fn intro_art_height(size: IntroArtSize) -> u16 {
     match size {
-        IntroArtSize::Large => 28,
-        IntroArtSize::Medium => 21,
-        IntroArtSize::Small => 19,
-        IntroArtSize::Tiny => 7,
+        IntroArtSize::Large | IntroArtSize::Medium | IntroArtSize::Small | IntroArtSize::Tiny => 6,
     }
 }
 
@@ -171,140 +166,52 @@ fn welcome_lines(size: IntroArtSize, version: &str) -> Vec<String> {
     }
 }
 
-const LARGE_VERSION_LINE: &str = "   ███████╗ ╚████╔╝ ███████╗██║  ██║   ██║";
-const LARGE_BODY_TAIL: [&str; 22] = [
-    "      █████████╗        █████████╗     ████████████╗     ███████████████╗",
-    "      █████████║        █████████║     ████████████║     ███████████████║",
-    "      █████████║        █████████║     ████████████║     ███████████████║",
-    "   ███╔════════███╗  ███╔════════███╗  ███╔════════███╗  ███╔═══════════╝",
-    "   ███║        ███║  ███║        ███║  ███║        ███║  ███║",
-    "   ███║        ███║  ███║        ███║  ███║        ███║  ███║",
-    "   ███║        ╚══╝  ███║        ███║  ███║        ███║  ███║",
-    "   ███║              ███║        ███║  ███║        ███║  ███║",
-    "   ███║              ███║        ███║  ███║        ███║  ███║",
-    "   ███║              ███║        ███║  ███║        ███║  ███████████████╗",
-    "   ███║              ███║        ███║  ███║        ███║  ███████████████║",
-    "   ███║              ███║        ███║  ███║        ███║  ███████████████║",
-    "   ███║              ███║        ███║  ███║        ███║  ███╔═══════════╝",
-    "   ███║              ███║        ███║  ███║        ███║  ███║",
-    "   ███║              ███║        ███║  ███║        ███║  ███║",
-    "   ███║        ███╗  ███║        ███║  ███║        ███║  ███║",
-    "   ███║        ███║  ███║        ███║  ███║        ███║  ███║",
-    "   ███║        ███║  ███║        ███║  ███║        ███║  ███║",
-    "   ╚══█████████╔══╝  ╚══█████████╔══╝  ████████████╔══╝  ███████████████╗",
-    "      █████████║        █████████║     ████████████║     ███████████████║",
-    "      █████████║        █████████║     ████████████║     ███████████████║",
-    "      ╚════════╝        ╚════════╝      ╚══════════╝      ╚═════════════╝",
+const LARGE_LOGO: [&str; 6] = [
+    "   ██████╗  ██████╗ ██████╗ ██████╗ ███████╗██╗  ██╗",
+    "  ██╔═══██╗██╔════╝██╔═══██╗██╔══██╗██╔════╝╚██╗██╔╝",
+    "  ██║   ██║██║     ██║   ██║██║  ██║█████╗   ╚███╔╝ ",
+    "  ██║▄▄ ██║██║     ██║   ██║██║  ██║██╔══╝   ██╔██╗ ",
+    "  ╚██████╔╝╚██████╗╚██████╔╝██████╔╝███████╗██╔╝ ██╗",
+    "   ╚══▀▀═╝  ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝",
 ];
+
+const COMPACT_LOGO: [&str; 6] = [
+    " █████  █████  █████  █████  █████ ██  ██",
+    "██   ██ ██     ██  ██ ██  ██ ██     ██  ██",
+    "██   ██ ██     ██  ██ ██  ██ ████    ████ ",
+    "██▄▄ ██ ██     ██  ██ ██  ██ ██       ██  ",
+    " ╚████  ╚████  █████  █████  █████    ██  ",
+    "  ╚═══   ╚═══  ╚════  ╚════  ╚════    ╚═╝  ",
+];
+
+fn logo_lines(logo: &[&str], version: &str) -> Vec<String> {
+    let mut lines = logo.iter().map(|line| (*line).to_string()).collect::<Vec<_>>();
+    if let Some(last) = lines.last_mut() {
+        last.push_str(&format!("   {version}"));
+    }
+    shift_left(lines, 3)
+}
 
 fn large_welcome_lines(version: &str) -> Vec<String> {
-    let mut animated = vec![
-        "   ███████╗██╗   ██╗███████╗██████╗ ██╗   ██╗".to_string(),
-        "   ██╔════╝██║   ██║██╔════╝██╔══██╗╚██╗ ██╔╝".to_string(),
-        "   █████╗  ██║   ██║█████╗  ██████╔╝ ╚████╔╝".to_string(),
-        "   ██╔══╝  ╚██╗ ██╔╝██╔══╝  ██╔══██╗  ╚██╔╝".to_string(),
-    ];
-
-    let base_width = LARGE_VERSION_LINE.chars().count();
-    let padding = LARGE_VERSION_COLUMN.saturating_sub(base_width);
-    let _version_pad = " ".repeat(padding);
-    let footer_line = "   ╚══════╝  ╚═══╝  ╚══════╝╚═╝  ╚═╝   ╚═╝";
-    let footer_len = footer_line.chars().count();
-    let footer_pad = LARGE_VERSION_COLUMN.saturating_sub(footer_len);
-    let footer_version_pad = " ".repeat(footer_pad);
-    animated.push(format!("{LARGE_VERSION_LINE}{footer_version_pad}{version}"));
-    animated.push(footer_line.to_string());
-    animated.extend(LARGE_BODY_TAIL.iter().map(|line| (*line).to_string()));
-
-    shift_left(animated, 3)
+    logo_lines(&LARGE_LOGO, version)
 }
-
-const MEDIUM_VERSION_LINE: &str = "   ╚══════╝  ╚═══╝  ╚══════╝╚═╝  ╚═╝   ╚═╝ ";
-const MEDIUM_BODY_TAIL: [&str; 15] = [
-    "     ██████╗     ██████╗   ████████╗   ██████████╗",
-    "     ██████║     ██████║   ████████║   ██████████║",
-    "   ██╔═════██╗ ██╔═════██╗ ██╔═════██╗ ██╔═══════╝",
-    "   ██║     ██║ ██║     ██║ ██║     ██║ ██║",
-    "   ██║     ╚═╝ ██║     ██║ ██║     ██║ ██║",
-    "   ██║         ██║     ██║ ██║     ██║ ██║",
-    "   ██║         ██║     ██║ ██║     ██║ ██████████╗",
-    "   ██║         ██║     ██║ ██║     ██║ ██████████║",
-    "   ██║         ██║     ██║ ██║     ██║ ██╔═══════╝",
-    "   ██║         ██║     ██║ ██║     ██║ ██║",
-    "   ██║     ██╗ ██║     ██║ ██║     ██║ ██║",
-    "   ██║     ██║ ██║     ██║ ██║     ██║ ██║",
-    "   ╚═██████╔═╝ ╚═██████╔═╝ ████████╔═╝ ██████████╗",
-    "     ██████║     ██████║   ████████║   ██████████║",
-    "     ╚═════╝     ╚═════╝   ╚═══════╝   ╚═════════╝",
-];
 
 fn medium_welcome_lines(version: &str) -> Vec<String> {
-    let mut animated = vec![
-        "   ███████╗██╗   ██╗███████╗██████╗ ██╗   ██╗".to_string(),
-        "   ██╔════╝██║   ██║██╔════╝██╔══██╗╚██╗ ██╔╝".to_string(),
-        "   █████╗  ██║   ██║█████╗  ██████╔╝ ╚████╔╝".to_string(),
-        "   ██╔══╝  ╚██╗ ██╔╝██╔══╝  ██╔══██╗  ╚██╔╝".to_string(),
-        "   ███████╗ ╚████╔╝ ███████╗██║  ██║   ██║".to_string(),
-    ];
-
-    let base_width = MEDIUM_VERSION_LINE.chars().count();
-    let padding = MEDIUM_VERSION_COLUMN.saturating_sub(base_width);
-    let _version_pad = " ".repeat(padding);
-    if let Some(first_tail) = MEDIUM_BODY_TAIL.first() {
-        let tail_len = first_tail.chars().count();
-        let tail_pad = MEDIUM_VERSION_COLUMN.saturating_sub(tail_len);
-        let tail_version_pad = " ".repeat(tail_pad);
-        animated.push(format!("{MEDIUM_VERSION_LINE}{tail_version_pad}{version}  "));
-        animated.extend(MEDIUM_BODY_TAIL.iter().map(|line| (*line).to_string()));
-    }
-    shift_left(animated, 3)
+    logo_lines(&COMPACT_LOGO, version)
 }
 
-const SMALL_VERSION_LINE: &str = "   ╚═════╝  ╚═══╝  ╚═════╝╚═╝  ╚═╝   ╚═╝  ";
-
 fn small_welcome_lines(version: &str) -> Vec<String> {
-    let mut lines = vec![
-        "   ██████╗██╗   ██╗██████╗██████╗ ██╗   ██╗".to_string(),
-        "   ██╔═══╝██║   ██║██╔═══╝██╔══██╗╚██╗ ██╔╝".to_string(),
-        "   █████╗ ██║   ██║█████╗ ██████╔╝ ╚████╔╝".to_string(),
-        "   ██╔══╝ ╚██╗ ██╔╝██╔══╝ ██╔══██╗  ╚██╔╝".to_string(),
-        "   ██████╗ ╚████╔╝ ██████╗██║  ██║   ██║".to_string(),
-    ];
-
-    let base_width = SMALL_VERSION_LINE.chars().count();
-    let padding = MEDIUM_VERSION_COLUMN.saturating_sub(base_width);
-    let pad = " ".repeat(padding);
-    lines.push(format!("{SMALL_VERSION_LINE}{pad}{version}  "));
-
-    let tail = [
-        "     ██████╗     ██████╗   ████████╗   ██████████╗",
-        "     ██████║     ██████║   ████████║   ██████████║",
-        "   ██╔═════██╗ ██╔═════██╗ ██╔═════██╗ ██╔═══════╝",
-        "   ██║     ██║ ██║     ██║ ██║     ██║ ██║",
-        "   ██║     ╚═╝ ██║     ██║ ██║     ██║ ██║",
-        "   ██║         ██║     ██║ ██║     ██║ ██████████╗",
-        "   ██║         ██║     ██║ ██║     ██║ ██████████║",
-        "   ██║         ██║     ██║ ██║     ██║ ██╔═══════╝",
-        "   ██║     ██╗ ██║     ██║ ██║     ██║ ██║",
-        "   ██║     ██║ ██║     ██║ ██║     ██║ ██║",
-        "   ╚═██████╔═╝ ╚═██████╔═╝ ████████╔═╝ ██████████╗",
-        "     ██████║     ██████║   ████████║   ██████████║",
-        "     ╚═════╝     ╚═════╝   ╚═══════╝   ╚═════════╝",
-    ];
-    lines.extend(tail.iter().map(|l| (*l).to_string()));
-
-    shift_left(lines, 3)
+    logo_lines(&COMPACT_LOGO, version)
 }
 
 fn tiny_welcome_lines(version: &str) -> Vec<String> {
     vec![
-        format!("EVERY                 {version}    "),
-        " █████╗ █████╗ █████╗ ██████╗         ".to_string(),
-        "██╔═══╝██╔══██╗██╔═██╗██╔═══╝         ".to_string(),
-        "██║    ██║  ██║██║ ██║████╗           ".to_string(),
-        "██║    ██║  ██║██║ ██║██╔═╝           ".to_string(),
-        "╚█████╗╚█████╔╝█████╔╝██████╗         ".to_string(),
-        " ╚════╝ ╚════╝ ╚════╝ ╚═════╝         ".to_string(),
+        format!("qcodex  {version}"),
+        " █████  █████  █████  █████  █████ ██  ██".to_string(),
+        "██   ██ ██     ██  ██ ██  ██ ██     ██  ██".to_string(),
+        "██▄▄ ██ ██     ██  ██ ██  ██ ████    ████ ".to_string(),
+        " ╚████  ╚████  █████  █████  █████    ██  ".to_string(),
+        "  ╚═══   ╚═══  ╚════  ╚════  ╚════    ╚═╝  ".to_string(),
     ]
 }
 
@@ -364,7 +271,7 @@ fn render_static_lines(
     _frame: u32,
     reveal_x_shadow: isize,
 ) {
-    let static_target = Color::Rgb(230, 232, 235); // matches CODE/EVERY final color (#e6e8eb)
+    let static_target = Color::Rgb(230, 232, 235); // matches qcodex's final color (#e6e8eb)
     let static_color_base = blend_to_background(static_target, alpha);
     for (row_idx, line) in lines.iter().enumerate() {
         let y = area.y + row_idx as u16;
@@ -613,7 +520,6 @@ fn bump_rgb(c: Color, amt: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indoc::indoc;
     use ratatui::buffer::Buffer;
     use ratatui::prelude::Rect;
 
@@ -666,7 +572,7 @@ mod tests {
     #[test]
     fn renders_small_art_pixel_perfect() {
         let version = format!("v{}", code_version::version());
-        let expected = vec!["██████╗██╗   ██╗█".to_string()];
+        let expected = vec!["█████  █████  █████ ".to_string()];
         let width = expected[0].chars().count() as u16;
         let rect = Rect::new(0, 0, width, 1);
         let mut buf = Buffer::empty(rect);
@@ -707,67 +613,10 @@ mod tests {
     }
 
     fn expected_large(version: &str) -> Vec<String> {
-        let art = indoc! {"
-           ███████╗██╗   ██╗███████╗██████╗ ██╗   ██╗
-           ██╔════╝██║   ██║██╔════╝██╔══██╗╚██╗ ██╔╝
-           █████╗  ██║   ██║█████╗  ██████╔╝ ╚████╔╝
-           ██╔══╝  ╚██╗ ██╔╝██╔══╝  ██╔══██╗  ╚██╔╝
-           ███████╗ ╚████╔╝ ███████╗██║  ██║   ██║                       {VERSION}
-           ╚══════╝  ╚═══╝  ╚══════╝╚═╝  ╚═╝   ╚═╝
-              █████████╗        █████████╗     ████████████╗     ███████████████╗
-              █████████║        █████████║     ████████████║     ███████████████║
-              █████████║        █████████║     ████████████║     ███████████████║
-           ███╔════════███╗  ███╔════════███╗  ███╔════════███╗  ███╔═══════════╝
-           ███║        ███║  ███║        ███║  ███║        ███║  ███║
-           ███║        ███║  ███║        ███║  ███║        ███║  ███║
-           ███║        ╚══╝  ███║        ███║  ███║        ███║  ███║
-           ███║              ███║        ███║  ███║        ███║  ███║
-           ███║              ███║        ███║  ███║        ███║  ███║
-           ███║              ███║        ███║  ███║        ███║  ███████████████╗
-           ███║              ███║        ███║  ███║        ███║  ███████████████║
-           ███║              ███║        ███║  ███║        ███║  ███████████████║
-           ███║              ███║        ███║  ███║        ███║  ███╔═══════════╝
-           ███║              ███║        ███║  ███║        ███║  ███║
-           ███║              ███║        ███║  ███║        ███║  ███║
-           ███║        ███╗  ███║        ███║  ███║        ███║  ███║
-           ███║        ███║  ███║        ███║  ███║        ███║  ███║
-           ███║        ███║  ███║        ███║  ███║        ███║  ███║
-           ╚══█████████╔══╝  ╚══█████████╔══╝  ████████████╔══╝  ███████████████╗
-              █████████║        █████████║     ████████████║     ███████████████║
-              █████████║        █████████║     ████████████║     ███████████████║
-              ╚════════╝        ╚════════╝      ╚══════════╝      ╚═════════════╝
-        "}
-        .replace("{VERSION}", version);
-
-        art.lines().map(|line| line.to_string()).collect()
+        logo_lines(&LARGE_LOGO, version)
     }
 
     fn expected_medium(version: &str) -> Vec<String> {
-        let art = indoc! {"
-           ███████╗██╗   ██╗███████╗██████╗ ██╗   ██╗
-           ██╔════╝██║   ██║██╔════╝██╔══██╗╚██╗ ██╔╝
-           █████╗  ██║   ██║█████╗  ██████╔╝ ╚████╔╝
-           ██╔══╝  ╚██╗ ██╔╝██╔══╝  ██╔══██╗  ╚██╔╝
-           ███████╗ ╚████╔╝ ███████╗██║  ██║   ██║
-           ╚══════╝  ╚═══╝  ╚══════╝╚═╝  ╚═╝   ╚═╝ {VERSION}  
-             ██████╗     ██████╗   ████████╗   ██████████╗
-             ██████║     ██████║   ████████║   ██████████║
-           ██╔═════██╗ ██╔═════██╗ ██╔═════██╗ ██╔═══════╝
-           ██║     ██║ ██║     ██║ ██║     ██║ ██║
-           ██║     ╚═╝ ██║     ██║ ██║     ██║ ██║
-           ██║         ██║     ██║ ██║     ██║ ██║
-           ██║         ██║     ██║ ██║     ██║ ██████████╗
-           ██║         ██║     ██║ ██║     ██║ ██████████║
-           ██║         ██║     ██║ ██║     ██║ ██╔═══════╝
-           ██║         ██║     ██║ ██║     ██║ ██║
-           ██║     ██╗ ██║     ██║ ██║     ██║ ██║
-           ██║     ██║ ██║     ██║ ██║     ██║ ██║
-           ╚═██████╔═╝ ╚═██████╔═╝ ████████╔═╝ ██████████╗
-             ██████║     ██████║   ████████║   ██████████║
-             ╚═════╝     ╚═════╝   ╚═══════╝   ╚═════════╝
-        "}
-        .replace("{VERSION}", version);
-
-        art.lines().map(|line| line.to_string()).collect()
+        logo_lines(&COMPACT_LOGO, version)
     }
 }
