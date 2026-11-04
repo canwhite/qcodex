@@ -1,2 +1,1 @@
 tui的设计主题改为DESIGN-NEW.md,并且theme偏深色调
-i
