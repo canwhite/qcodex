@@ -84,6 +84,15 @@ fn side_toggle_key_event(key_event: KeyEvent) -> bool {
     )
 }
 
+fn side_command_is_blocked(
+    side_is_focused: bool,
+    side_lifecycle_is_active: bool,
+    command: SlashCommand,
+) -> bool {
+    (side_is_focused && !command.available_in_side_conversation())
+        || (side_lifecycle_is_active && matches!(command, SlashCommand::New | SlashCommand::Clear))
+}
+
 fn side_parent_status(event: &code_core::protocol::EventMsg) -> Option<&'static str> {
     use code_core::protocol::EventMsg;
 
@@ -979,6 +988,15 @@ impl App<'_> {
                     break 'main;
                 }
                 AppEvent::ClearUi => {
+                    if !matches!(self.side_conversation, SideConversationState::Idle) {
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            widget.debug_notice(
+                                "Starting a new conversation is unavailable during a side conversation. Press Ctrl+C to return."
+                                    .to_string(),
+                            );
+                        }
+                        continue;
+                    }
                     terminal.clear()?;
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.abort_active_turn_for_new_chat();
@@ -1425,8 +1443,17 @@ impl App<'_> {
                     }
                 }
                 AppEvent::DispatchCommand(command, command_text) => {
-                    let side_command_blocked = matches!(self.side_conversation, SideConversationState::Active { .. })
-                        && !command.available_in_side_conversation();
+                    let side_command_blocked = side_command_is_blocked(
+                        matches!(
+                            self.side_conversation,
+                            SideConversationState::Active {
+                                focused: SideConversationFocus::Side,
+                                ..
+                            }
+                        ),
+                        !matches!(self.side_conversation, SideConversationState::Idle),
+                        command,
+                    );
                     // Persist UI-only slash commands to cross-session history.
                     // For prompt-expanding commands (/plan, /solve, /code) we let the
                     // expanded prompt be recorded by the normal submission path.
@@ -3428,6 +3455,21 @@ mod next_event_priority_tests {
             KeyCode::Char('/'),
             crossterm::event::KeyModifiers::NONE,
         )));
+    }
+
+    #[test]
+    fn parent_focus_keeps_parent_only_commands_available() {
+        assert!(!side_command_is_blocked(false, true, SlashCommand::Goal));
+        assert!(side_command_is_blocked(true, true, SlashCommand::Goal));
+        assert!(!side_command_is_blocked(true, true, SlashCommand::Status));
+    }
+
+    #[test]
+    fn active_side_lifecycle_blocks_parent_replacement_commands() {
+        assert!(side_command_is_blocked(false, true, SlashCommand::New));
+        assert!(side_command_is_blocked(false, true, SlashCommand::Clear));
+        assert!(!side_command_is_blocked(false, true, SlashCommand::Goal));
+        assert!(!side_command_is_blocked(false, false, SlashCommand::New));
     }
 
     #[tokio::test]

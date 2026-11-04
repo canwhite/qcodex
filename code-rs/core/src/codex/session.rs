@@ -29,17 +29,20 @@ pub(super) const MAX_PENDING_MANUAL_COMPACTS: usize = 64;
 /// Serializes tools that can mutate a shared workspace across independently
 /// running conversations. The key is normalized once at acquisition time so a
 /// parent and its ephemeral side conversation use the same lease.
-static WORKSPACE_TOOL_LEASES: OnceLock<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
+static WORKSPACE_TOOL_LEASES: OnceLock<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>> =
     OnceLock::new();
 
 fn workspace_tool_lease_for(cwd: &Path) -> Arc<tokio::sync::Mutex<()>> {
     let root = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let leases = WORKSPACE_TOOL_LEASES.get_or_init(|| Mutex::new(HashMap::new()));
     let mut leases = leases.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    leases
-        .entry(root)
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .clone()
+    leases.retain(|_, lease| lease.strong_count() > 0);
+    if let Some(lease) = leases.get(&root).and_then(Weak::upgrade) {
+        return lease;
+    }
+    let lease = Arc::new(tokio::sync::Mutex::new(()));
+    leases.insert(root, Arc::downgrade(&lease));
+    lease
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
