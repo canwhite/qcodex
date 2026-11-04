@@ -1,0 +1,1 @@
+类比│ '/Users/doing/Desktop/claude-code-custom-github'中的ccc config-start, 给当前项目也加qcodex config-start，可以打开配置文件，自己配置provider，因为当前项目主要是openai-compitable，就provider兼容选择，可以只留这一个，注意因为可以配置多个源，所以在源切换的时候，当前agent的底层调用也要跟着实施切换
