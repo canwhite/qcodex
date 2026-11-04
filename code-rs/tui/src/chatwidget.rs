@@ -11927,8 +11927,10 @@ impl ChatWidget<'_> {
         }
 
         // Expand user-defined custom prompts, supporting both "/prompts:name" and "/name" forms.
+        let mut expanded_custom_prompt = false;
         match prompt_args::expand_custom_prompt(&text_only, self.bottom_pane.custom_prompts()) {
             Ok(Some(expanded)) => {
+                expanded_custom_prompt = true;
                 text_only = expanded.clone();
                 message
                     .ordered_items
@@ -11944,6 +11946,23 @@ impl ChatWidget<'_> {
             }
         }
 
+        // A leading `/skill-name` is an exact alias for the established
+        // `$skill-name` syntax. Keep custom prompts ahead of aliases so their
+        // existing bare-name behavior remains unchanged, and only rewrite
+        // text-only messages to avoid changing attachment ordering.
+        if only_text_items
+            && !expanded_custom_prompt
+            && !self.has_custom_subagent_command(&original_text)
+            && let Some(expanded) =
+                prompt_args::expand_skill_alias(&text_only, self.bottom_pane.skills())
+        {
+            text_only = expanded.clone();
+            message.ordered_items.clear();
+            message
+                .ordered_items
+                .push(InputItem::Text { text: expanded });
+        }
+
         // Save the prompt if it's a multi-agent command
         let original_trimmed = original_text.trim();
         if original_trimmed.starts_with("/plan ")
@@ -11957,11 +11976,9 @@ impl ChatWidget<'_> {
         // First, allow custom subagent commands: if the message starts with a slash and the
         // command name matches a saved subagent in config, synthesize a unified prompt using
         // format_subagent_command and replace the message with that prompt.
-        if let Some(first) = original_text.trim().strip_prefix('/') {
-            let mut parts = first.splitn(2, ' ');
-            let cmd_name = parts.next().unwrap_or("").trim();
-            let args = parts.next().unwrap_or("").trim().to_string();
+        if let Some((cmd_name, args)) = prompt_args::parse_slash_name(original_text.trim()) {
             if !cmd_name.is_empty() {
+                let args = args.trim().to_string();
                 let has_custom = self
                     .config
                     .subagent_commands
@@ -12370,6 +12387,19 @@ impl ChatWidget<'_> {
         let name = command_portion.split_whitespace().next()?;
         let canonical = name.to_ascii_lowercase();
         SlashCommand::from_str(&canonical).ok()
+    }
+
+    fn has_custom_subagent_command(&self, text: &str) -> bool {
+        let Some((name, _)) = prompt_args::parse_slash_name(text.trim()) else {
+            return false;
+        };
+        if matches!(name.to_ascii_lowercase().as_str(), "plan" | "solve" | "code") {
+            return false;
+        }
+        self.config
+            .subagent_commands
+            .iter()
+            .any(|command| command.name.eq_ignore_ascii_case(name))
     }
 
     fn multiline_slash_command_requires_split(command_line: &str) -> bool {
@@ -30958,6 +30988,7 @@ use code_core::parse_command::ParsedCommand;
 use code_core::protocol::OrderMeta;
     use code_core::config::{Config, ConfigOverrides, ConfigToml};
     use code_core::config_types::{ContextMode, McpServerConfig, McpServerTransportConfig, ServiceTier};
+    use code_protocol::custom_prompts::CustomPrompt;
     use code_core::protocol::{
         AskForApproval,
         AgentMessageEvent,
@@ -33400,6 +33431,75 @@ use code_core::protocol::OrderMeta;
             Some(SlashCommand::Code)
         ));
         assert_eq!(ChatWidget::slash_command_from_line("not-a-command"), None);
+    }
+
+    #[test]
+    fn slash_skill_alias_submits_canonical_skill_mention() {
+        let _runtime_guard = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        chat.bottom_pane.set_skills(vec![code_protocol::skills::Skill {
+            name: "my-skill".to_string(),
+            description: "test skill".to_string(),
+            path: PathBuf::from("/tmp/my-skill/SKILL.md"),
+            scope: code_protocol::skills::SkillScope::User,
+            content: "skill instructions".to_string(),
+        }]);
+        let mut code_op_rx = replace_code_op_channel(chat);
+
+        chat.submit_user_message(UserMessage::from(
+            "/MY-SKILL summarize this repository".to_string(),
+        ));
+
+        assert_eq!(
+            expect_immediate_user_input(&mut code_op_rx),
+            "$my-skill summarize this repository"
+        );
+    }
+
+    #[test]
+    fn custom_prompt_keeps_precedence_over_matching_skill_alias() {
+        let _runtime_guard = enter_test_runtime_guard();
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        chat.bottom_pane.set_custom_prompts(vec![CustomPrompt {
+            name: "shared".to_string(),
+            path: PathBuf::from("/tmp/shared.md"),
+            content: "custom prompt".to_string(),
+            description: None,
+            argument_hint: None,
+        }]);
+        chat.bottom_pane.set_skills(vec![code_protocol::skills::Skill {
+            name: "shared".to_string(),
+            description: "test skill".to_string(),
+            path: PathBuf::from("/tmp/shared/SKILL.md"),
+            scope: code_protocol::skills::SkillScope::User,
+            content: "skill instructions".to_string(),
+        }]);
+        let mut code_op_rx = replace_code_op_channel(chat);
+
+        chat.submit_user_message(UserMessage::from("/shared argument".to_string()));
+
+        assert_eq!(
+            expect_immediate_user_input(&mut code_op_rx),
+            "custom prompt\nargument"
+        );
+    }
+
+    #[test]
+    fn custom_subagent_command_keeps_precedence_over_matching_skill_alias() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        chat.config.subagent_commands.push(
+            code_core::config_types::SubagentCommandConfig {
+                name: "my-skill".to_string(),
+                ..Default::default()
+            },
+        );
+
+        assert!(chat.has_custom_subagent_command("/MY-SKILL summarize this repository"));
+        assert!(!chat.has_custom_subagent_command("/plan make a plan"));
+        assert!(!chat.has_custom_subagent_command("plain /my-skill"));
     }
 
     #[test]

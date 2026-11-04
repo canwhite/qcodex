@@ -1,5 +1,6 @@
 use code_protocol::custom_prompts::CustomPrompt;
 use code_protocol::custom_prompts::PROMPTS_CMD_PREFIX;
+use code_protocol::skills::Skill;
 use lazy_static::lazy_static;
 use regex_lite::Regex;
 use shlex::Shlex;
@@ -75,6 +76,29 @@ pub fn parse_slash_name(line: &str) -> Option<(&str, &str)> {
     }
     let rest = stripped[name_end..].trim_start();
     Some((name, rest))
+}
+
+/// Converts an exact leading `/skill-name` alias into the established explicit
+/// `$skill-name` form. Built-in slash commands are never treated as skills.
+pub fn expand_skill_alias(text: &str, skills: &[Skill]) -> Option<String> {
+    let (name, rest) = parse_slash_name(text)?;
+    if built_in_slash_commands()
+        .into_iter()
+        .any(|(builtin, _)| builtin.eq_ignore_ascii_case(name))
+    {
+        return None;
+    }
+
+    let skill = skills
+        .iter()
+        .find(|skill| skill.name.eq_ignore_ascii_case(name))?;
+    if rest.is_empty() {
+        let name = &skill.name;
+        Some(format!("${name}"))
+    } else {
+        let name = &skill.name;
+        Some(format!("${name} {rest}"))
+    }
 }
 
 /// Parse positional arguments using shlex semantics (supports quoted tokens).
@@ -348,6 +372,7 @@ pub fn prompt_command_with_arg_placeholders(name: &str, args: &[String]) -> (Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use code_protocol::skills::SkillScope;
 
     fn make_prompt(name: &str, content: &str) -> CustomPrompt {
         CustomPrompt {
@@ -356,6 +381,16 @@ mod tests {
             content: content.to_string(),
             description: None,
             argument_hint: None,
+        }
+    }
+
+    fn make_skill(name: &str) -> Skill {
+        Skill {
+            name: name.to_string(),
+            description: "test skill".to_string(),
+            path: std::path::PathBuf::from(format!("/tmp/{name}/SKILL.md")),
+            scope: SkillScope::User,
+            content: "skill instructions".to_string(),
         }
     }
 
@@ -383,5 +418,28 @@ mod tests {
         let prompts = vec![make_prompt("plan", "custom")];
         let expanded = expand_custom_prompt("/plan do it", &prompts).unwrap();
         assert!(expanded.is_none());
+    }
+
+    #[test]
+    fn expands_exact_skill_alias_with_canonical_name_and_arguments() {
+        let skills = vec![make_skill("my-skill")];
+
+        assert_eq!(
+            expand_skill_alias("/MY-SKILL summarize this repository", &skills),
+            Some("$my-skill summarize this repository".to_string())
+        );
+        assert_eq!(
+            expand_skill_alias("/my-skill", &skills),
+            Some("$my-skill".to_string())
+        );
+    }
+
+    #[test]
+    fn does_not_treat_builtins_or_unknown_names_as_skills() {
+        let skills = vec![make_skill("plan"), make_skill("my-skill")];
+
+        assert_eq!(expand_skill_alias("/plan make a plan", &skills), None);
+        assert_eq!(expand_skill_alias("/unknown", &skills), None);
+        assert_eq!(expand_skill_alias("plain /my-skill", &skills), None);
     }
 }
