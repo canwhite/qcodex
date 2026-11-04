@@ -48,7 +48,7 @@ Skills are behind the experimental `skills` feature flag and are enabled by defa
 
 ## Using skills
 
-- Mention a skill by name in a message using `$<skill-name>`.
+- Mention a skill by name in a message using `$<skill-name>` or enter `/skill-name` as a leading prompt alias. Loaded skills appear in the TUI slash popup and can be filtered, completed with Tab, then submitted. The slash alias preserves built-in commands, bare custom prompts, and configured subagent commands when names collide; use `$<skill-name>` to explicitly select the skill in that case.
 - In the TUI, you can also use `/skills` to browse and insert skills.
 
 ## Validation and errors

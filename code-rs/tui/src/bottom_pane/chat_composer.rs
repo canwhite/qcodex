@@ -21,6 +21,7 @@ use super::paste_burst::PasteBurst;
 use crate::slash_command::{built_in_slash_commands, SlashCommand};
 use code_protocol::custom_prompts::CustomPrompt;
 use code_protocol::custom_prompts::PROMPTS_CMD_PREFIX;
+use code_protocol::skills::Skill;
 use code_core::model_family::EXTENDED_CONTEXT_WINDOW_1M;
 
 use crate::app_event_sender::AppEventSender;
@@ -182,6 +183,7 @@ pub(crate) struct ChatComposer {
     animation_running: Option<Arc<AtomicBool>>,
     using_chatgpt_auth: bool,
     custom_prompts: Vec<CustomPrompt>,
+    skills: Vec<Skill>,
     // Ephemeral footer notice and its expiry
     footer_notice: Option<(String, std::time::Instant)>,
     // Persistent hint for specific modes (e.g., standard terminal mode)
@@ -270,6 +272,7 @@ impl ChatComposer {
             animation_running: None,
             using_chatgpt_auth,
             custom_prompts: Vec::new(),
+            skills: Vec::new(),
             footer_notice: None,
             standard_terminal_hint: None,
             auto_review_status: None,
@@ -991,15 +994,13 @@ impl ChatComposer {
         if !text.is_empty() {
             self.typed_anything = true;
         }
-        self.sync_command_popup();
-        self.sync_file_search_popup();
+        self.resync_popups();
     }
 
     pub(crate) fn insert_str(&mut self, text: &str) {
         self.textarea.insert_str(text);
         self.typed_anything = true; // Mark that user has interacted via programmatic insertion
-        self.sync_command_popup();
-        self.sync_file_search_popup();
+        self.resync_popups();
     }
 
     pub(crate) fn text(&self) -> &str {
@@ -1200,6 +1201,17 @@ impl ChatComposer {
                                 }
                             }
                         }
+                        CommandItem::Skill(idx) => {
+                            if let Some(skill) = popup.skill(idx) {
+                                let name = &skill.name;
+                                let starts_with_cmd = first_line
+                                    .trim_start()
+                                    .starts_with(&format!("/{name}"));
+                                if !starts_with_cmd {
+                                    self.textarea.set_text(&format!("/{name} "));
+                                }
+                            }
+                        }
                     }
                     // After completing, place the cursor at the end of the
                     // slash command so the user can immediately type args.
@@ -1254,6 +1266,26 @@ impl ChatComposer {
                                 let new_cursor = self.textarea.text().len();
                                 self.textarea.set_cursor(new_cursor);
                                 return (InputResult::None, true);
+                            }
+                            return (InputResult::None, true);
+                        }
+                        CommandItem::Skill(idx) => {
+                            if let Some(skill) = popup.skill(idx) {
+                                let name = &skill.name;
+                                let first_line = command_text.lines().next().unwrap_or("");
+                                let starts_with = first_line
+                                    .trim_start()
+                                    .starts_with(&format!("/{name}"));
+                                if starts_with {
+                                    self.active_popup = ActivePopup::None;
+                                    return self.handle_key_event_without_popup(KeyEvent::new(
+                                        KeyCode::Enter,
+                                        KeyModifiers::NONE,
+                                    ));
+                                }
+                                self.textarea.set_text(&format!("/{name} "));
+                                let new_cursor = self.textarea.text().len();
+                                self.textarea.set_cursor(new_cursor);
                             }
                             return (InputResult::None, true);
                         }
@@ -1955,6 +1987,9 @@ impl ChatComposer {
                     if !self.custom_prompts.is_empty() {
                         command_popup.set_prompts(self.custom_prompts.clone());
                     }
+                    if !self.skills.is_empty() {
+                        command_popup.set_skills(self.skills.clone());
+                    }
                     // Load saved subagent commands to include in autocomplete (exclude built-ins)
                     if let Ok(cfg) = code_core::config::Config::load_with_cli_overrides(vec![], code_core::config::ConfigOverrides::default()) {
                         let mut names: Vec<String> = cfg
@@ -1984,6 +2019,13 @@ impl ChatComposer {
         self.custom_prompts = prompts.clone();
         if let ActivePopup::Command(popup) = &mut self.active_popup {
             popup.set_prompts(prompts);
+        }
+    }
+
+    pub(crate) fn set_skills(&mut self, skills: Vec<Skill>) {
+        self.skills = skills.clone();
+        if let ActivePopup::Command(popup) = &mut self.active_popup {
+            popup.set_skills(skills);
         }
     }
 
@@ -3081,6 +3123,31 @@ mod tests {
     use crate::app_event::AppEvent;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+    use std::path::PathBuf;
+
+    #[test]
+    fn slash_popup_includes_loaded_skill() {
+        let (tx, _rx) = std::sync::mpsc::channel::<AppEvent>();
+        let app_tx = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(true, app_tx, true, false);
+        composer.set_skills(vec![Skill {
+            name: "my-skill".to_string(),
+            description: "test skill".to_string(),
+            path: PathBuf::from("/tmp/my-skill/SKILL.md"),
+            scope: code_protocol::skills::SkillScope::User,
+            content: "instructions".to_string(),
+        }]);
+
+        composer.set_text_content("/my".to_string());
+
+        let ActivePopup::Command(popup) = &composer.active_popup else {
+            panic!("expected slash popup");
+        };
+        assert!(matches!(popup.selected_item(), Some(CommandItem::Skill(0))));
+
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(composer.text(), "/my-skill ");
+    }
 
     #[test]
     fn auto_review_status_stays_left_with_auto_drive_footer() {

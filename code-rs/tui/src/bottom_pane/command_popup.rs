@@ -12,9 +12,10 @@ use crate::slash_command::built_in_slash_commands;
 use code_common::fuzzy_match::fuzzy_match;
 use code_protocol::custom_prompts::CustomPrompt;
 use code_protocol::custom_prompts::PROMPTS_CMD_PREFIX;
+use code_protocol::skills::Skill;
 use std::collections::HashSet;
 
-/// A selectable item in the popup: either a built-in command or a user prompt.
+/// A selectable item in the popup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CommandItem {
     Builtin(SlashCommand),
@@ -22,12 +23,15 @@ pub(crate) enum CommandItem {
     UserPrompt(usize),
     // Index into `subagents`
     Subagent(usize),
+    // Index into `skills`
+    Skill(usize),
 }
 
 pub(crate) struct CommandPopup {
     command_filter: String,
     builtins: Vec<(&'static str, SlashCommand)>,
     prompts: Vec<CustomPrompt>,
+    skills: Vec<Skill>,
     state: ScrollState,
     subagents: Vec<String>,
 }
@@ -43,6 +47,7 @@ impl CommandPopup {
             command_filter: String::new(),
             builtins: commands,
             prompts: Vec::new(),
+            skills: Vec::new(),
             state: ScrollState::new(),
             subagents: Vec::new(),
         }
@@ -66,6 +71,18 @@ impl CommandPopup {
 
     pub(crate) fn subagent_name(&self, idx: usize) -> Option<&str> {
         self.subagents.get(idx).map(std::string::String::as_str)
+    }
+
+    pub(crate) fn skill(&self, idx: usize) -> Option<&Skill> {
+        self.skills.get(idx)
+    }
+
+    pub(crate) fn set_skills(&mut self, mut skills: Vec<Skill>) {
+        let mut seen = HashSet::new();
+        skills.retain(|skill| seen.insert(skill.name.to_ascii_lowercase()));
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        self.skills = skills;
+        self.state.clamp_selection(self.filtered_items().len());
     }
 
     /// Supply custom subagent command names (e.g., ["demo", "ship"]) to include in the
@@ -135,6 +152,11 @@ impl CommandPopup {
             for idx in 0..self.prompts.len() {
                 out.push((CommandItem::UserPrompt(idx), None, 0));
             }
+            for (idx, skill) in self.skills.iter().enumerate() {
+                if !self.skill_is_shadowed(skill) {
+                    out.push((CommandItem::Skill(idx), None, 0));
+                }
+            }
             return out;
         }
 
@@ -166,8 +188,16 @@ impl CommandPopup {
                 out.push((CommandItem::UserPrompt(idx), Some(indices), score));
             }
         }
+        for (idx, skill) in self.skills.iter().enumerate() {
+            if self.skill_is_shadowed(skill) {
+                continue;
+            }
+            if let Some((indices, score)) = fuzzy_match(&skill.name, filter) {
+                out.push((CommandItem::Skill(idx), Some(indices), score));
+            }
+        }
         // When filtering, sort by ascending score, then prefer built-ins over
-        // subagents over prompts to keep core commands easy to reach on exact
+        // subagents over prompts over skills to keep core commands easy to reach on exact
         // matches (e.g., `/prompts` should not auto-select a custom prompt),
         // and finally fall back to name for stability.
         out.sort_by(|a, b| {
@@ -182,6 +212,7 @@ impl CommandPopup {
                 CommandItem::Builtin(_) => 0,
                 CommandItem::Subagent(_) => 1,
                 CommandItem::UserPrompt(_) => 2,
+                CommandItem::Skill(_) => 3,
             };
             let rank_cmp = rank(&a.0).cmp(&rank(&b.0));
             if rank_cmp != Ordering::Equal {
@@ -192,15 +223,28 @@ impl CommandPopup {
                 CommandItem::Builtin(c) => c.command(),
                 CommandItem::UserPrompt(i) => &self.prompts[i].name,
                 CommandItem::Subagent(i) => &self.subagents[i],
+                CommandItem::Skill(i) => &self.skills[i].name,
             };
             let bn = match b.0 {
                 CommandItem::Builtin(c) => c.command(),
                 CommandItem::UserPrompt(i) => &self.prompts[i].name,
                 CommandItem::Subagent(i) => &self.subagents[i],
+                CommandItem::Skill(i) => &self.skills[i].name,
             };
             an.cmp(bn)
         });
         out
+    }
+
+    fn skill_is_shadowed(&self, skill: &Skill) -> bool {
+        self.builtins
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case(&skill.name))
+            || self
+                .subagents
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&skill.name))
+            || self.prompts.iter().any(|prompt| prompt.name == skill.name)
     }
 
     fn filtered_items(&self) -> Vec<CommandItem> {
@@ -274,6 +318,10 @@ impl WidgetRef for CommandPopup {
                             format!("/{}", self.subagents[i]),
                             Some("custom subagent".to_string()),
                         ),
+                        CommandItem::Skill(i) => {
+                            let skill = &self.skills[i];
+                            (format!("/{}", skill.name), Some(skill.description.clone()))
+                        }
                     };
                     GenericDisplayRow {
                         name,
@@ -313,6 +361,16 @@ mod tests {
         }
     }
 
+    fn skill(name: &str) -> Skill {
+        Skill {
+            name: name.to_string(),
+            description: "test skill".to_string(),
+            path: PathBuf::from(format!("/tmp/{name}/SKILL.md")),
+            scope: code_protocol::skills::SkillScope::User,
+            content: "instructions".to_string(),
+        }
+    }
+
     #[test]
     fn prefers_builtin_over_prompt_with_identical_score() {
         let mut popup = CommandPopup::new_with_filter(false);
@@ -324,5 +382,14 @@ mod tests {
 
         let first = popup.filtered_items().first().copied();
         assert!(matches!(first, Some(CommandItem::Builtin(SlashCommand::Prompts))));
+    }
+
+    #[test]
+    fn finds_skills_from_the_slash_popup() {
+        let mut popup = CommandPopup::new_with_filter(false);
+        popup.set_skills(vec![skill("my-skill")]);
+        popup.on_composer_text_change("/my".to_string());
+
+        assert!(matches!(popup.selected_item(), Some(CommandItem::Skill(0))));
     }
 }

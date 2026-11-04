@@ -11976,7 +11976,9 @@ impl ChatWidget<'_> {
         // First, allow custom subagent commands: if the message starts with a slash and the
         // command name matches a saved subagent in config, synthesize a unified prompt using
         // format_subagent_command and replace the message with that prompt.
-        if let Some((cmd_name, args)) = prompt_args::parse_slash_name(original_text.trim()) {
+        if !expanded_custom_prompt
+            && let Some((cmd_name, args)) = prompt_args::parse_slash_name(original_text.trim())
+        {
             if !cmd_name.is_empty() {
                 let args = args.trim().to_string();
                 let has_custom = self
@@ -11986,10 +11988,9 @@ impl ChatWidget<'_> {
                     .any(|c| c.name.eq_ignore_ascii_case(cmd_name));
                 // Treat built-ins via the standard path below to preserve existing ack flow,
                 // but allow any other saved subagent command to be executed here.
-                let is_builtin = matches!(
-                    cmd_name.to_ascii_lowercase().as_str(),
-                    "plan" | "solve" | "code"
-                );
+                let is_builtin = crate::slash_command::built_in_slash_commands()
+                    .into_iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case(cmd_name));
                 if has_custom && !is_builtin {
                     let res = code_core::slash_commands::format_subagent_command(
                         cmd_name,
@@ -33469,6 +33470,12 @@ use code_core::protocol::OrderMeta;
             description: None,
             argument_hint: None,
         }]);
+        chat.config.subagent_commands.push(
+            code_core::config_types::SubagentCommandConfig {
+                name: "shared".to_string(),
+                ..Default::default()
+            },
+        );
         chat.bottom_pane.set_skills(vec![code_protocol::skills::Skill {
             name: "shared".to_string(),
             description: "test skill".to_string(),
