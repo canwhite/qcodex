@@ -1480,17 +1480,22 @@ pub fn list_mcp_servers(code_home: &Path) -> anyhow::Result<(McpServerList, McpS
     Ok((enabled, disabled))
 }
 
-/// Add or update an MCP server under `[mcp_servers.<name>]`. If the same
-/// server exists under `mcp_servers_disabled`, it will be removed from there.
+/// Add an MCP server under `[mcp_servers.<name>]` without replacing a
+/// hand-authored enabled or disabled entry.
 pub fn add_mcp_server(
     code_home: &Path,
     name: &str,
     cfg: McpServerConfig,
 ) -> anyhow::Result<()> {
-    // Validate server name for safety and compatibility with MCP tool naming.
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    // Keep this in sync with the CLI's accepted names. TOML keys are escaped by
+    // toml_edit and MCP tool names are qualified and sanitized before they are
+    // sent to a model, so package-style identifiers are safe here.
+    if name.is_empty()
+        || !name.chars().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '@' | '/' | '.')
+    }) {
         return Err(anyhow::anyhow!(
-            "invalid server name '{name}': must match ^[a-zA-Z0-9_-]+$"
+            "invalid server name '{name}' (use letters, numbers, '-', '_', ':', '@', '/', or '.')"
         ));
     }
 
@@ -1509,6 +1514,18 @@ pub fn add_mcp_server(
     if !doc["mcp_servers"].is_table() {
         doc["mcp_servers"] = TomlItem::Table(toml_edit::Table::new());
     }
+    if doc["mcp_servers"].as_table().is_some_and(|enabled| enabled.contains_key(name))
+        || doc
+            .as_table()
+            .get("mcp_servers_disabled")
+            .and_then(TomlItem::as_table)
+            .is_some_and(|disabled| disabled.contains_key(name))
+    {
+        return Err(anyhow::anyhow!(
+            "MCP server '{name}' already exists; remove it before adding a replacement"
+        ));
+    }
+
     let Some(tbl) = doc["mcp_servers"].as_table_mut() else {
         unreachable!("mcp_servers was just initialized as a table");
     };
@@ -1612,11 +1629,6 @@ pub fn add_mcp_server(
 
     // Write into enabled table
     tbl.insert(name, TomlItem::Table(server_tbl));
-
-    // Remove from disabled if present
-    if let Some(disabled_tbl) = doc["mcp_servers_disabled"].as_table_mut() {
-        disabled_tbl.remove(name);
-    }
 
     // ensure code_home exists
     std::fs::create_dir_all(code_home)?;
@@ -1877,7 +1889,10 @@ pub(crate) fn get_compact_prompt_override(
 #[cfg(test)]
 mod tests {
     use super::CONFIG_TOML_FILE;
+    use super::add_mcp_server;
     use super::list_mcp_servers;
+    use crate::config_types::McpServerConfig;
+    use crate::config_types::McpServerTransportConfig;
 
     #[test]
     fn list_mcp_servers_preserves_tool_filters() {
@@ -1915,5 +1930,79 @@ disabled_tools = ["delete_repo"]
             disabled[0].1.disabled_tools,
             Some(vec!["delete_repo".to_string()])
         );
+    }
+
+    #[test]
+    fn add_mcp_server_does_not_replace_existing_entries() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let config_path = tempdir.path().join(CONFIG_TOML_FILE);
+        std::fs::write(
+            &config_path,
+            r#"
+[mcp_servers.playwright]
+command = "custom-playwright"
+"#,
+        )
+        .expect("write config");
+
+        let config = McpServerConfig {
+            transport: McpServerTransportConfig::Stdio {
+                command: "npx".to_string(),
+                args: vec!["--yes".to_string(), "@playwright/mcp@0.0.80".to_string()],
+                env: None,
+            },
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+        };
+
+        let err = add_mcp_server(tempdir.path(), "playwright", config)
+            .expect_err("existing entry must be preserved");
+        assert!(err.to_string().contains("already exists"));
+        let contents = std::fs::read_to_string(config_path).expect("read config");
+        assert!(contents.contains("custom-playwright"));
+    }
+
+    #[test]
+    fn add_mcp_server_accepts_package_style_names() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let name = "npm:@modelcontextprotocol/server-sequential.thinking";
+        let config = McpServerConfig {
+            transport: McpServerTransportConfig::Stdio {
+                command: "true".to_string(),
+                args: Vec::new(),
+                env: None,
+            },
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+        };
+
+        add_mcp_server(tempdir.path(), name, config).expect("package-style name is accepted");
+        let (enabled, disabled) = list_mcp_servers(tempdir.path()).expect("list servers");
+        assert!(disabled.is_empty());
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(enabled[0].0, name);
+    }
+
+    #[test]
+    fn add_mcp_server_rejects_empty_names() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let config = McpServerConfig {
+            transport: McpServerTransportConfig::Stdio {
+                command: "true".to_string(),
+                args: Vec::new(),
+                env: None,
+            },
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+        };
+
+        let err = add_mcp_server(tempdir.path(), "", config).expect_err("empty name is rejected");
+        assert!(err.to_string().contains("invalid server name"));
     }
 }

@@ -29307,6 +29307,46 @@ Have we met every part of this goal and is there no further work to do?"#
                     }
                 }
             }
+            "preset" => {
+                let preset_name = parts.next().unwrap_or("");
+                let Some(preset) = code_core::mcp_presets::McpPreset::parse(preset_name) else {
+                    let msg = "Usage: /mcp preset <playwright|computer-use>".to_string();
+                    self.history_push_plain_state(history_cell::new_error_event(msg));
+                    return;
+                };
+                if parts.next().is_some() {
+                    let msg = "Usage: /mcp preset <playwright|computer-use>".to_string();
+                    self.history_push_plain_state(history_cell::new_error_event(msg));
+                    return;
+                }
+
+                let definition = code_core::mcp_presets::mcp_preset_definition(preset);
+                let name = preset.name().to_string();
+                match find_code_home() {
+                    Ok(home) => match code_core::config::add_mcp_server(
+                        &home,
+                        &name,
+                        definition.config.clone(),
+                    ) {
+                        Ok(()) => {
+                            let summary = Self::format_mcp_summary(&definition.config);
+                            self.config.mcp_servers.insert(name.clone(), definition.config);
+                            self.push_background_tail(format!(
+                                "Added MCP preset '{name}': {summary}\n{}",
+                                definition.notice
+                            ));
+                        }
+                        Err(e) => {
+                            let msg = format!("Failed to add MCP preset '{name}': {e}");
+                            self.history_push_plain_state(history_cell::new_error_event(msg));
+                        }
+                    },
+                    Err(e) => {
+                        let msg = format!("Failed to locate CODEX_HOME: {e}");
+                        self.history_push_plain_state(history_cell::new_error_event(msg));
+                    }
+                }
+            }
             "add" => {
                 // Support two forms:
                 //   1) /mcp add <name> <command> [args…] [ENV=VAL…]
@@ -29446,7 +29486,7 @@ Have we met every part of this goal and is there no further work to do?"#
             }
             _ => {
                 let msg = format!(
-                    "Unknown MCP command: '{sub}'\nUsage:\n  /mcp status\n  /mcp on <name>\n  /mcp off <name>\n  /mcp add <name> <command> [args…] [ENV=VAL…]"
+                    "Unknown MCP command: '{sub}'\nUsage:\n  /mcp status\n  /mcp on <name>\n  /mcp off <name>\n  /mcp preset <playwright|computer-use>\n  /mcp add <name> <command> [args…] [ENV=VAL…]"
                 );
                 self.history_push_plain_state(history_cell::new_error_event(msg));
             }

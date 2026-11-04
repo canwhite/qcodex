@@ -130,6 +130,15 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/project"]
 
 MCP 服务拥有的权限取决于其启动命令和配置。接入前请审查服务代码、令牌传递和可访问目录。
 
+qcodex 还提供两个显式启用的浏览器自动化预设：
+
+```shell
+qcodex mcp add-preset playwright
+qcodex mcp add-preset computer-use
+```
+
+Playwright 预设使用隔离的临时浏览器 profile，不会连接 qcodex 内置浏览器。Computer Use 预设会控制当前交互式桌面；它使用固定版本的社区 MCP 包，因此应先审查其来源，并仅在专用账号或可丢弃桌面中处理不可信任务。两者均沿用现有 MCP 的超时、取消和工具历史机制。
+
 ### 子代理
 
 `/plan`、`/solve`、`/code` 是内置协作入口；你可以在 `config.toml` 定义代理命令和自定义子代理。qcodex 只负责调度本机可执行的代理 CLI，不替第三方代理、模型或命令的输出背书。

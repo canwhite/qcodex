@@ -82,10 +82,12 @@ Notes
 - `/notifications [status|on|off]`: manage notification settings. Without
   arguments, shows the notifications panel. With arguments: `status` shows
   current config, `on` enables all, `off` disables all.
-- `/mcp [status|on|off <name>|add]`: manage MCP servers. Without arguments,
+- `/mcp [status|on|off <name>|preset <name>|add]`: manage MCP servers. Without arguments,
   shows all servers with toggle controls. With arguments: `status` lists
-  servers, `on <name>` enables, `off <name>` disables, and `add` starts the new
-  server workflow.
+  servers, `on <name>` enables, `off <name>` disables, `preset playwright` or
+  `preset computer-use` adds a reviewed browser-automation preset, and `add`
+  starts the generic new-server workflow. The Playwright preset is isolated
+  from the built-in browser; Computer Use controls the interactive desktop.
 - `/validation [status|on|off|<tool> (on|off)]`: inspect or toggle validation
   harness settings.
 

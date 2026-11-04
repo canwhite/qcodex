@@ -9,11 +9,14 @@ use anyhow::bail;
 use code_common::CliConfigOverrides;
 use code_core::config::Config;
 use code_core::config::ConfigOverrides;
+use code_core::config::add_mcp_server;
 use code_core::config::find_code_home;
 use code_core::config::load_global_mcp_servers;
 use code_core::config::write_global_mcp_servers;
 use code_core::config_types::McpServerConfig;
 use code_core::config_types::McpServerTransportConfig;
+use code_core::mcp_presets::McpPreset as CoreMcpPreset;
+use code_core::mcp_presets::mcp_preset_definition;
 
 /// Subcommands:
 /// - `serve`  — run the MCP server on stdio
@@ -37,6 +40,9 @@ pub enum McpSubcommand {
     Get(GetArgs),
 
     Add(AddArgs),
+
+    /// Add a reviewed browser-automation MCP server preset.
+    AddPreset(AddPresetArgs),
 
     Remove(RemoveArgs),
 }
@@ -87,6 +93,34 @@ pub struct AddArgs {
 }
 
 #[derive(Debug, clap::Parser)]
+pub struct AddPresetArgs {
+    /// Preset to add.
+    #[arg(value_enum)]
+    pub preset: McpPreset,
+
+    /// Override the default MCP server name for this preset.
+    #[arg(long)]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, clap::ValueEnum)]
+pub enum McpPreset {
+    /// Microsoft Playwright MCP with an isolated, temporary browser profile.
+    Playwright,
+    /// Community computer-use MCP for an interactive local desktop.
+    ComputerUse,
+}
+
+impl From<McpPreset> for CoreMcpPreset {
+    fn from(value: McpPreset) -> Self {
+        match value {
+            McpPreset::Playwright => Self::Playwright,
+            McpPreset::ComputerUse => Self::ComputerUse,
+        }
+    }
+}
+
+#[derive(Debug, clap::Parser)]
 pub struct RemoveArgs {
     /// Name of the MCP server configuration to remove.
     pub name: String,
@@ -108,6 +142,9 @@ impl McpCli {
             }
             McpSubcommand::Add(args) => {
                 run_add(&config_overrides, args)?;
+            }
+            McpSubcommand::AddPreset(args) => {
+                run_add_preset(&config_overrides, args)?;
             }
             McpSubcommand::Remove(args) => {
                 run_remove(&config_overrides, args)?;
@@ -185,10 +222,6 @@ fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Result<(
         Some(map)
     };
 
-    let code_home = find_code_home().context("failed to resolve CODEX_HOME")?;
-    let mut servers = load_global_mcp_servers(&code_home)
-        .with_context(|| format!("failed to load MCP servers from {}", code_home.display()))?;
-
     let transport = build_mcp_transport_for_add(url, bearer_token, env_map, command)?;
 
     let new_entry = McpServerConfig {
@@ -199,12 +232,28 @@ fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Result<(
         disabled_tools: None,
     };
 
-    servers.insert(name.clone(), new_entry);
-
-    write_global_mcp_servers(&code_home, &servers)
+    let code_home = find_code_home().context("failed to resolve CODEX_HOME")?;
+    add_mcp_server(&code_home, &name, new_entry)
         .with_context(|| format!("failed to write MCP servers to {}", code_home.display()))?;
 
     println!("Added global MCP server '{name}'.");
+
+    Ok(())
+}
+
+fn run_add_preset(config_overrides: &CliConfigOverrides, add_args: AddPresetArgs) -> Result<()> {
+    config_overrides.parse_overrides().map_err(|e| anyhow!(e))?;
+
+    let preset: CoreMcpPreset = add_args.preset.into();
+    let definition = mcp_preset_definition(preset);
+    let notice = definition.notice;
+    let name = add_args.name.unwrap_or_else(|| preset.name().to_string());
+    validate_server_name(&name)?;
+
+    let code_home = find_code_home().context("failed to resolve CODEX_HOME")?;
+    add_mcp_server(&code_home, &name, definition.config)
+        .with_context(|| format!("failed to write MCP servers to {}", code_home.display()))?;
+    println!("Added MCP preset '{name}'. {notice}");
 
     Ok(())
 }
@@ -267,6 +316,7 @@ mod tests {
         assert!(validate_server_name("npm:@modelcontextprotocol/server-sequential.thinking").is_ok());
         assert!(validate_server_name("npm:@scope/package name").is_err());
     }
+
 }
 
 fn run_remove(config_overrides: &CliConfigOverrides, remove_args: RemoveArgs) -> Result<()> {

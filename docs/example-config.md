@@ -251,6 +251,23 @@ experimental_use_freeform_apply_patch = false
 # tool_timeout_sec = 60.0                      # optional
 # enabled_tools = ["list_issues"]             # optional allow-list
 
+# --- Browser automation presets added by `qcodex mcp add-preset` ---
+# The generated Playwright configuration is pinned and uses an isolated,
+# temporary profile. It does not attach to qcodex's built-in browser.
+# [mcp_servers.playwright]
+# command = "npx"
+# args = ["--yes", "@playwright/mcp@0.0.80", "--isolated"]
+# startup_timeout_sec = 20.0
+# tool_timeout_sec = 60.0
+#
+# Computer Use controls the interactive desktop. Review the third-party package
+# and use a dedicated account or disposable desktop for untrusted tasks.
+# [mcp_servers.computer-use]
+# command = "npx"
+# args = ["--yes", "computer-use-mcp@1.8.0"]
+# startup_timeout_sec = 20.0
+# tool_timeout_sec = 60.0
+
 ################################################################################
 # Model Providers (extend/override built-ins)
 ################################################################################

@@ -573,6 +573,11 @@ You can also manage these entries from the CLI:
 # Add a server (env can be repeated; `--` separates the launcher command)
 code mcp add docs -- docs-server --port 4000
 
+# Add a pinned browser-automation preset. Playwright starts with an isolated
+# temporary profile; Computer Use can control the interactive desktop.
+code mcp add-preset playwright
+code mcp add-preset computer-use
+
 # List configured servers (pretty table or JSON)
 code mcp list
 code mcp list --json

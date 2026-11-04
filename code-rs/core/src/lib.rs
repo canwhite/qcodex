@@ -60,6 +60,7 @@ pub mod landlock;
 pub mod http_client;
 pub mod housekeeping;
 pub mod mcp_connection_manager;
+pub mod mcp_presets;
 mod mcp_tool_call;
 mod message_history;
 mod memories;
