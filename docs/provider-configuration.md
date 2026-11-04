@@ -31,6 +31,17 @@ code config status
 qcodex config-start
 ```
 
+If you already have a compatible `.env` in a project, explicitly migrate it
+into the portable global store instead of copying it between repositories:
+
+```bash
+qcodex config import-dotenv --path .env --confirm
+qcodex config status --json
+```
+
+Import requires `--confirm` because it may place `OPENAI_API_KEY` into secure
+global credential storage. It never prints the key.
+
 ## What a profile contains
 
 | Field | Meaning |
@@ -82,6 +93,21 @@ in this order:
 2. **The active qcodex provider profile**.
 3. **Normal `config.toml`** — `model_provider`, `model`, and `[profiles.*]`.
 
+When a qcodex provider profile is active, qcodex does not import provider
+settings from the current project's `.env`. This makes the selected source
+portable: starting qcodex in another repository cannot silently change its
+endpoint, model, or wire API. `qcodex config status --json` reports
+`source: "provider-profile"` and `profile_state: "active-profile"` when this
+is in effect.
+
+For one deliberate project-scoped invocation, set
+`QCODEX_PROJECT_PROVIDER_OVERRIDE=1` in the shell before launching qcodex.
+That switch allows the current project's `.env` and config to win for that
+process only. qcodex deliberately ignores this variable when it appears in a
+project `.env`, so a repository cannot silently override your global profile.
+Use `qcodex config deactivate` to stop using the global profile until another
+profile is activated.
+
 An invocation override or a `config.toml` provider selection that disagrees
 with the active profile is reported as a configuration conflict. Codex does
 not merge an endpoint from one source with a credential from another.
@@ -114,6 +140,8 @@ code config update <id> [--name <name>] [--base-url <url>]
                      [--provider-id <id>] [--api-key-stdin] [--clear-api-key]
 code config remove <id> [--replacement <id>]
 code config use <id>
+code config deactivate
+code config import-dotenv [--path <file>] [--id <id>] [--name <name>] --confirm
 code config status [--json]
 
 code config-start [--no-browser] [--json] [--idle-timeout <seconds>]

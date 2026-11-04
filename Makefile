@@ -120,7 +120,8 @@ install: build
 		echo "[qcodex-install] qcodex resolved to $$resolved, not $(COMMAND)." >&2; \
 		exit 1; \
 	fi; \
-	echo "[qcodex-install] Ready: $$resolved"
+	echo "[qcodex-install] Ready: $$resolved"; \
+	echo "[qcodex-install] Configure a portable provider with: qcodex config-start"
 
 uninstall:
 	@set -eu; \

@@ -1358,6 +1358,7 @@ dependencies = [
  "code-version",
  "codex-utils-rustls-provider",
  "ctor 0.5.0",
+ "dotenvy",
  "filetime",
  "flate2",
  "futures",

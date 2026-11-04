@@ -17,6 +17,18 @@ use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
 use std::fmt;
 
+/// Environment variable that explicitly permits a project's dotenv provider
+/// settings to override the active portable qcodex profile for one process.
+pub const PROJECT_PROVIDER_OVERRIDE_ENV_VAR: &str = "QCODEX_PROJECT_PROVIDER_OVERRIDE";
+
+/// Returns whether the caller explicitly requested a project-scoped provider.
+pub fn project_provider_override_requested() -> bool {
+    matches!(
+        std::env::var(PROJECT_PROVIDER_OVERRIDE_ENV_VAR).as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+    )
+}
+
 /// Describes where the effective provider settings came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderSelectionSource {
@@ -97,6 +109,9 @@ impl From<ProviderProfileStoreError> for ProviderResolutionError {
 /// Inputs the resolver needs to detect conflicts.
 #[derive(Debug, Clone, Default)]
 pub struct ProviderResolutionInputs {
+    /// Explicitly use the current project's dotenv/config selection instead
+    /// of the active portable profile for this invocation.
+    pub project_provider_override: bool,
     /// Provider id requested by an invocation override.
     pub override_provider_id: Option<String>,
     /// Model requested by an invocation override.
@@ -151,6 +166,10 @@ impl ProviderProfileResolver {
         &self,
         inputs: &ProviderResolutionInputs,
     ) -> Result<Option<ResolvedProvider>, ProviderResolutionError> {
+        if inputs.project_provider_override {
+            return Ok(None);
+        }
+
         let Some(profile) = self.active_profile()? else {
             return Ok(None);
         };
@@ -488,6 +507,20 @@ mod precedence_tests {
                 ..Default::default()
             })
             .expect("resolve");
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn project_override_defers_to_project_configuration() {
+        let home = TempHome::new("project-override");
+        let resolver = resolver_with_active_profile(&home);
+        let resolved = resolver
+            .resolve(&ProviderResolutionInputs {
+                project_provider_override: true,
+                ..Default::default()
+            })
+            .expect("resolve");
+
         assert!(resolved.is_none());
     }
 }

@@ -274,7 +274,8 @@ pub fn render_page(csrf_token: &str) -> String {
       display_name: document.getElementById('f-name').value.trim(),
       model: document.getElementById('f-model').value.trim(),
       base_url: document.getElementById('f-url').value.trim(),
-      wire_api: document.getElementById('f-wire').value
+      wire_api: document.getElementById('f-wire').value,
+      activate: true
     }};
     const key = document.getElementById('f-key').value;
     if (key) body.api_key = key;
@@ -324,6 +325,12 @@ mod tests {
     fn page_never_renders_a_bearer_token() {
         let page = render_page("csrf-value-123");
         assert!(!page.to_lowercase().contains("bearer"));
+    }
+
+    #[test]
+    fn page_activates_a_newly_saved_source() {
+        let page = render_page("csrf-value-123");
+        assert!(page.contains("activate: true"));
     }
 
     #[test]

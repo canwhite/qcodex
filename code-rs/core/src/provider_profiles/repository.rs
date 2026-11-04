@@ -169,6 +169,27 @@ impl ProviderProfileRepository {
         Ok(stored)
     }
 
+    /// Adds a profile and makes it active in one atomic document write.
+    pub fn add_and_activate(
+        &self,
+        profile: ProviderProfile,
+        expected_document_revision: Option<u64>,
+    ) -> Result<ProviderProfile, ProviderProfileStoreError> {
+        profile
+            .validate()
+            .map_err(ProviderProfileStoreError::Invalid)?;
+        let mut document = self.read()?;
+        self.check_revision(&document, expected_document_revision)?;
+        if document.profiles.contains_key(&profile.id) {
+            return Err(ProviderProfileStoreError::AlreadyExists(profile.id));
+        }
+        let stored = profile.clone();
+        document.profiles.insert(profile.id.clone(), profile);
+        document.active_profile_id = Some(stored.id.clone());
+        self.write(&document)?;
+        Ok(stored)
+    }
+
     /// Updates an existing profile.
     pub fn update(
         &self,
@@ -409,6 +430,19 @@ mod tests {
 
         repo.remove("a", Some("b"), None).expect("remove");
         assert_eq!(repo.active_profile_id().expect("active"), Some("b".to_string()));
+    }
+
+    #[test]
+    fn add_and_activate_persists_one_active_profile() {
+        let home = TempHome::new("add-and-activate");
+        let repo = ProviderProfileRepository::new(&home.0);
+        let stored = repo
+            .add_and_activate(profile("a"), None)
+            .expect("add and activate");
+
+        assert_eq!(stored.id, "a");
+        assert_eq!(repo.active_profile_id().expect("active"), Some("a".to_string()));
+        assert_eq!(repo.list().expect("list").len(), 1);
     }
 
     #[test]

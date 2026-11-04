@@ -25,6 +25,8 @@ pub use resolver::ProviderProfileResolver;
 pub use resolver::ProviderResolutionError;
 pub use resolver::ProviderResolutionInputs;
 pub use resolver::ProviderSelectionSource;
+pub use resolver::PROJECT_PROVIDER_OVERRIDE_ENV_VAR;
+pub use resolver::project_provider_override_requested;
 pub use resolver::ResolvedProvider;
 pub use resolver::parse_wire_api;
 pub use secret_store::ProviderSecretRef;

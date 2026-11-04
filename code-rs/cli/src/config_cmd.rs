@@ -16,6 +16,7 @@ use code_core::provider_profiles::ProviderSecretStore;
 use code_core::provider_profiles::ProviderStoreState;
 use clap::Parser;
 use clap::Subcommand;
+use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::PathBuf;
@@ -132,6 +133,28 @@ pub enum ConfigCommand {
         id: String,
     },
 
+    /// Stop using the global provider profile and return to config/dotenv fallback.
+    Deactivate,
+
+    /// Import one compatible-provider .env file into the global profile store.
+    ImportDotenv {
+        /// Dotenv file to import. Defaults to .env in the current directory.
+        #[clap(long)]
+        path: Option<PathBuf>,
+
+        /// Id for the imported profile. Generated when omitted.
+        #[clap(long)]
+        id: Option<String>,
+
+        /// Display name for the imported profile.
+        #[clap(long)]
+        name: Option<String>,
+
+        /// Required acknowledgement before importing an API key into global credential storage.
+        #[clap(long)]
+        confirm: bool,
+    },
+
     /// Show the effective provider configuration.
     Status {
         /// Emit JSON instead of text.
@@ -194,7 +217,166 @@ pub fn run_config_cli(code_home: PathBuf, cli: ConfigCli) -> std::io::Result<()>
             remove_profile(&repository, &secret_store, &id, replacement.as_deref())
         }
         ConfigCommand::Use { id } => use_profile(&repository, &id),
+        ConfigCommand::Deactivate => deactivate_profile(&repository),
+        ConfigCommand::ImportDotenv {
+            path,
+            id,
+            name,
+            confirm,
+        } => import_dotenv_profile(&repository, &secret_store, path, id, name, confirm),
         ConfigCommand::Status { json } => show_status(&repository, &secret_store, json),
+    }
+}
+
+fn import_dotenv_profile(
+    repository: &ProviderProfileRepository,
+    secret_store: &ProviderSecretStore,
+    path: Option<PathBuf>,
+    id: Option<String>,
+    name: Option<String>,
+    confirm: bool,
+) -> std::io::Result<()> {
+    if !confirm {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "refusing to import a dotenv file without --confirm",
+        ));
+    }
+
+    let path = path.unwrap_or_else(|| PathBuf::from(".env"));
+    let values = read_dotenv_provider_settings(&path)?;
+    let base_url = required_dotenv_value(&values, "OPENAI_BASE_URL", &path)?;
+    let model = required_dotenv_value(&values, "OPENAI_MODEL", &path)?;
+    let wire_api = values
+        .get("OPENAI_WIRE_API")
+        .map(String::as_str)
+        .unwrap_or("chat");
+    let wire_api = parse_wire_api(wire_api).map_err(std::io::Error::other)?;
+    let api_key = values
+        .get("OPENAI_API_KEY")
+        .filter(|value| !value.trim().is_empty())
+        .cloned();
+
+    let existing = repository.list().map_err(std::io::Error::other)?;
+    let id = id.unwrap_or_else(|| {
+        code_core::provider_profiles::unique_profile_id(
+            &existing
+                .iter()
+                .map(|profile| (profile.id.clone(), profile.clone()))
+                .collect(),
+        )
+    });
+    let display_name = name.unwrap_or_else(|| id.clone());
+    let mut profile = ProviderProfile::new(id.clone(), display_name, base_url, wire_api, model);
+
+    if let Some(api_key) = api_key {
+        let secret_ref = secret_store
+            .store_secret(&id, &api_key)
+            .map_err(std::io::Error::other)?;
+        profile.credential = Some(secret_ref);
+    }
+
+    let stored_secret = profile.credential.clone();
+    let stored = match repository.add_and_activate(profile, None) {
+        Ok(stored) => stored,
+        Err(err) => {
+            if let Some(secret_ref) = stored_secret.as_ref() {
+                let _ = secret_store.delete_secret(secret_ref);
+            }
+            return Err(std::io::Error::other(err));
+        }
+    };
+
+    println!(
+        "Imported and activated provider profile `{}` ({}; {}).",
+        stored.id,
+        stored.model,
+        stored.wire_api_label()
+    );
+    Ok(())
+}
+
+fn read_dotenv_provider_settings(path: &std::path::Path) -> std::io::Result<BTreeMap<String, String>> {
+    let values = dotenvy::from_path_iter(path)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?
+        .into_iter()
+        .filter(|(key, _)| {
+            matches!(
+                key.as_str(),
+                "OPENAI_BASE_URL" | "OPENAI_MODEL" | "OPENAI_WIRE_API" | "OPENAI_API_KEY"
+            )
+        })
+        .collect();
+    Ok(values)
+}
+
+fn required_dotenv_value(
+    values: &BTreeMap<String, String>,
+    key: &str,
+    path: &std::path::Path,
+) -> std::io::Result<String> {
+    values
+        .get(key)
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} must contain a non-empty {key}", path.display()),
+            )
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dotenv_import_requires_the_provider_endpoint_and_model() {
+        let path = tempfile::NamedTempFile::new().expect("dotenv file");
+        std::fs::write(path.path(), "OPENAI_BASE_URL=https://example.com/v1\n")
+            .expect("write dotenv");
+
+        let values = read_dotenv_provider_settings(path.path()).expect("read dotenv");
+        assert_eq!(
+            required_dotenv_value(&values, "OPENAI_BASE_URL", path.path()).expect("base URL"),
+            "https://example.com/v1"
+        );
+        assert!(required_dotenv_value(&values, "OPENAI_MODEL", path.path()).is_err());
+    }
+
+    #[test]
+    fn dotenv_import_ignores_unrelated_values() {
+        let path = tempfile::NamedTempFile::new().expect("dotenv file");
+        std::fs::write(
+            path.path(),
+            "OPENAI_BASE_URL=https://example.com/v1\nOPENAI_MODEL=m\nSECRET=value\n",
+        )
+        .expect("write dotenv");
+
+        let values = read_dotenv_provider_settings(path.path()).expect("read dotenv");
+        assert_eq!(values.len(), 2);
+        assert!(!values.contains_key("SECRET"));
+    }
+
+    #[test]
+    fn dotenv_import_rejects_invalid_dotenv_syntax() {
+        let path = tempfile::NamedTempFile::new().expect("dotenv file");
+        std::fs::write(path.path(), "OPENAI_BASE_URL=https://example.com/v1\n=invalid\n")
+            .expect("write dotenv");
+
+        assert!(read_dotenv_provider_settings(path.path()).is_err());
+    }
+
+    #[test]
+    fn status_labels_an_explicit_project_override() {
+        let status = ProviderStatus::new(None, None, 1, true, Some("/tmp/home".to_string()));
+
+        assert_eq!(status.source.as_deref(), Some("config-file"));
+        assert_eq!(status.profile_state, "project-override");
+        assert_eq!(status.config_home.as_deref(), Some("/tmp/home"));
     }
 }
 
@@ -336,7 +518,11 @@ fn add_profile(
     }
 
     let stored_secret = profile.credential.clone();
-    let stored = match repository.add(profile, None) {
+    let stored = match if activate {
+        repository.add_and_activate(profile, None)
+    } else {
+        repository.add(profile, None)
+    } {
         Ok(stored) => stored,
         Err(err) => {
             // The profile was not created, so the secret that was just
@@ -347,12 +533,6 @@ fn add_profile(
             return Err(std::io::Error::other(err));
         }
     };
-
-    if activate {
-        repository
-            .activate(&stored.id, None)
-            .map_err(std::io::Error::other)?;
-    }
 
     println!("Created provider profile `{}`.", stored.id);
     if activate {
@@ -399,30 +579,36 @@ fn update_profile(
     if let Some(provider_id) = provider_id {
         profile.provider_id = Some(provider_id);
     }
+    let previous_secret = profile.credential.clone();
+    let mut replacement_secret = None;
     if clear_api_key {
-        if let Some(secret_ref) = profile.credential.take() {
-            let _ = secret_store.delete_secret(&secret_ref);
-        }
+        profile.credential = None;
     }
     if api_key_stdin {
         let secret = read_secret_from_stdin()?;
-        // Remove the previous secret first, so a replaced key does not
-        // linger in the credential store.
-        if let Some(previous) = profile.credential.as_ref() {
-            let _ = secret_store.delete_secret(previous);
-        }
+        let secret_id = format!("{id}-{}", uuid::Uuid::new_v4());
         let secret_ref = secret_store
-            .store_secret(id, &secret)
+            .store_secret(&secret_id, &secret)
             .map_err(std::io::Error::other)?;
+        replacement_secret = Some(secret_ref.clone());
         profile.credential = Some(secret_ref);
     }
 
     profile.revision += 1;
     profile.updated_at = code_core::provider_profiles::now_secs();
 
-    repository
-        .update(profile, None)
-        .map_err(std::io::Error::other)?;
+    if let Err(err) = repository.update(profile, None) {
+        if let Some(secret_ref) = replacement_secret.as_ref() {
+            let _ = secret_store.delete_secret(secret_ref);
+        }
+        return Err(std::io::Error::other(err));
+    }
+    if (clear_api_key || api_key_stdin)
+        && let Some(previous_secret) = previous_secret.as_ref()
+        && Some(previous_secret) != replacement_secret.as_ref()
+    {
+            let _ = secret_store.delete_secret(previous_secret);
+    }
     println!("Updated provider profile `{id}`.");
     Ok(())
 }
@@ -464,20 +650,42 @@ fn use_profile(repository: &ProviderProfileRepository, id: &str) -> std::io::Res
     Ok(())
 }
 
+fn deactivate_profile(repository: &ProviderProfileRepository) -> std::io::Result<()> {
+    repository.deactivate(None).map_err(std::io::Error::other)?;
+    println!("Deactivated the global provider profile.");
+    Ok(())
+}
+
 fn show_status(
     repository: &ProviderProfileRepository,
     secret_store: &ProviderSecretStore,
     json: bool,
 ) -> std::io::Result<()> {
     let resolver = ProviderProfileResolver::with_repository(repository.clone());
+    let project_provider_override =
+        code_core::provider_profiles::project_provider_override_requested();
     let resolved = resolver
-        .resolve(&code_core::provider_profiles::ProviderResolutionInputs::default())
+        .resolve(&code_core::provider_profiles::ProviderResolutionInputs {
+            project_provider_override,
+            ..Default::default()
+        })
         .map_err(std::io::Error::other)?;
 
     let active_id = repository.active_profile_id().map_err(std::io::Error::other)?;
+    let profile_count = repository.list().map_err(std::io::Error::other)?.len();
+    let config_home = repository
+        .path()
+        .parent()
+        .map(|path| path.display().to_string());
 
     if json {
-        let status = ProviderStatus::new(active_id.as_deref(), resolved.as_ref());
+        let status = ProviderStatus::new(
+            active_id.as_deref(),
+            resolved.as_ref(),
+            profile_count,
+            project_provider_override,
+            config_home.clone(),
+        );
         println!(
             "{}",
             serde_json::to_string_pretty(&status).unwrap_or_else(|_| "{}".to_string())
@@ -507,11 +715,24 @@ fn show_status(
             println!("API key:        {}", if has_key { "set" } else { "not set" });
             println!("Revision:       {}", profile.map(|p| p.revision).unwrap_or_default());
             println!("Source:         {}", resolved.source.label());
+            if let Some(config_home) = config_home.as_deref() {
+                println!("Config home:    {config_home}");
+            }
         }
         None => {
             println!("Active profile:  none");
-            println!("Provider:       (from config.toml)");
+            if project_provider_override {
+                println!("Provider profiles: project override requested");
+            } else if profile_count == 0 {
+                println!("Provider profiles: none configured");
+            } else {
+                println!("Provider profiles: {profile_count} saved, none activated");
+            }
+            println!("Provider:       (from config.toml or dotenv fallback)");
             println!("Source:         config-file");
+            if let Some(config_home) = config_home.as_deref() {
+                println!("Config home:    {config_home}");
+            }
         }
     }
     Ok(())
@@ -557,6 +778,12 @@ pub struct ProviderStatus {
     pub model_metadata_known: Option<bool>,
     /// Where the settings came from.
     pub source: Option<String>,
+    /// Number of saved global profiles.
+    pub profile_count: usize,
+    /// Whether the global profile store has an active selection.
+    pub profile_state: String,
+    /// Directory containing the portable profile store.
+    pub config_home: Option<String>,
 }
 
 impl ProviderStatus {
@@ -564,7 +791,17 @@ impl ProviderStatus {
     pub fn new(
         active_profile_id: Option<&str>,
         resolved: Option<&code_core::provider_profiles::ResolvedProvider>,
+        profile_count: usize,
+        project_provider_override: bool,
+        config_home: Option<String>,
     ) -> Self {
+        let profile_state = match (project_provider_override, profile_count, active_profile_id) {
+            (true, _, _) => "project-override",
+            (false, 0, _) => "no-profiles",
+            (false, _, Some(_)) => "active-profile",
+            _ => "profiles-not-activated",
+        }
+        .to_string();
         match resolved {
             Some(resolved) => Self {
                 active_profile_id: active_profile_id.map(str::to_string),
@@ -576,6 +813,9 @@ impl ProviderStatus {
                     code_core::provider_profiles::model_metadata_is_known(&resolved.model),
                 ),
                 source: Some(resolved.source.label().to_string()),
+                profile_count,
+                profile_state,
+                config_home,
             },
             None => Self {
                 active_profile_id: active_profile_id.map(str::to_string),
@@ -585,6 +825,9 @@ impl ProviderStatus {
                 model: None,
                 model_metadata_known: None,
                 source: Some("config-file".to_string()),
+                profile_count,
+                profile_state,
+                config_home,
             },
         }
     }

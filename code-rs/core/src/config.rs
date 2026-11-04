@@ -1177,6 +1177,8 @@ impl Config {
         // a conflict rather than silently merged.
         let profile_resolution = crate::provider_profiles::ProviderProfileResolver::new(&code_home)
             .resolve(&crate::provider_profiles::ProviderResolutionInputs {
+                project_provider_override:
+                    crate::provider_profiles::project_provider_override_requested(),
                 override_provider_id: model_provider.clone(),
                 override_model: model.clone(),
                 config_provider_id: config_selected_provider_id.clone(),

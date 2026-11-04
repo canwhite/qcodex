@@ -394,7 +394,13 @@ impl ConfigCenter {
             Ok(revision) => revision,
             Err(err) => return error_response(StatusCode(500), &err.to_string()),
         };
-        match self.repository.add(profile, Some(revision)) {
+        let activate = payload.activate.unwrap_or(true);
+        let store_result = if activate {
+            self.repository.add_and_activate(profile, Some(revision))
+        } else {
+            self.repository.add(profile, Some(revision))
+        };
+        match store_result {
             Ok(stored) => json_response(StatusCode(200), &stored),
             Err(err) => {
                 // The profile was not created, so the secret that was just
@@ -453,15 +459,24 @@ impl ConfigCenter {
         if let Some(provider_id) = payload.provider_id.as_ref() {
             profile.provider_id = Some(provider_id.clone());
         }
+        let previous_secret = profile.credential.clone();
+        let mut replacement_secret = None;
+        let credential_changed = payload.clear_api_key == Some(true)
+            || payload
+                .api_key
+                .as_ref()
+                .is_some_and(|api_key| !api_key.trim().is_empty());
         if payload.clear_api_key == Some(true) {
-            if let Some(secret_ref) = profile.credential.take() {
-                let _ = self.secret_store.delete_secret(&secret_ref);
-            }
+            profile.credential = None;
         }
         if let Some(api_key) = payload.api_key.as_ref() {
             if !api_key.trim().is_empty() {
-                match self.secret_store.store_secret(&id, api_key.trim()) {
-                    Ok(secret_ref) => profile.credential = Some(secret_ref),
+                let secret_id = format!("{id}-{}", uuid::Uuid::new_v4());
+                match self.secret_store.store_secret(&secret_id, api_key.trim()) {
+                    Ok(secret_ref) => {
+                        replacement_secret = Some(secret_ref.clone());
+                        profile.credential = Some(secret_ref);
+                    }
                     Err(err) => return error_response(StatusCode(500), &err.to_string()),
                 }
             }
@@ -475,8 +490,19 @@ impl ConfigCenter {
             Err(err) => return error_response(StatusCode(500), &err.to_string()),
         };
         match self.repository.update(profile, Some(revision)) {
-            Ok(stored) => json_response(StatusCode(200), &stored),
+            Ok(stored) => {
+                if credential_changed
+                    && let Some(previous_secret) = previous_secret.as_ref()
+                    && Some(previous_secret) != replacement_secret.as_ref()
+                {
+                    let _ = self.secret_store.delete_secret(previous_secret);
+                }
+                json_response(StatusCode(200), &stored)
+            }
             Err(err) => {
+                if let Some(replacement_secret) = replacement_secret.as_ref() {
+                    let _ = self.secret_store.delete_secret(replacement_secret);
+                }
                 let status = if is_conflict(&err) {
                     StatusCode(409)
                 } else {
@@ -649,6 +675,7 @@ struct CreateProfileRequest {
     model: String,
     provider_id: Option<String>,
     api_key: Option<String>,
+    activate: Option<bool>,
 }
 
 /// Request body for updating a profile.
@@ -858,6 +885,7 @@ mod tests {
         assert_eq!(request.wire_api, "chat");
         assert_eq!(request.model, "MiniMax-M3");
         assert_eq!(request.api_key.as_deref(), Some("test-key"));
+        assert_eq!(request.activate, None);
     }
 
     #[test]

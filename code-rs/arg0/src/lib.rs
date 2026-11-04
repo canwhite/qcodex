@@ -107,13 +107,15 @@ where
 
 const ILLEGAL_ENV_VAR_PREFIX: &str = "CODEX_";
 
-/// Load env vars from ~/.code/.env (legacy ~/.codex/.env is still read) and `$(pwd)/.env`.
+/// Load env vars from ~/.code/.env (legacy ~/.codex/.env is still read) and,
+/// when no global provider profile is active, `$(pwd)/.env`.
 ///
 /// Security: Do not allow `.env` files to create or modify any variables
 /// with names starting with `CODEX_`.
 fn load_dotenv() {
     // 1) Load from global ~/.code/.env (or ~/.codex/.env) first.
-    if let Ok(code_home) = code_core::config::find_code_home() {
+    let code_home = code_core::config::find_code_home().ok();
+    if let Some(code_home) = code_home.as_ref() {
         let global_env_path = resolve_code_path_for_read(&code_home, Path::new(".env"));
         if let Ok(iter) = dotenvy::from_path_iter(global_env_path) {
             // Global env may legitimately contain provider keys for Code usage.
@@ -121,7 +123,15 @@ fn load_dotenv() {
         }
     }
 
-    // 2) Load from the current project's .env, but with extra safety:
+    // 2) Load from the current project's .env only when no global provider
+    // profile is active. An active profile is the portable qcodex setting and
+    // must not be silently changed by the directory from which qcodex starts.
+    let load_project_env = code_home
+        .as_deref()
+        .map(should_load_project_dotenv)
+        .unwrap_or(true);
+
+    // The project dotenv import retains its existing safety restrictions:
     //    - Allow the OpenAI-compatible provider configuration used by this project:
     //      OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_WIRE_API, OPENAI_MODEL, and
     //      OPENAI_REASONING_EFFORT.
@@ -131,7 +141,9 @@ fn load_dotenv() {
     // dotenv_iter() walks parent directories. Parent-walking can accidentally
     // load unrelated files such as ~/.env when the working directory is nested
     // under $HOME.
-    if let Ok(cwd) = std::env::current_dir() {
+    if load_project_env
+        && let Ok(cwd) = std::env::current_dir()
+    {
         let project_env_path = cwd.join(".env");
         if let Ok(iter) = dotenvy::from_path_iter(project_env_path) {
         // Filtered setter that only allows the supported OpenAI API key.
@@ -157,8 +169,36 @@ fn load_dotenv() {
             }
 }
 
+/// Returns whether the legacy project dotenv fallback may select provider
+/// settings. An unreadable profile store is treated as authoritative: config
+/// loading will report that error later rather than silently falling back to a
+/// directory-dependent provider.
+fn should_load_project_dotenv(code_home: &Path) -> bool {
+    if code_core::provider_profiles::project_provider_override_requested() {
+        return true;
+    }
+    match code_core::provider_profiles::ProviderProfileRepository::new(code_home)
+        .active_profile_id()
+    {
+        Ok(None) => true,
+        Ok(Some(_)) => false,
+        Err(err) => {
+            eprintln!(
+                "[DEBUG-provider-resolution] could not read global provider profile store; project .env fallback disabled: {err}"
+            );
+            false
+        }
+    }
+}
+
 fn is_project_env_key_allowed(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
+
+    // A repository must not be able to enable qcodex process controls, such
+    // as the explicit global-profile override, merely by supplying a .env.
+    if upper.starts_with("QCODEX_") {
+        return false;
+    }
 
     // Never allow CODEX_* to be set from .env files for safety.
     if upper.starts_with(ILLEGAL_ENV_VAR_PREFIX) && upper != "CODEX_HOME" {
@@ -327,11 +367,37 @@ mod tests {
     }
 
     #[test]
-    fn project_env_rejects_other_provider_keys_and_codex_overrides() {
-        for key in ["ANTHROPIC_API_KEY", "AZURE_OPENAI_API_KEY", "CODEX_CONFIG"] {
+    fn project_env_rejects_other_provider_keys_and_qcodex_overrides() {
+        for key in [
+            "ANTHROPIC_API_KEY",
+            "AZURE_OPENAI_API_KEY",
+            "CODEX_CONFIG",
+            "QCODEX_PROJECT_PROVIDER_OVERRIDE",
+        ] {
             assert!(!is_project_env_key_allowed(key), "{key} should be rejected");
         }
         assert!(is_project_env_key_allowed("CODEX_HOME"));
+    }
+
+    #[test]
+    fn active_global_profile_disables_project_dotenv_fallback() {
+        let home = tempfile::tempdir().expect("temp home");
+        let repository =
+            code_core::provider_profiles::ProviderProfileRepository::new(home.path());
+        let profile = code_core::provider_profiles::ProviderProfile::new(
+            "global",
+            "Global",
+            "https://example.com/v1",
+            code_core::WireApi::Chat,
+            "example-model",
+        );
+        repository.add(profile, None).expect("add profile");
+
+        assert!(should_load_project_dotenv(home.path()));
+
+        repository.activate("global", None).expect("activate profile");
+
+        assert!(!should_load_project_dotenv(home.path()));
     }
 
     #[test]
