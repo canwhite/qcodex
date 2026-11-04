@@ -11,7 +11,7 @@ use std::sync::RwLock;
 
 lazy_static! {
     static ref CURRENT_THEME: RwLock<Theme> = RwLock::new(Theme::default());
-    static ref CURRENT_THEME_NAME: RwLock<ThemeName> = RwLock::new(ThemeName::LightPhoton);
+    static ref CURRENT_THEME_NAME: RwLock<ThemeName> = RwLock::new(ThemeName::DarkGeoBluePurple);
     static ref CUSTOM_THEME_LABEL: RwLock<Option<String>> = RwLock::new(None);
     static ref CUSTOM_THEME_COLORS: RwLock<Option<code_core::config_types::ThemeColors>> = RwLock::new(None);
     static ref CUSTOM_THEME_IS_DARK: RwLock<Option<bool>> = RwLock::new(None);
@@ -56,7 +56,7 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        get_predefined_theme(ThemeName::LightPhoton)
+        get_predefined_theme(ThemeName::DarkGeoBluePurple)
     }
 }
 
@@ -401,7 +401,15 @@ pub(crate) fn map_theme_for_palette(
     name: ThemeName,
     custom_is_dark_hint: Option<bool>,
 ) -> ThemeName {
-    match palette_mode() {
+    map_theme_for_palette_mode(name, custom_is_dark_hint, palette_mode())
+}
+
+fn map_theme_for_palette_mode(
+    name: ThemeName,
+    custom_is_dark_hint: Option<bool>,
+    mode: PaletteMode,
+) -> ThemeName {
+    match mode {
         PaletteMode::Ansi16 => match name {
             ThemeName::LightPhotonAnsi16 | ThemeName::DarkCarbonAnsi16 => name,
             ThemeName::Custom => {
@@ -1035,6 +1043,31 @@ fn get_predefined_theme(name: ThemeName) -> Theme {
             progress: Color::Indexed(12),
         },
 
+        ThemeName::DarkGeoBluePurple => Theme {
+            // Dark interpretation of the GEO Blue-Purple design system.
+            primary: Color::Rgb(146, 132, 255),       // #9284FF
+            secondary: Color::Rgb(122, 162, 255),     // #7AA2FF
+            background: Color::Rgb(17, 19, 28),       // #11131C
+            foreground: Color::Rgb(231, 233, 245),    // #E7E9F5
+            border: Color::Rgb(58, 64, 82),           // #3A4052
+            border_focused: Color::Rgb(178, 170, 255), // #B2AAFF
+            selection: Color::Rgb(37, 34, 67),        // #252243
+            cursor: Color::Rgb(231, 233, 245),        // #E7E9F5
+            success: Color::Rgb(74, 222, 128),        // #4ADE80
+            warning: Color::Rgb(242, 184, 75),        // #F2B84B
+            error: Color::Rgb(248, 113, 113),         // #F87171
+            info: Color::Rgb(138, 167, 255),          // #8AA7FF
+            text: Color::Rgb(200, 205, 222),          // #C8CDDE
+            text_dim: Color::Rgb(143, 152, 177),      // #8F98B1
+            text_bright: Color::White,                // #FFFFFF
+            keyword: Color::Rgb(196, 181, 253),       // #C4B5FD
+            string: Color::Rgb(125, 211, 252),        // #7DD3FC
+            comment: Color::Rgb(117, 128, 154),       // #75809A
+            function: Color::Rgb(138, 167, 255),      // #8AA7FF
+            spinner: Color::Rgb(58, 64, 82),          // #3A4052
+            progress: Color::Rgb(146, 132, 255),      // #9284FF
+        },
+
         ThemeName::LightPhoton => Theme {
             // Light default - clean professional light theme
             primary: Color::Rgb(0, 162, 255),       // #00A2FF
@@ -1387,5 +1420,99 @@ fn get_predefined_theme(name: ThemeName) -> Theme {
             // Use DarkCarbonNight (dark default) as base for custom
             get_predefined_theme(ThemeName::DarkCarbonNight)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contrast_ratio(first: Color, second: Color) -> f64 {
+        fn luminance(color: Color) -> f64 {
+            let Color::Rgb(red, green, blue) = color else {
+                panic!("contrast test requires an RGB color");
+            };
+            let channel = |value: u8| {
+                let value = f64::from(value) / 255.0;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+
+            0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
+        }
+
+        let first = luminance(first);
+        let second = luminance(second);
+        let (lighter, darker) = if first >= second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    #[test]
+    fn geo_blue_purple_theme_preserves_dark_blue_purple_token_hierarchy() {
+        let theme = get_predefined_theme(ThemeName::DarkGeoBluePurple);
+
+        assert_eq!(theme.background, Color::Rgb(17, 19, 28));
+        assert_eq!(theme.primary, Color::Rgb(146, 132, 255));
+        assert_eq!(theme.secondary, Color::Rgb(122, 162, 255));
+        assert_eq!(theme.selection, Color::Rgb(37, 34, 67));
+        assert_eq!(theme.text, Color::Rgb(200, 205, 222));
+        assert_eq!(theme.progress, theme.primary);
+        assert!(!is_light_theme_name(ThemeName::DarkGeoBluePurple));
+    }
+
+    #[test]
+    fn geo_blue_purple_theme_is_the_runtime_default() {
+        assert_eq!(Theme::default(), get_predefined_theme(ThemeName::DarkGeoBluePurple));
+    }
+
+    #[test]
+    fn geo_blue_purple_theme_has_distinct_interaction_tokens() {
+        let theme = get_predefined_theme(ThemeName::DarkGeoBluePurple);
+
+        assert_ne!(theme.border, theme.border_focused);
+        assert_ne!(theme.background, theme.selection);
+        assert_ne!(theme.background, theme.text);
+        assert_ne!(theme.background, theme.text_dim);
+        assert_ne!(theme.background, theme.success);
+        assert_ne!(theme.background, theme.warning);
+        assert_ne!(theme.background, theme.error);
+    }
+
+    #[test]
+    fn geo_blue_purple_theme_meets_text_and_focus_contrast_targets() {
+        let theme = get_predefined_theme(ThemeName::DarkGeoBluePurple);
+
+        assert!(contrast_ratio(theme.text, theme.background) >= 4.5);
+        assert!(contrast_ratio(theme.text_dim, theme.background) >= 4.5);
+        assert!(contrast_ratio(theme.text, theme.selection) >= 4.5);
+        assert!(contrast_ratio(theme.primary, theme.background) >= 4.5);
+        assert!(contrast_ratio(theme.border_focused, theme.background) >= 3.0);
+    }
+
+    #[test]
+    fn geo_blue_purple_theme_uses_the_dark_ansi16_fallback() {
+        assert_eq!(
+            map_theme_for_palette_mode(
+                ThemeName::DarkGeoBluePurple,
+                None,
+                PaletteMode::Ansi16,
+            ),
+            ThemeName::DarkCarbonAnsi16
+        );
+        assert_eq!(
+            map_theme_for_palette_mode(
+                ThemeName::DarkGeoBluePurple,
+                None,
+                PaletteMode::Ansi256,
+            ),
+            ThemeName::DarkGeoBluePurple
+        );
     }
 }

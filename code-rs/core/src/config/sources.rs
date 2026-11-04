@@ -410,6 +410,7 @@ pub fn set_tui_theme_name(code_home: &Path, theme: ThemeName) -> anyhow::Result<
         ThemeName::LightGlacier => "light-glacier",
         ThemeName::DarkCarbonNight => "dark-carbon-night",
         ThemeName::DarkCarbonAnsi16 => "dark-carbon-ansi16",
+        ThemeName::DarkGeoBluePurple => "dark-geo-blue-purple",
         ThemeName::DarkShinobiDusk => "dark-shinobi-dusk",
         ThemeName::DarkOledBlackPro => "dark-oled-black-pro",
         ThemeName::DarkAmberTerminal => "dark-amber-terminal",

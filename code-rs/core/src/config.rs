@@ -2105,6 +2105,32 @@ theme = "catppuccin-mocha"
     }
 
     #[test]
+    fn persist_geo_blue_purple_theme_uses_stable_config_name() -> anyhow::Result<()> {
+        let code_home = TempDir::new()?;
+
+        set_tui_theme_name(code_home.path(), ThemeName::DarkGeoBluePurple)?;
+
+        let serialized = std::fs::read_to_string(code_home.path().join(CONFIG_TOML_FILE))?;
+        let config: ConfigToml = toml::from_str(&serialized)?;
+        assert_eq!(
+            config
+                .tui
+                .expect("tui configuration should deserialize")
+                .theme
+                .name,
+            ThemeName::DarkGeoBluePurple
+        );
+        assert!(serialized.contains("name = \"dark-geo-blue-purple\""));
+
+        Ok(())
+    }
+
+    #[test]
+    fn geo_blue_purple_theme_is_the_config_default() {
+        assert_eq!(ThemeConfig::default().name, ThemeName::DarkGeoBluePurple);
+    }
+
+    #[test]
     fn persist_custom_theme_migrates_legacy_string_setting() -> anyhow::Result<()> {
         let code_home = TempDir::new()?;
         let config_path = code_home.path().join(CONFIG_TOML_FILE);

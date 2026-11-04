@@ -25586,6 +25586,9 @@ Have we met every part of this goal and is there no further work to do?"#
             code_core::config_types::ThemeName::DarkCarbonAnsi16 => {
                 "Dark - Carbon (16-color)".to_string()
             }
+            code_core::config_types::ThemeName::DarkGeoBluePurple => {
+                "Dark - GEO Blue Purple".to_string()
+            }
             code_core::config_types::ThemeName::DarkShinobiDusk => {
                 "Dark - Shinobi Dusk".to_string()
             }

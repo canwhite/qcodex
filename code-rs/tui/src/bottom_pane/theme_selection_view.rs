@@ -154,6 +154,11 @@ impl ThemeSelectionView {
                 "Sleek modern dark theme",
             ),
             (
+                ThemeName::DarkGeoBluePurple,
+                "Dark - GEO Blue Purple",
+                "Blue-purple operations theme",
+            ),
+            (
                 ThemeName::DarkShinobiDusk,
                 "Dark - Shinobi Dusk",
                 "Japanese-inspired twilight",
