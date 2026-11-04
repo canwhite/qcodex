@@ -242,9 +242,10 @@ pub(crate) fn normalize_overwrite_sequences(input: &str) -> String {
 }
 
 pub(crate) fn build_preview_lines(text: &str, _include_left_pipe: bool) -> Vec<Line<'static>> {
+    let (bounded_text, clipped) = clip_preview_text(text, EXEC_PREVIEW_MAX_CHARS);
     // Prefer UI‑themed JSON highlighting when the (ANSI‑stripped) text parses as JSON.
     let stripped_plain = sanitize_for_tui(
-        text,
+        &bounded_text,
         SanitizeMode::Plain,
         SanitizeOptions {
             expand_tabs: true,
@@ -252,7 +253,8 @@ pub(crate) fn build_preview_lines(text: &str, _include_left_pipe: bool) -> Vec<L
             debug_markers: false,
         },
     );
-    if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&stripped_plain) {
+    if !clipped
+        && let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&stripped_plain) {
         let pretty =
             serde_json::to_string_pretty(&json_val).unwrap_or_else(|_| json_val.to_string());
         let highlighted = crate::syntax_highlight::highlight_code_block(&pretty, Some("json"));
@@ -260,9 +262,8 @@ pub(crate) fn build_preview_lines(text: &str, _include_left_pipe: bool) -> Vec<L
     }
 
     // Otherwise, compact valid JSON (without ANSI) to improve wrap, or pass original through.
-    let processed = format_json_compact(text).unwrap_or_else(|| text.to_string());
+    let processed = format_json_compact(&bounded_text).unwrap_or(bounded_text);
     let processed = normalize_overwrite_sequences(&processed);
-    let (processed, clipped) = clip_preview_text(&processed, EXEC_PREVIEW_MAX_CHARS);
     let processed = sanitize_for_tui(
         &processed,
         SanitizeMode::AnsiPreserving,
@@ -306,7 +307,7 @@ pub(crate) fn build_preview_lines(text: &str, _include_left_pipe: bool) -> Vec<L
     let mut out: Vec<Line<'static>> = Vec::new();
     if clipped {
         out.push(Line::styled(
-            format!("… output truncated to last {EXEC_PREVIEW_MAX_CHARS} chars"),
+            format!("… output truncated to first {EXEC_PREVIEW_MAX_CHARS} bytes"),
             Style::default().fg(crate::colors::text_dim()),
         ));
     }
@@ -320,19 +321,14 @@ pub(crate) fn build_preview_lines(text: &str, _include_left_pipe: bool) -> Vec<L
 }
 
 fn clip_preview_text(text: &str, limit: usize) -> (String, bool) {
-    let char_count = text.chars().count();
-    if char_count <= limit {
+    if text.len() <= limit {
         return (text.to_string(), false);
     }
-    let tail: String = text
-        .chars()
-        .rev()
-        .take(limit)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    (tail, true)
+    let mut end = limit;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_string(), true)
 }
 
 pub(crate) fn output_lines(
@@ -454,7 +450,8 @@ pub(crate) fn select_preview_from_lines(
 
 // Helper: like build_preview_lines but parameterized and preserving ANSI
 pub(crate) fn select_preview_from_plain_text(text: &str, head: usize, tail: usize) -> Vec<Line<'static>> {
-    let processed = format_json_compact(text).unwrap_or_else(|| text.to_string());
+    let (bounded_text, clipped) = clip_preview_text(text, EXEC_PREVIEW_MAX_CHARS);
+    let processed = format_json_compact(&bounded_text).unwrap_or(bounded_text);
     let processed = normalize_overwrite_sequences(&processed);
     let processed = sanitize_for_tui(
         &processed,
@@ -474,6 +471,12 @@ pub(crate) fn select_preview_from_plain_text(text: &str, head: usize, tail: usiz
         ln
     }
     let mut out: Vec<Line<'static>> = Vec::new();
+    if clipped {
+        out.push(Line::styled(
+            format!("… output truncated to first {EXEC_PREVIEW_MAX_CHARS} bytes"),
+            Style::default().fg(crate::colors::text_dim()),
+        ));
+    }
     if non_empty.len() <= head + tail {
         for s in non_empty {
             out.push(ansi_line_with_theme_bg(s));
@@ -579,4 +582,25 @@ pub(crate) fn trim_empty_lines(mut lines: Vec<Line<'static>>) -> Vec<Line<'stati
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn large_json_preview_is_bounded_before_formatting() {
+        let payload = "x".repeat(EXEC_PREVIEW_MAX_CHARS.saturating_add(1024));
+        let input = format!(r#"{{"payload":"{payload}"}}"#);
+
+        let rendered = build_preview_lines(&input, false);
+        let text = rendered
+            .iter()
+            .map(line_to_plain_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("output truncated to first"), "{text}");
+        assert!(text.len() <= EXEC_PREVIEW_MAX_CHARS.saturating_add(128), "{}", text.len());
+    }
 }

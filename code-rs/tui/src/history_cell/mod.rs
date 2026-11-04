@@ -72,6 +72,7 @@ pub(crate) use exec_helpers::{
     exec_render_parts_parsed_with_meta,
     first_context_path,
     format_inline_script_for_display,
+    is_exploration_command,
     insert_line_breaks_after_double_ampersand,
     normalize_shell_command_display,
     parse_read_line_annotation,

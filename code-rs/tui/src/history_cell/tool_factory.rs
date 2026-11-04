@@ -25,7 +25,7 @@ use super::formatting::{
     trim_empty_lines,
 };
 use super::image::ImageOutputCell;
-use super::tool::{RunningToolCallCell, ToolCallCell};
+use super::tool::{is_sensitive_tool_argument_name, RunningToolCallCell, ToolCallCell};
 
 use crate::history::compat::{
     ArgumentValue,
@@ -128,7 +128,11 @@ pub(crate) fn arguments_from_json_excluding(
             .filter(|(key, _)| !exclude.contains(&key.as_str()))
             .map(|(key, val)| ToolArgument {
                 name: key.clone(),
-                value: argument_value_from_json(val),
+                value: if is_sensitive_tool_argument_name(key) {
+                    ArgumentValue::Secret
+                } else {
+                    argument_value_from_json(val)
+                },
             })
             .collect(),
         serde_json::Value::Array(items) => vec![ToolArgument {
@@ -1239,4 +1243,26 @@ fn format_mcp_invocation(invocation: McpInvocation) -> Line<'static> {
             .fg(crate::colors::text_dim())
             .add_modifier(Modifier::ITALIC),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn marks_credential_shaped_arguments_as_secret() {
+        let arguments = arguments_from_json(&json!({
+            "api_key": "super-secret-token",
+            "query": "find widgets",
+        }));
+
+        assert!(arguments.iter().any(|argument| {
+            argument.name == "api_key" && matches!(argument.value, ArgumentValue::Secret)
+        }));
+        assert!(arguments.iter().any(|argument| {
+            argument.name == "query"
+                && matches!(&argument.value, ArgumentValue::Text(value) if value == "find widgets")
+        }));
+    }
 }

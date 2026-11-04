@@ -29,6 +29,23 @@ pub(crate) fn action_enum_from_parsed(
     ExecAction::Run
 }
 
+/// Returns whether every parsed fragment is a read-only exploration action.
+///
+/// An aggregate cannot faithfully represent a mixed command such as a search
+/// followed by a write or test run, so the caller must keep those commands as
+/// ordinary exec cells.
+pub(crate) fn is_exploration_command(parsed: &[ParsedCommand]) -> bool {
+    !parsed.is_empty()
+        && parsed.iter().all(|command| {
+            matches!(
+                command,
+                ParsedCommand::Read { .. }
+                    | ParsedCommand::Search { .. }
+                    | ParsedCommand::ListFiles { .. }
+            )
+        })
+}
+
 pub(crate) fn exec_command_lines(
     command: &[String],
     parsed: &[ParsedCommand],
@@ -2451,4 +2468,29 @@ fn format_inline_shell_for_display(command_escaped: &str) -> Option<String> {
     }
 
     format_shell_script(&tokens, script_idx, tokens[script_idx].as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exploration_aggregation_requires_every_fragment_to_be_read_only() {
+        let read = ParsedCommand::Read {
+            cmd: "sed -n '1,10p' file.rs".to_string(),
+            name: "file.rs".to_string(),
+        };
+        let search = ParsedCommand::Search {
+            cmd: "rg needle".to_string(),
+            query: Some("needle".to_string()),
+            path: None,
+        };
+        let run = ParsedCommand::Unknown {
+            cmd: "cargo test".to_string(),
+        };
+
+        assert!(is_exploration_command(&[read.clone(), search]));
+        assert!(!is_exploration_command(&[read, run]));
+        assert!(!is_exploration_command(&[]));
+    }
 }

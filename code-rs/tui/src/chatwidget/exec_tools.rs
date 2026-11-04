@@ -123,22 +123,20 @@ fn promote_exec_cell_to_explore(chat: &mut ChatWidget<'_>, idx: usize) -> bool {
         return false;
     }
 
-    let (segments, action) = match history_record_for_cell(chat, idx) {
+    let segments = match history_record_for_cell(chat, idx) {
         Some(HistoryRecord::Exec(exec_record)) => {
-            let action = exec_record.action;
-            (vec![exec_record], action)
+            vec![exec_record]
         }
         Some(HistoryRecord::MergedExec(merged)) => {
-            let action = merged.action;
-            (merged.segments, action)
+            merged.segments
         }
         _ => return false,
     };
 
-    if !matches!(
-        action,
-        ExecAction::Read | ExecAction::Search | ExecAction::List
-    ) {
+    if segments
+        .iter()
+        .any(|segment| !history_cell::is_exploration_command(&segment.parsed))
+    {
         return false;
     }
 
@@ -1195,9 +1193,6 @@ pub(super) fn handle_exec_begin_now(
         .borrow_mut()
         .record_event(HeightEvent::RunBegin);
 
-    let has_read_command = parsed_command
-        .iter()
-        .any(|p| matches!(p, ParsedCommand::ReadCommand { .. }));
     let mut upgraded_tool_idx = if let Some(entry) = chat
         .tools_state
         .running_custom_tools
@@ -1209,11 +1204,7 @@ pub(super) fn handle_exec_begin_now(
         running_tools::find_by_call_id(chat, &ev.call_id)
     };
 
-    if matches!(
-        action,
-        ExecAction::Read | ExecAction::Search | ExecAction::List
-    ) || has_read_command
-    {
+    if history_cell::is_exploration_command(&parsed_command) {
         if let Some(idx) = upgraded_tool_idx.take() {
             chat.history_remove_at(idx);
         }

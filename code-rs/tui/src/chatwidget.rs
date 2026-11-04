@@ -5187,89 +5187,18 @@ impl ChatWidget<'_> {
                     .downcast_ref::<history_cell::CollapsibleReasoningCell>()
                     && reasoning_cell.set_hide_when_collapsed(false) {
                         needs_invalidate = true;
-                    }
+                }
             }
         } else {
-            // When reasoning is hidden (collapsed), we still show a single summary
-            // line for the most recent reasoning in any consecutive run. Earlier
-            // reasoning cells in the run are hidden entirely.
-            use std::collections::HashSet;
-            let mut hide_indices: HashSet<usize> = HashSet::new();
-            let len = self.history_cells.len();
-            let mut idx = 0usize;
-            while idx < len {
-                let cell = &self.history_cells[idx];
-                let is_reasoning = cell
-                    .as_any()
-                    .downcast_ref::<history_cell::CollapsibleReasoningCell>()
-                    .is_some();
-                if !is_reasoning {
-                    idx += 1;
-                    continue;
-                }
-
-                let mut reasoning_indices: Vec<usize> = vec![idx];
-                let mut j = idx + 1;
-                while j < len {
-                    let cell = &self.history_cells[j];
-
-                    if cell.should_remove() {
-                        j += 1;
-                        continue;
-                    }
-
-                    if cell
-                        .as_any()
-                        .downcast_ref::<history_cell::CollapsibleReasoningCell>()
-                        .is_some()
-                    {
-                        reasoning_indices.push(j);
-                        j += 1;
-                        continue;
-                    }
-
-                    match cell.kind() {
-                        history_cell::HistoryCellType::PlanUpdate
-                        | history_cell::HistoryCellType::Loading => {
-                            j += 1;
-                            continue;
-                        }
-                        _ => {}
-                    }
-
-                    if cell
-                        .as_any()
-                        .downcast_ref::<history_cell::WaitStatusCell>()
-                        .is_some()
-                    {
-                        j += 1;
-                        continue;
-                    }
-
-                    if self.cell_lines_trimmed_is_empty(j, cell.as_ref()) {
-                        j += 1;
-                        continue;
-                    }
-
-                    break;
-                }
-
-                if reasoning_indices.len() > 1 {
-                    for &ri in &reasoning_indices[..reasoning_indices.len() - 1] {
-                        hide_indices.insert(ri);
-                    }
-                }
-
-                idx = j;
-            }
-
-            for (i, cell) in self.history_cells.iter().enumerate() {
+            // Completed reasoning remains available through the explicit reasoning
+            // view and persisted history, but compact scrollback mirrors Codex by
+            // omitting it entirely instead of retaining one summary per run.
+            for cell in &self.history_cells {
                 if let Some(reasoning_cell) = cell
                     .as_any()
                     .downcast_ref::<history_cell::CollapsibleReasoningCell>()
                 {
-                    let hide = hide_indices.contains(&i);
-                    if reasoning_cell.set_hide_when_collapsed(hide) {
+                    if reasoning_cell.set_hide_when_collapsed(true) {
                         needs_invalidate = true;
                     }
                 }
@@ -25839,7 +25768,6 @@ Have we met every part of this goal and is there no further work to do?"#
     pub(crate) fn side_return_shortcut_available(&self) -> bool {
         !self.terminal_overlay_active()
             && !self.bottom_pane.has_active_modal_view()
-            && self.bottom_pane.composer_is_empty()
     }
 
     fn maybe_start_auto_upgrade_task(&mut self) {
@@ -31346,13 +31274,13 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
-    fn side_return_shortcut_defers_to_composer_draft() {
+    fn side_return_shortcut_closes_side_with_composer_draft() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
 
         assert!(chat.side_return_shortcut_available());
         chat.set_composer_text("unfinished draft".to_string());
-        assert!(!chat.side_return_shortcut_available());
+        assert!(chat.side_return_shortcut_available());
     }
 
     #[test]
@@ -34917,7 +34845,7 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
-    fn reasoning_collapse_hides_intermediate_titles_in_consecutive_runs() {
+    fn reasoning_collapse_hides_completed_titles_in_consecutive_runs() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
 
@@ -34956,13 +34884,13 @@ use code_core::protocol::OrderMeta;
             "intermediate reasoning should hide when collapsed after agent anchor",
         );
         assert!(
-            !reasoning_cells[1].display_lines().is_empty(),
-            "last reasoning should remain visible",
+            reasoning_cells[1].display_lines().is_empty(),
+            "completed reasoning should not remain in compact history",
         );
     }
 
     #[test]
-    fn reasoning_collapse_applies_without_anchor_cells() {
+    fn reasoning_collapse_hides_completed_titles_without_anchor_cells() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
 
@@ -34998,8 +34926,44 @@ use code_core::protocol::OrderMeta;
             "intermediate reasoning should hide when collapsed without an anchor",
         );
         assert!(
-            !reasoning_cells[1].display_lines().is_empty(),
-            "last reasoning should remain visible",
+            reasoning_cells[1].display_lines().is_empty(),
+            "completed reasoning should not remain in compact history",
+        );
+    }
+
+    #[test]
+    fn reasoning_toggle_restores_completed_content() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.config.tui.show_reasoning = false;
+        chat.history_push(history_cell::CollapsibleReasoningCell::new_with_id(
+            vec![Line::from("Saved reasoning".to_string())],
+            Some("r1".to_string()),
+        ));
+        chat.refresh_reasoning_collapsed_visibility();
+
+        let collapsed = chat
+            .history_cells
+            .iter()
+            .find_map(|cell| cell.as_any().downcast_ref::<history_cell::CollapsibleReasoningCell>())
+            .expect("reasoning cell should be present");
+        assert!(collapsed.display_lines().is_empty());
+
+        chat.config.tui.show_reasoning = true;
+        chat.refresh_reasoning_collapsed_visibility();
+
+        let expanded = chat
+            .history_cells
+            .iter()
+            .find_map(|cell| cell.as_any().downcast_ref::<history_cell::CollapsibleReasoningCell>())
+            .expect("reasoning cell should remain present");
+        assert!(
+            expanded
+                .display_lines()
+                .iter()
+                .any(|line| line.spans.iter().any(|span| span.content.contains("Saved reasoning"))),
+            "explicit reasoning mode should reveal the retained content",
         );
     }
 
@@ -35941,6 +35905,56 @@ use code_core::protocol::OrderMeta;
         assert!(
             !chat.exec.running_commands.contains_key(&exec_call_id),
             "finalization should clear the running command"
+        );
+    }
+
+    #[test]
+    fn mixed_exec_command_does_not_enter_explore_aggregation() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        reset_history(chat);
+
+        let call_id = "call-mixed-exec".to_string();
+        chat.handle_code_event(Event {
+            id: call_id.clone(),
+            event_seq: 0,
+            msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+                call_id: call_id.clone(),
+                command: vec!["bash".into(), "-lc".into(), "cat foo.txt && cargo test".into()],
+                cwd: std::env::temp_dir(),
+                parsed_cmd: vec![
+                    ParsedCommand::Read {
+                        cmd: "cat foo.txt".to_string(),
+                        name: "foo.txt".to_string(),
+                    },
+                    ParsedCommand::Unknown {
+                        cmd: "cargo test".to_string(),
+                    },
+                ],
+            }),
+            order: Some(OrderMeta {
+                request_ordinal: 1,
+                output_index: Some(0),
+                sequence_number: Some(0),
+            }),
+        });
+
+        assert!(
+            chat.history_cells.iter().all(|cell| {
+                cell.as_any()
+                    .downcast_ref::<ExploreAggregationCell>()
+                    .is_none()
+            }),
+            "mixed commands must retain an ordinary exec cell",
+        );
+        let running = chat
+            .exec
+            .running_commands
+            .get(&ExecCallId(call_id))
+            .expect("mixed command should be tracked");
+        assert!(
+            running.explore_entry.is_none(),
+            "mixed command must not be attached to an exploration aggregate",
         );
     }
 

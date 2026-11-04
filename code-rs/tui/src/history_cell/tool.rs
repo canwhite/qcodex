@@ -7,11 +7,20 @@ use crate::history::state::{
     RunningToolState,
     ToolArgument,
     ToolCallState,
+    ToolResultPreview,
     ToolStatus as HistoryToolStatus,
 };
+use crate::sanitize::{sanitize_for_tui, Mode as SanitizeMode, Options as SanitizeOptions};
 use crate::text_formatting::format_json_compact;
+use regex_lite::Regex;
 use serde_json::Value;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
+
+const MAX_COMPACT_ARGUMENTS: usize = 1;
+const MAX_COMPACT_RESULT_LINES: usize = 3;
+const MAX_COMPACT_INPUT_CHARS: usize = 512;
+const MAX_COMPACT_TEXT_CHARS: usize = 160;
 
 pub(crate) struct ToolCallCell {
     state: ToolCallState,
@@ -76,17 +85,11 @@ impl HistoryCell for ToolCallCell {
     fn display_lines(&self) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(self.header_line());
-        lines.extend(render_arguments(&self.state.arguments));
+        lines.extend(render_compact_arguments(&self.state.arguments));
 
         if let Some(result) = &self.state.result_preview
             && !result.lines.is_empty() {
-                lines.push(Line::from(""));
-                for line in &result.lines {
-                    lines.push(Line::styled(
-                        line.clone(),
-                        Style::default().fg(crate::colors::text_dim()),
-                    ));
-                }
+                lines.extend(render_compact_result_preview(result));
                 if result.truncated {
                     lines.push(Line::styled(
                         "… truncated ",
@@ -97,14 +100,12 @@ impl HistoryCell for ToolCallCell {
 
         if let Some(error) = &self.state.error_message
             && !error.is_empty() {
-                lines.push(Line::from(""));
                 lines.push(Line::styled(
-                    error.clone(),
+                    compact_text(error),
                     Style::default().fg(crate::colors::error()),
                 ));
             }
 
-        lines.push(Line::from(""));
         lines
     }
 }
@@ -446,17 +447,33 @@ impl HistoryCell for RunningToolCallCell {
                     .add_modifier(Modifier::BOLD),
             ));
         }
-        lines.extend(render_arguments(&self.state.arguments));
-        lines.push(Line::from(""));
+        lines.extend(render_compact_arguments(&self.state.arguments));
         lines
     }
 }
 
-fn render_arguments(arguments: &[ToolArgument]) -> Vec<Line<'static>> {
-    arguments.iter().map(render_argument).collect()
+fn render_compact_arguments(arguments: &[ToolArgument]) -> Vec<Line<'static>> {
+    let visible: Vec<&ToolArgument> = arguments
+        .iter()
+        .filter(|argument| !matches!(argument.value, ArgumentValue::Secret))
+        .take(MAX_COMPACT_ARGUMENTS)
+        .collect();
+    let mut lines = visible
+        .iter()
+        .map(|argument| render_compact_argument(argument))
+        .collect::<Vec<_>>();
+    let hidden_count = arguments.len().saturating_sub(visible.len());
+    if hidden_count > 0 {
+        let noun = if hidden_count == 1 { "argument" } else { "arguments" };
+        lines.push(Line::styled(
+            format!("└ +{hidden_count} more {noun}"),
+            Style::default().fg(crate::colors::text_dim()),
+        ));
+    }
+    lines
 }
 
-fn render_argument(arg: &ToolArgument) -> Line<'static> {
+fn render_compact_argument(arg: &ToolArgument) -> Line<'static> {
     let dim_style = Style::default().fg(crate::colors::text_dim());
     let mut spans = vec![Span::styled("└ ", dim_style)];
     spans.push(Span::styled(
@@ -464,13 +481,234 @@ fn render_argument(arg: &ToolArgument) -> Line<'static> {
         dim_style,
     ));
     let value_span = match &arg.value {
-        ArgumentValue::Text(text) => Span::styled(text.clone(), Style::default().fg(crate::colors::text())),
-        ArgumentValue::Json(json) => {
-            let compact = format_json_compact(&json.to_string()).unwrap_or_else(|| json.to_string());
-            Span::styled(compact, Style::default().fg(crate::colors::text()))
-        }
+        ArgumentValue::Text(text) => Span::styled(compact_text(text), Style::default().fg(crate::colors::text())),
+        ArgumentValue::Json(json) => Span::styled(
+            compact_json_summary(json),
+            Style::default().fg(crate::colors::text()),
+        ),
         ArgumentValue::Secret => Span::styled("(secret)".to_string(), Style::default().fg(crate::colors::text_dim())),
     };
     spans.push(value_span);
     Line::from(spans)
+}
+
+fn render_compact_result_preview(preview: &ToolResultPreview) -> Vec<Line<'static>> {
+    let lines = preview
+        .lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .take(MAX_COMPACT_RESULT_LINES.saturating_add(1))
+        .map(|line| compact_text(line))
+        .collect::<Vec<_>>();
+    if lines.len() <= MAX_COMPACT_RESULT_LINES {
+        return lines
+            .into_iter()
+            .map(|line| Line::styled(line, Style::default().fg(crate::colors::text_dim())))
+            .collect();
+    }
+
+    let mut compact = lines
+        .iter()
+        .take(2)
+        .cloned()
+        .map(|line| Line::styled(line, Style::default().fg(crate::colors::text_dim())))
+        .collect::<Vec<_>>();
+    compact.push(Line::styled(
+        "⋮ more output".to_string(),
+        Style::default().fg(crate::colors::text_dim()),
+    ));
+    compact
+}
+
+fn compact_json_summary(value: &Value) -> String {
+    match value {
+        Value::Object(fields) => format!("object ({} fields)", fields.len()),
+        Value::Array(items) => format!("array ({} items)", items.len()),
+        Value::String(text) => compact_text(text),
+        primitive => compact_text(&primitive.to_string()),
+    }
+}
+
+fn compact_text(text: &str) -> String {
+    let (bounded, input_truncated) = take_prefix_chars(text, MAX_COMPACT_INPUT_CHARS);
+    let sanitized = sanitize_for_tui(
+        bounded,
+        SanitizeMode::Plain,
+        SanitizeOptions {
+            expand_tabs: true,
+            tabstop: 4,
+            debug_markers: false,
+        },
+    );
+    let redacted = redact_sensitive_values(&sanitized);
+    let single_line = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (compact, display_truncated) = take_prefix_chars(&single_line, MAX_COMPACT_TEXT_CHARS);
+    let mut compact = compact.to_string();
+    if input_truncated || display_truncated {
+        compact.push('…');
+    }
+    compact
+}
+
+pub(crate) fn is_sensitive_tool_argument_name(name: &str) -> bool {
+    let normalized = name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "apikey"
+            | "accesstoken"
+            | "refreshtoken"
+            | "bearertoken"
+            | "token"
+            | "password"
+            | "secret"
+            | "clientsecret"
+            | "authorization"
+            | "credential"
+            | "credentials"
+    )
+}
+
+fn redact_sensitive_values(text: &str) -> String {
+    static SENSITIVE_VALUE: OnceLock<Regex> = OnceLock::new();
+    let pattern = SENSITIVE_VALUE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)([\"']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|bearer[_-]?token|client[_-]?secret|token|password|secret|authorization|credentials?)[\"']?\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|(?:bearer\s+)?[^\s,}\]]+)"#,
+        )
+        .expect("valid sensitive value regex")
+    });
+    pattern.replace_all(text, "${1}<redacted>").into_owned()
+}
+
+fn take_prefix_chars(text: &str, limit: usize) -> (&str, bool) {
+    if let Some((index, _)) = text.char_indices().nth(limit) {
+        (&text[..index], true)
+    } else {
+        (text, false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::history::compat::ToolResultPreview;
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn completed_tool_call_compacts_arguments_and_preview() {
+        let cell = ToolCallCell::new(ToolCallState {
+            id: HistoryId::ZERO,
+            call_id: None,
+            status: HistoryToolStatus::Success,
+            title: "Complete".to_string(),
+            duration: Some(Duration::from_secs(1)),
+            arguments: vec![
+                ToolArgument {
+                    name: "invocation".to_string(),
+                    value: ArgumentValue::Text("search({\"query\":\"ratatui\"})".to_string()),
+                },
+                ToolArgument {
+                    name: "directory".to_string(),
+                    value: ArgumentValue::Text("/very/long/path".to_string()),
+                },
+                ToolArgument {
+                    name: "token".to_string(),
+                    value: ArgumentValue::Secret,
+                },
+            ],
+            result_preview: Some(ToolResultPreview {
+                lines: vec![
+                    "first result".to_string(),
+                    "second result".to_string(),
+                    "third result".to_string(),
+                    "fourth result".to_string(),
+                ],
+                truncated: false,
+            }),
+            error_message: None,
+        });
+
+        let rendered = cell
+            .display_lines_trimmed()
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line.contains("invocation:")));
+        assert!(rendered.iter().any(|line| line.contains("+2 more arguments")));
+        assert!(rendered.iter().any(|line| line.contains("more output")));
+        assert!(!rendered.iter().any(|line| line.contains("token:")));
+        assert!(rendered.len() <= 7, "compact tool output was too tall: {rendered:?}");
+    }
+
+    #[test]
+    fn completed_tool_call_sanitizes_compact_content() {
+        let cell = ToolCallCell::new(ToolCallState {
+            id: HistoryId::ZERO,
+            call_id: None,
+            status: HistoryToolStatus::Failed,
+            title: "Error".to_string(),
+            duration: None,
+            arguments: vec![ToolArgument {
+                name: "query".to_string(),
+                value: ArgumentValue::Text("safe\u{1b}]8;;https://example.test\u{1b}\\label".to_string()),
+            }],
+            result_preview: Some(ToolResultPreview {
+                lines: vec!["result\u{1b}[31m red".to_string()],
+                truncated: false,
+            }),
+            error_message: Some("failed\u{1b}[2J message".to_string()),
+        });
+
+        let rendered = cell
+            .display_lines_trimmed()
+            .iter()
+            .map(line_text)
+            .collect::<String>();
+
+        assert!(!rendered.contains('\u{1b}'));
+        assert!(rendered.contains("label"));
+        assert!(rendered.contains("failed message"));
+    }
+
+    #[test]
+    fn completed_tool_call_redacts_credential_shaped_text() {
+        let secret = "super-secret-token";
+        let cell = ToolCallCell::new(ToolCallState {
+            id: HistoryId::ZERO,
+            call_id: None,
+            status: HistoryToolStatus::Success,
+            title: "Complete".to_string(),
+            duration: None,
+            arguments: vec![ToolArgument {
+                name: "invocation".to_string(),
+                value: ArgumentValue::Text(format!(
+                    "tool({{\"credentials\":{{\"api_key\":\"{secret}\"}}}})"
+                )),
+            }],
+            result_preview: Some(ToolResultPreview {
+                lines: vec![format!("{{\"access_token\":\"{secret}\"}}")],
+                truncated: false,
+            }),
+            error_message: Some(format!("authorization: Bearer {secret}")),
+        });
+
+        let rendered = cell
+            .display_lines_trimmed()
+            .iter()
+            .map(line_text)
+            .collect::<String>();
+
+        assert!(!rendered.contains(secret), "credential leaked: {rendered}");
+        assert!(rendered.matches("<redacted>").count() >= 3, "{rendered}");
+    }
 }
