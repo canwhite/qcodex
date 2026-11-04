@@ -604,6 +604,11 @@ impl BottomPane<'_> {
         self.request_redraw();
     }
 
+    pub(crate) fn set_conversation_context(&mut self, context: Option<String>) {
+        self.composer.set_conversation_context(context);
+        self.request_redraw();
+    }
+
     /// Show an ephemeral footer notice for a custom duration.
     pub(crate) fn flash_footer_notice_for(&mut self, text: String, dur: Duration) {
         self.composer.flash_footer_notice_for(text, dur);

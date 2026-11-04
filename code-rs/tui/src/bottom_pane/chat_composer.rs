@@ -179,6 +179,8 @@ pub(crate) struct ChatComposer {
     is_task_running: bool,
     // Current status message to display when task is running
     status_message: String,
+    // Conversation identity must survive transient activity and idle states.
+    conversation_context: Option<String>,
     // Animation thread for spinning icon when task is running
     animation_running: Option<Arc<AtomicBool>>,
     using_chatgpt_auth: bool,
@@ -269,6 +271,7 @@ impl ChatComposer {
             // no double‑Esc handling here; App manages Esc policy
             is_task_running: false,
             status_message: String::from("coding"),
+            conversation_context: None,
             animation_running: None,
             using_chatgpt_auth,
             custom_prompts: Vec::new(),
@@ -412,6 +415,10 @@ impl ChatComposer {
 
     pub fn update_status_message(&mut self, message: String) {
         self.status_message = Self::map_status_message(&message);
+    }
+
+    pub(crate) fn set_conversation_context(&mut self, context: Option<String>) {
+        self.conversation_context = context;
     }
 
     pub fn status_message(&self) -> Option<&str> {
@@ -2990,6 +2997,10 @@ impl WidgetRef for ChatComposer {
                 .centered();
                 input_block = input_block.title(title_line);
             }
+        }
+
+        if let Some(context) = &self.conversation_context {
+            input_block = input_block.title_bottom(Line::from(format!(" {context} ")));
         }
 
         let textarea_rect = input_block.inner(input_area);

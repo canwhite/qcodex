@@ -25788,33 +25788,33 @@ Have we met every part of this goal and is there no further work to do?"#
             message: "temporary side conversation".to_string(),
             hint: None,
         });
-        self.bottom_pane.update_status_text(
+        self.bottom_pane.set_conversation_context(Some(
             "Side conversation · Ctrl+/ for parent · Ctrl+C to close"
                 .to_string(),
-        );
+        ));
     }
 
     pub(crate) fn set_parent_with_side_mode(&mut self) {
         self.bottom_pane
-            .update_status_text("Main conversation · Ctrl+/ for side".to_string());
+            .set_conversation_context(Some("Main conversation · Ctrl+/ for side".to_string()));
     }
 
     pub(crate) fn set_side_closing_status(&mut self) {
         self.bottom_pane
-            .update_status_text("Main conversation · closing side conversation".to_string());
+            .set_conversation_context(Some("Main conversation · closing side conversation".to_string()));
     }
 
     pub(crate) fn clear_side_closing_status(&mut self) {
-        self.bottom_pane.update_status_text(String::new());
+        self.bottom_pane.set_conversation_context(None);
     }
 
     pub(crate) fn set_side_parent_status(&mut self, status: Option<&str>) {
         let status = status
             .map(|status| format!(" · parent: {status}"))
             .unwrap_or_default();
-        self.bottom_pane.update_status_text(format!(
+        self.bottom_pane.set_conversation_context(Some(format!(
             "Side conversation{status} · Ctrl+/ for parent · Ctrl+C to close"
-        ));
+        )));
     }
 
     pub(crate) fn prepare_for_side_return(&mut self) {
@@ -31353,6 +31353,59 @@ use code_core::protocol::OrderMeta;
         assert!(chat.side_return_shortcut_available());
         chat.set_composer_text("unfinished draft".to_string());
         assert!(!chat.side_return_shortcut_available());
+    }
+
+    #[test]
+    fn side_context_remains_visible_while_running() {
+        let mut harness = ChatWidgetHarness::new();
+        harness.chat().set_side_conversation_mode();
+        harness.chat().bottom_pane.set_task_running(true);
+        let frame = crate::test_helpers::render_chat_widget_to_vt100(&mut harness, 90, 24);
+        assert!(frame.contains("Side conversation"), "running side identity missing:\n{frame}");
+    }
+
+    #[test]
+    fn side_context_remains_visible_when_idle_and_after_status_updates() {
+        let mut harness = ChatWidgetHarness::new();
+        harness.chat().set_side_conversation_mode();
+        let frame = crate::test_helpers::render_chat_widget_to_vt100(&mut harness, 90, 24);
+        assert!(frame.contains("Side conversation"), "idle side identity missing:\n{frame}");
+        for running in [false, true, false] {
+            harness.chat().bottom_pane.set_task_running(running);
+            harness.chat().bottom_pane.update_status_text("thinking".to_string());
+            let frame = crate::test_helpers::render_chat_widget_to_vt100(&mut harness, 90, 24);
+            assert!(frame.contains("Side conversation"), "side identity missing:\n{frame}");
+        }
+    }
+
+    #[test]
+    fn side_context_visible_after_returning_to_running_goal() {
+        let mut harness = ChatWidgetHarness::new();
+        harness.auto_drive_activate(
+            "parent goal", false, false,
+            crate::test_helpers::AutoContinueModeFixture::Manual,
+        );
+        harness.chat().set_parent_with_side_mode();
+        let frame = crate::test_helpers::render_chat_widget_to_vt100(&mut harness, 90, 24);
+        assert!(frame.contains("Main conversation · Ctrl+/ for side"), "{frame}");
+    }
+
+    #[test]
+    fn side_context_tracks_parent_progress_and_cleanup() {
+        let mut harness = ChatWidgetHarness::new();
+        harness.chat().set_side_conversation_mode();
+        harness.chat().set_side_parent_status(Some("working"));
+        let frame = crate::test_helpers::render_chat_widget_to_vt100(&mut harness, 90, 24);
+        assert!(frame.contains("Side conversation · parent: working"), "{frame}");
+        harness.chat().set_parent_with_side_mode();
+        let frame = crate::test_helpers::render_chat_widget_to_vt100(&mut harness, 90, 24);
+        assert!(frame.contains("Main conversation · Ctrl+/ for side"), "{frame}");
+        harness.chat().set_side_closing_status();
+        let frame = crate::test_helpers::render_chat_widget_to_vt100(&mut harness, 90, 24);
+        assert!(frame.contains("closing side conversation"), "{frame}");
+        harness.chat().clear_side_closing_status();
+        let frame = crate::test_helpers::render_chat_widget_to_vt100(&mut harness, 90, 24);
+        assert!(!frame.contains("conversation"), "{frame}");
     }
 
     #[test]
