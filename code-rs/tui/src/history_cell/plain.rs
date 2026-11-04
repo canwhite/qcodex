@@ -606,9 +606,15 @@ fn popular_commands_lines(_latest_version: Option<&str>) -> Vec<Line<'static>> {
             .style(Style::default().add_modifier(Modifier::DIM)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("/auto", Style::default().fg(crate::colors::primary())),
+        Span::styled("/goal", Style::default().fg(crate::colors::primary())),
         Span::from(" - "),
-        Span::from(SlashCommand::Auto.description())
+        Span::from(SlashCommand::Goal.description())
+            .style(Style::default().add_modifier(Modifier::DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("/btw", Style::default().fg(crate::colors::primary())),
+        Span::from(" - "),
+        Span::from(SlashCommand::Btw.description())
             .style(Style::default().add_modifier(Modifier::DIM)),
     ]));
     lines.push(Line::from(vec![
