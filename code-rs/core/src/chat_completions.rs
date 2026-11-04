@@ -39,6 +39,117 @@ use code_protocol::models::ContentItem;
 use code_protocol::models::ReasoningItemContent;
 use code_protocol::models::ResponseItem;
 
+const THINK_OPEN_TAG: &str = "<think>";
+const THINK_CLOSE_TAG: &str = "</think>";
+
+/// Routes leading MiniMax-style `<think>…</think>` content into the reasoning stream.
+///
+/// Chat Completions providers are allowed to split either marker across SSE
+/// chunks, so a partial marker is retained until the next chunk arrives. Tags
+/// appearing after visible answer content remain literal answer text.
+struct ThinkTagRouter {
+    in_thinking: bool,
+    can_start_thinking: bool,
+    pending: String,
+}
+
+impl Default for ThinkTagRouter {
+    fn default() -> Self {
+        Self {
+            in_thinking: false,
+            can_start_thinking: true,
+            pending: String::new(),
+        }
+    }
+}
+
+impl ThinkTagRouter {
+    fn push(&mut self, text: &str) -> (String, String) {
+        self.pending.push_str(text);
+        self.drain_complete_segments()
+    }
+
+    fn finish(&mut self) -> (String, String) {
+        let pending = std::mem::take(&mut self.pending);
+        if self.in_thinking {
+            (String::new(), pending)
+        } else {
+            (pending, String::new())
+        }
+    }
+
+    fn drain_complete_segments(&mut self) -> (String, String) {
+        let mut answer = String::new();
+        let mut reasoning = String::new();
+
+        loop {
+            if self.in_thinking {
+                if let Some(index) = self.pending.find(THINK_CLOSE_TAG) {
+                    reasoning.push_str(&self.pending[..index]);
+                    self.pending.drain(..index + THINK_CLOSE_TAG.len());
+                    self.in_thinking = false;
+                    self.can_start_thinking = false;
+                    continue;
+                }
+
+                let keep = trailing_marker_prefix_len(&self.pending, THINK_CLOSE_TAG);
+                let split_at = self.pending.len() - keep;
+                reasoning.push_str(&self.pending[..split_at]);
+                self.pending.drain(..split_at);
+                break;
+            }
+
+            if !self.can_start_thinking {
+                answer.push_str(&std::mem::take(&mut self.pending));
+                break;
+            }
+
+            if let Some(index) = self.pending.find(THINK_OPEN_TAG) {
+                let prefix = &self.pending[..index];
+                if prefix.trim().is_empty() {
+                    answer.push_str(prefix);
+                    self.pending.drain(..index + THINK_OPEN_TAG.len());
+                    self.in_thinking = true;
+                    continue;
+                }
+
+                answer.push_str(&std::mem::take(&mut self.pending));
+                self.can_start_thinking = false;
+                break;
+            }
+
+            let keep = trailing_marker_prefix_len(&self.pending, THINK_OPEN_TAG);
+            let split_at = self.pending.len() - keep;
+            let visible = &self.pending[..split_at];
+            if !visible.trim().is_empty() {
+                self.can_start_thinking = false;
+            }
+            answer.push_str(visible);
+            self.pending.drain(..split_at);
+            break;
+        }
+
+        (answer, reasoning)
+    }
+}
+
+fn trailing_marker_prefix_len(text: &str, marker: &str) -> usize {
+    (1..=text.len().min(marker.len()))
+        .rev()
+        .find(|&len| text.ends_with(&marker[..len]))
+        .unwrap_or(0)
+}
+
+fn flush_think_tag_router(
+    router: &mut ThinkTagRouter,
+    assistant_text: &mut String,
+    reasoning_text: &mut String,
+) {
+    let (answer, reasoning) = router.finish();
+    assistant_text.push_str(&answer);
+    reasoning_text.push_str(&reasoning);
+}
+
 /// Implementation for the classic Chat Completions API.
 #[expect(
     clippy::too_many_arguments,
@@ -646,6 +757,7 @@ async fn process_chat_sse<S>(
     let mut fn_call_state = FunctionCallState::default();
     let mut assistant_text = String::new();
     let mut reasoning_text = String::new();
+    let mut think_tag_router = ThinkTagRouter::default();
     let mut current_item_id: Option<String> = None;
     let mut current_response_id: Option<String> = None;
     let mut current_response_model: Option<String> = None;
@@ -741,6 +853,11 @@ async fn process_chat_sse<S>(
                         }),
                     );
                 }
+                flush_think_tag_router(
+                    &mut think_tag_router,
+                    &mut assistant_text,
+                    &mut reasoning_text,
+                );
                 flush_and_complete(
                     &tx_event,
                     &mut assistant_text,
@@ -773,6 +890,11 @@ async fn process_chat_sse<S>(
 
         // OpenAI Chat streaming sends a literal string "[DONE]" when finished.
         if data == "[DONE]" || data == "DONE" {
+            flush_think_tag_router(
+                &mut think_tag_router,
+                &mut assistant_text,
+                &mut reasoning_text,
+            );
             flush_and_complete(
                 &tx_event,
                 &mut assistant_text,
@@ -852,21 +974,40 @@ async fn process_chat_sse<S>(
                 current_item_id = Some(item_id.to_string());
             }
 
-            // Handle assistant content tokens as streaming deltas.
+            // MiniMax and some compatible providers encode raw thinking in
+            // `<think>…</think>` segments inside ordinary content deltas.
+            // Split those before they reach the answer stream so the existing
+            // reasoning UI can keep them collapsed.
             if let Some(content) = choice
                 .get("delta")
                 .and_then(|d| d.get("content"))
                 .and_then(|c| c.as_str())
                 && !content.is_empty() {
-                    assistant_text.push_str(content);
-                    let _ = tx_event
-                        .send(Ok(ResponseEvent::OutputTextDelta {
-                            delta: content.to_string(),
-                            item_id: current_item_id.clone(),
-                            sequence_number: None,
-                            output_index: None,
-                        }))
-                        .await;
+                    let (answer, tagged_reasoning) = think_tag_router.push(content);
+                    assistant_text.push_str(&answer);
+                    reasoning_text.push_str(&tagged_reasoning);
+
+                    if !answer.is_empty() {
+                        let _ = tx_event
+                            .send(Ok(ResponseEvent::OutputTextDelta {
+                                delta: answer,
+                                item_id: current_item_id.clone(),
+                                sequence_number: None,
+                                output_index: None,
+                            }))
+                            .await;
+                    }
+                    if !tagged_reasoning.is_empty() {
+                        let _ = tx_event
+                            .send(Ok(ResponseEvent::ReasoningContentDelta {
+                                delta: tagged_reasoning,
+                                item_id: current_item_id.clone(),
+                                sequence_number: None,
+                                output_index: None,
+                                content_index: None,
+                            }))
+                            .await;
+                    }
                 }
 
             // Forward any reasoning/thinking deltas if present.
@@ -977,6 +1118,11 @@ async fn process_chat_sse<S>(
             if let Some(finish_reason) = choice.get("finish_reason").and_then(|v| v.as_str()) {
                 match finish_reason {
                     "tool_calls" if fn_call_state.active => {
+                        flush_think_tag_router(
+                            &mut think_tag_router,
+                            &mut assistant_text,
+                            &mut reasoning_text,
+                        );
                         // First, flush the terminal raw reasoning so UIs can finalize
                         // the reasoning stream before any exec/tool events begin.
                         if !reasoning_text.is_empty() {
@@ -1003,6 +1149,11 @@ async fn process_chat_sse<S>(
                         let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
                     }
                     "stop" => {
+                        flush_think_tag_router(
+                            &mut think_tag_router,
+                            &mut assistant_text,
+                            &mut reasoning_text,
+                        );
                         // Regular turn without tool-call. Emit the final assistant message
                         // as a single OutputItemDone so non-delta consumers see the result.
                         if !assistant_text.is_empty() {
@@ -1364,9 +1515,85 @@ fn sanitize_message_roles_for_strict_chat_providers(payload: &mut serde_json::Va
 
 #[cfg(test)]
 mod tests {
+    use super::process_chat_sse;
     use super::create_chat_completions_payload;
     use super::sanitize_message_roles_for_strict_chat_providers;
+    use super::ThinkTagRouter;
+    use crate::client_common::ResponseEvent;
+    use crate::debug_logger::DebugLogger;
+    use bytes::Bytes;
     use serde_json::json;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn routes_fragmented_think_tags_to_reasoning_not_answer() {
+        let mut router = ThinkTagRouter::default();
+
+        assert_eq!(router.push("<thi"), (String::new(), String::new()));
+        assert_eq!(
+            router.push("nk>private thought</thi"),
+            (String::new(), String::from("private thought"))
+        );
+        assert_eq!(router.push("nk>After"), (String::from("After"), String::new()));
+        assert_eq!(router.finish(), (String::new(), String::new()));
+    }
+
+    #[test]
+    fn preserves_think_tags_that_appear_in_visible_answer_content() {
+        let mut router = ThinkTagRouter::default();
+
+        assert_eq!(
+            router.push("Render <think>literally</think> in HTML."),
+            (
+                String::from("Render <think>literally</think> in HTML."),
+                String::new(),
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_sse_routes_minimax_think_content_away_from_answer_deltas() {
+        let events = vec![
+            Ok(Bytes::from_static(
+                b"data: {\"id\":\"response-1\",\"choices\":[{\"item_id\":\"item-1\",\"delta\":{\"content\":\"<thi\"}}]}\n\n",
+            )),
+            Ok(Bytes::from_static(
+                b"data: {\"choices\":[{\"item_id\":\"item-1\",\"delta\":{\"content\":\"nk>private thought</thi\"}}]}\n\n",
+            )),
+            Ok(Bytes::from_static(
+                b"data: {\"choices\":[{\"item_id\":\"item-1\",\"delta\":{\"content\":\"nk>visible answer\"},\"finish_reason\":\"stop\"}]}\n\n",
+            )),
+        ];
+        let (tx, mut rx) = mpsc::channel(16);
+        let logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+
+        process_chat_sse(
+            futures::stream::iter(events),
+            tx,
+            Duration::from_secs(1),
+            logger,
+            "test-request".to_string(),
+            None,
+        )
+        .await;
+
+        let mut answer_deltas = String::new();
+        let mut reasoning_deltas = String::new();
+        while let Some(event) = rx.recv().await {
+            match event.unwrap() {
+                ResponseEvent::OutputTextDelta { delta, .. } => answer_deltas.push_str(&delta),
+                ResponseEvent::ReasoningContentDelta { delta, .. } => {
+                    reasoning_deltas.push_str(&delta)
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(answer_deltas, "visible answer");
+        assert_eq!(reasoning_deltas, "private thought");
+    }
 
     #[test]
     fn chat_completions_payload_disables_openai_storage() {
