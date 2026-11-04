@@ -252,7 +252,7 @@ pub fn wire_api_label(wire_api: WireApi) -> &'static str {
 
 /// A redacted view of the profile store, safe to serialize for display.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 pub struct ProviderStoreState {
     /// Id of the active profile, if any.
     pub active_profile_id: Option<ProviderProfileId>,
@@ -262,7 +262,7 @@ pub struct ProviderStoreState {
 
 /// A redacted summary of one profile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 pub struct ProviderProfileSummary {
     /// Id of the profile.
     pub id: ProviderProfileId,

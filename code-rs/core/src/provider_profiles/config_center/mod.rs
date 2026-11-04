@@ -640,7 +640,7 @@ impl ConfigCenter {
 
 /// Request body for creating a profile.
 #[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 struct CreateProfileRequest {
     id: Option<String>,
     display_name: Option<String>,
@@ -653,7 +653,7 @@ struct CreateProfileRequest {
 
 /// Request body for updating a profile.
 #[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 struct UpdateProfileRequest {
     display_name: Option<String>,
     base_url: Option<String>,
@@ -838,6 +838,69 @@ mod tests {
         assert_ne!(center.bearer_token(), center.session_token());
         assert!(!center.session_token().is_empty());
         assert!(!center.bearer_token().is_empty());
+    }
+
+    #[test]
+    fn create_request_accepts_the_configuration_page_payload() {
+        let payload = serde_json::json!({
+            "display_name": "MiniMax",
+            "base_url": "https://api.minimax.cn/v1",
+            "wire_api": "chat",
+            "model": "MiniMax-M3",
+            "api_key": "test-key",
+        });
+
+        let request: CreateProfileRequest =
+            serde_json::from_value(payload).expect("configuration page payload parses");
+
+        assert_eq!(request.display_name.as_deref(), Some("MiniMax"));
+        assert_eq!(request.base_url, "https://api.minimax.cn/v1");
+        assert_eq!(request.wire_api, "chat");
+        assert_eq!(request.model, "MiniMax-M3");
+        assert_eq!(request.api_key.as_deref(), Some("test-key"));
+    }
+
+    #[test]
+    fn update_request_accepts_the_configuration_page_payload() {
+        let payload = serde_json::json!({
+            "display_name": "MiniMax updated",
+            "base_url": "https://api.minimax.cn/v1",
+            "wire_api": "responses",
+            "model": "MiniMax-M3",
+            "clear_api_key": true,
+        });
+
+        let request: UpdateProfileRequest =
+            serde_json::from_value(payload).expect("configuration page payload parses");
+
+        assert_eq!(request.display_name.as_deref(), Some("MiniMax updated"));
+        assert_eq!(request.base_url.as_deref(), Some("https://api.minimax.cn/v1"));
+        assert_eq!(request.wire_api.as_deref(), Some("responses"));
+        assert_eq!(request.model.as_deref(), Some("MiniMax-M3"));
+        assert_eq!(request.clear_api_key, Some(true));
+    }
+
+    #[test]
+    fn state_response_uses_the_configuration_page_field_names() {
+        let home = TempHome::new("state-json");
+        let secret_store = ProviderSecretStore::with_keyring(
+            &home.0,
+            crate::provider_profiles::KeyringStore::in_memory(),
+        );
+        let state = crate::provider_profiles::ProviderStoreState::new(
+            &[profile("p1")],
+            Some("p1"),
+            &secret_store,
+        )
+        .expect("state");
+
+        let value = serde_json::to_value(state).expect("serialize state");
+        let profile = &value["profiles"][0];
+        assert_eq!(value["active_profile_id"], "p1");
+        assert_eq!(profile["display_name"], "Example");
+        assert_eq!(profile["base_url"], "https://example.com/v1");
+        assert_eq!(profile["wire_api"], "chat");
+        assert_eq!(profile["has_api_key"], false);
     }
 
     #[test]
