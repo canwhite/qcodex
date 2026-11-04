@@ -1353,6 +1353,11 @@ where
                                 // A reasoning terminal immediately following answer deltas
                                 // marks a tool-call boundary. Flush that answer first.
                                 if let Some(answer) = this.take_answer_final() {
+                                    // The provider terminal below owns the reasoning
+                                    // finalization, so it must not be synthesized again
+                                    // when the following FunctionCall is processed.
+                                    this.cumulative_reasoning.clear();
+                                    this.cumulative_reasoning_item_id = None;
                                     this.pending.push_back(ResponseEvent::OutputItemDone {
                                         item,
                                         sequence_number: None,
@@ -2127,6 +2132,71 @@ mod tests {
             [
                 Ok(ResponseEvent::ReasoningContentDelta { .. }),
                 Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Reasoning { .. }, .. }),
+                Ok(ResponseEvent::Completed { .. }),
+            ]
+        ), "events={events:?}");
+    }
+
+    #[tokio::test]
+    async fn streaming_aggregated_stream_flushes_answer_before_tool_call() {
+        let raw = vec![
+            Ok(ResponseEvent::OutputTextDelta {
+                delta: "before tool".to_string(),
+                item_id: Some("answer-1".to_string()),
+                sequence_number: None,
+                output_index: None,
+            }),
+            Ok(ResponseEvent::ReasoningContentDelta {
+                delta: "private thought".to_string(),
+                item_id: Some("reasoning-1".to_string()),
+                sequence_number: None,
+                output_index: None,
+                content_index: None,
+            }),
+            Ok(ResponseEvent::OutputItemDone {
+                item: ResponseItem::Reasoning {
+                    id: Some("reasoning-1".to_string()),
+                    summary: Vec::new(),
+                    content: Some(vec![ReasoningItemContent::ReasoningText {
+                        text: "private thought".to_string(),
+                    }]),
+                    encrypted_content: None,
+                },
+                sequence_number: None,
+                output_index: None,
+            }),
+            Ok(ResponseEvent::OutputItemDone {
+                item: ResponseItem::FunctionCall {
+                    id: Some("tool-1".to_string()),
+                    name: "shell".to_string(),
+                    namespace: None,
+                    arguments: "{}".to_string(),
+                    call_id: "call-1".to_string(),
+                },
+                sequence_number: None,
+                output_index: None,
+            }),
+            Ok(ResponseEvent::Completed {
+                response_id: "response-1".to_string(),
+                token_usage: None,
+            }),
+        ];
+
+        let events = AggregatedChatStream::new(
+            futures::stream::iter(raw),
+            AggregateMode::Streaming,
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+        assert!(matches!(
+            &events[..],
+            [
+                Ok(ResponseEvent::OutputTextDelta { .. }),
+                Ok(ResponseEvent::ReasoningContentDelta { .. }),
+                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Message { .. }, .. }),
+                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Reasoning { .. }, .. }),
+                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::FunctionCall { .. }, .. }),
                 Ok(ResponseEvent::Completed { .. }),
             ]
         ), "events={events:?}");
