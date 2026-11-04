@@ -377,12 +377,13 @@ impl ConfigCenter {
 
         if let Some(api_key) = payload.api_key.as_ref() {
             if !api_key.trim().is_empty() {
+                let secret_id = fresh_secret_id(&id);
                 // Remove the previous secret first, so a replaced key does
                 // not linger in the credential store.
                 if let Some(previous) = profile.credential.as_ref() {
                     let _ = self.secret_store.delete_secret(previous);
                 }
-                match self.secret_store.store_secret(&id, api_key.trim()) {
+                match self.secret_store.store_secret(&secret_id, api_key.trim()) {
                     Ok(secret_ref) => profile.credential = Some(secret_ref),
                     Err(err) => return error_response(StatusCode(500), &err.to_string()),
                 }
@@ -471,7 +472,7 @@ impl ConfigCenter {
         }
         if let Some(api_key) = payload.api_key.as_ref() {
             if !api_key.trim().is_empty() {
-                let secret_id = format!("{id}-{}", uuid::Uuid::new_v4());
+                let secret_id = fresh_secret_id(&id);
                 match self.secret_store.store_secret(&secret_id, api_key.trim()) {
                     Ok(secret_ref) => {
                         replacement_secret = Some(secret_ref.clone());
@@ -807,6 +808,10 @@ fn random_token() -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn fresh_secret_id(profile_id: &str) -> String {
+    format!("{profile_id}-{}", uuid::Uuid::new_v4())
+}
+
 /// Returns the code home used by the configuration center.
 pub fn config_center_code_home(code_home: &std::path::Path) -> PathBuf {
     code_home.to_path_buf()
@@ -865,6 +870,15 @@ mod tests {
         assert_ne!(center.bearer_token(), center.session_token());
         assert!(!center.session_token().is_empty());
         assert!(!center.bearer_token().is_empty());
+    }
+
+    #[test]
+    fn fresh_secret_ids_are_unique_for_the_same_profile() {
+        let first = fresh_secret_id("profile");
+        let second = fresh_secret_id("profile");
+
+        assert_ne!(first, "profile");
+        assert_ne!(first, second);
     }
 
     #[test]

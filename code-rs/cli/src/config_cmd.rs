@@ -276,8 +276,9 @@ fn import_dotenv_profile(
     let mut profile = ProviderProfile::new(id.clone(), display_name, base_url, wire_api, model);
 
     if let Some(api_key) = api_key {
+        let secret_id = fresh_secret_id(&id);
         let secret_ref = secret_store
-            .store_secret(&id, &api_key)
+            .store_secret(&secret_id, &api_key)
             .map_err(std::io::Error::other)?;
         profile.credential = Some(secret_ref);
     }
@@ -333,6 +334,10 @@ fn required_dotenv_value(
                 format!("{} must contain a non-empty {key}", path.display()),
             )
         })
+}
+
+fn fresh_secret_id(profile_id: &str) -> String {
+    format!("{profile_id}-{}", uuid::Uuid::new_v4())
 }
 
 #[cfg(test)]
@@ -428,6 +433,15 @@ mod tests {
         assert_eq!(status.source.as_deref(), Some("config-file"));
         assert_eq!(status.profile_state, "project-override");
         assert_eq!(status.config_home.as_deref(), Some("/tmp/home"));
+    }
+
+    #[test]
+    fn fresh_secret_ids_do_not_reuse_a_profile_namespace() {
+        let first = fresh_secret_id("profile");
+        let second = fresh_secret_id("profile");
+
+        assert_ne!(first, "profile");
+        assert_ne!(first, second);
     }
 }
 
@@ -562,8 +576,9 @@ fn add_profile(
 
     if api_key_stdin {
         let secret = read_secret_from_stdin()?;
+        let secret_id = fresh_secret_id(&id);
         let secret_ref = secret_store
-            .store_secret(&id, &secret)
+            .store_secret(&secret_id, &secret)
             .map_err(std::io::Error::other)?;
         profile.credential = Some(secret_ref);
     }
@@ -637,7 +652,7 @@ fn update_profile(
     }
     if api_key_stdin {
         let secret = read_secret_from_stdin()?;
-        let secret_id = format!("{id}-{}", uuid::Uuid::new_v4());
+        let secret_id = fresh_secret_id(id);
         let secret_ref = secret_store
             .store_secret(&secret_id, &secret)
             .map_err(std::io::Error::other)?;

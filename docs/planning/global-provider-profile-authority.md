@@ -197,6 +197,7 @@ working directory's `.env` and selected a different request family.
 | 4 | High | Configuration injection | `arg0/src/lib.rs` |
 | 5 | Medium | Observability gap | `cli/src/config_cmd.rs`, `docs/provider-configuration.md` |
 | 6 | High | Credential overwrite on duplicate import | `cli/src/config_cmd.rs` |
+| 7 | High | Credential collision during concurrent create | `cli/src/config_cmd.rs`, `core/src/provider_profiles/config_center/` |
 
 1. An active global profile could coexist with unconditional project dotenv
    loading. Startup now suppresses project dotenv provider loading while a
@@ -224,6 +225,11 @@ working directory's `.env` and selected a different request family.
    the existing profile's secret identity before the repository rejected the
    duplicate profile. Import now rejects an existing id before any credential
    operation; a regression test proves the existing profile remains unchanged.
+7. New profile, browser create, and dotenv import initially used the profile
+   id itself as the credential-store identity. Concurrent creators could
+   therefore race on that identity and let failed cleanup remove the winner's
+   key. Every new or replacement credential now receives a fresh UUID-backed
+   opaque reference before its profile document is written.
 
 ### Verification Evidence
 
@@ -251,6 +257,9 @@ working directory's `.env` and selected a different request family.
    qcodex-specific process controls introduced later.
 5. Dotenv import validated profile uniqueness only at the final repository
    write, after credential storage had already used the caller-provided id.
+6. Credential-store identity was not separated from the human-facing profile
+   identifier on all create paths, leaving concurrent failure cleanup in a
+   shared namespace.
 
 ### Prevention Tasks
 
@@ -260,6 +269,6 @@ working directory's `.env` and selected a different request family.
 | Keep fresh credential references for replacements | AFK | A failed metadata update leaves the prior secret reference loadable. |
 | Document process controls separately from project dotenv settings | AFK | Every new `QCODEX_*` control is rejected from project dotenv and has a regression test. |
 
-All five HIGH issues have fixes and regression coverage. A final
+All six HIGH issues have fixes and regression coverage. A final
 post-mortem sweep found no unmitigated residual score above 12: **HIGH risks
 remaining: 0**.
