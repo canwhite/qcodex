@@ -1,1 +1,2 @@
-现在在/goal 中间输入，还是会报错'/btw' is unavailable in a side conversation, press Ctrl + C to return, 但是根本就没有进入side界面呀
+现在在/goal 中间输入，如果只输入/btw ,还是会报错'/btw' is unavailable in a side conversation, press Ctrl + C to return, 但是根本就没有进入side界面呀
+如果我输入/btw 我的prompt，会在下边报错 a side conversation is already starting or active，但是现在没有进度side conversation呀
