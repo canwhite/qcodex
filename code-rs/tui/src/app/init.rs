@@ -327,6 +327,7 @@ impl App<'_> {
             next_side_request_id: 0,
             pending_side_events: HashMap::new(),
             pending_side_cleanups: Vec::new(),
+            side_focus_input_quarantine: false,
             config,
             latest_upgrade_version,
             file_search,

@@ -1842,6 +1842,8 @@ struct RenderRequestSeed {
 }
 
 pub(crate) struct ChatWidget<'a> {
+    /// Stable for this widget instance, even before core assigns a session id.
+    event_route_id: uuid::Uuid,
     app_event_tx: AppEventSender,
     code_op_tx: UnboundedSender<Op>,
     conversation_event_forwarder: Option<tokio::task::JoinHandle<()>>,
@@ -3608,6 +3610,7 @@ impl ChatWidget<'_> {
         conversation_manager: Arc<ConversationManager>,
         code_op_rx: UnboundedReceiver<Op>,
     ) {
+        let widget_id = self.event_route_id;
         let ticket = self.make_background_tail_ticket();
         let ticket_for_submit = ticket.clone();
         let app_event_tx_clone = self.app_event_tx.clone();
@@ -3643,7 +3646,8 @@ impl ChatWidget<'_> {
                 msg: EventMsg::SessionConfigured(new_conversation.session_configured),
                 order: None,
             };
-            app_event_tx_clone.send(AppEvent::CodexEventForConversation {
+            app_event_tx_clone.send(AppEvent::InitialSessionConfigured {
+                widget_id,
                 session_id,
                 event,
             });
@@ -6945,6 +6949,7 @@ impl ChatWidget<'_> {
         });
 
         let mut new_widget = Self {
+            event_route_id: uuid::Uuid::new_v4(),
             app_event_tx,
             code_op_tx,
             conversation_event_forwarder: None,
@@ -7299,6 +7304,7 @@ impl ChatWidget<'_> {
         });
 
         let mut w = Self {
+            event_route_id: uuid::Uuid::new_v4(),
             app_event_tx: app_event_tx.clone(),
             code_op_tx,
             conversation_event_forwarder: None,
@@ -14817,12 +14823,15 @@ impl ChatWidget<'_> {
                         .update_status_text("waiting for user input".to_string());
                     self.bottom_pane.set_task_running(true);
                     self.bottom_pane.ensure_input_focus();
-                    self.bottom_pane
-                        .show_request_user_input(crate::bottom_pane::RequestUserInputView::new(
-                            ev.turn_id.clone(),
-                            ev.questions,
-                            self.app_event_tx.clone(),
-                        ));
+                    if let Some(session_id) = self.session_id {
+                        self.bottom_pane
+                            .show_request_user_input(crate::bottom_pane::RequestUserInputView::new(
+                                session_id,
+                                ev.turn_id.clone(),
+                                ev.questions,
+                                self.app_event_tx.clone(),
+                            ));
+                    }
                 }
                 self.request_redraw();
             }
@@ -25665,6 +25674,15 @@ Have we met every part of this goal and is there no further work to do?"#
             .update_status_text("Main conversation · Ctrl+/ for side".to_string());
     }
 
+    pub(crate) fn set_side_closing_status(&mut self) {
+        self.bottom_pane
+            .update_status_text("Main conversation · closing side conversation".to_string());
+    }
+
+    pub(crate) fn clear_side_closing_status(&mut self) {
+        self.bottom_pane.update_status_text(String::new());
+    }
+
     pub(crate) fn set_side_parent_status(&mut self, status: Option<&str>) {
         let status = status
             .map(|status| format!(" · parent: {status}"))
@@ -29846,20 +29864,26 @@ Have we met every part of this goal and is there no further work to do?"#
         self.session_id
     }
 
-    /// A newly-created widget has no session id until its first
-    /// `SessionConfigured` event arrives. That one event must be admitted by
-    /// the app-level session router; every other event remains fail-closed.
-    pub(crate) fn accepts_conversation_event(
+    pub(crate) fn accepts_initial_session_configured(
         &self,
+        widget_id: uuid::Uuid,
         session_id: uuid::Uuid,
         event: &EventMsg,
     ) -> bool {
+        self.event_route_id == widget_id
+            && self.session_id.is_none()
+            && matches!(event, EventMsg::SessionConfigured(configured) if configured.session_id == session_id)
+    }
+
+    /// Generic conversation events must already name the session that this
+    /// widget owns. Initial configuration uses a widget-local route id instead
+    /// (see `AppEvent::InitialSessionConfigured`).
+    pub(crate) fn accepts_conversation_event(
+        &self,
+        session_id: uuid::Uuid,
+        _event: &EventMsg,
+    ) -> bool {
         self.session_id == Some(session_id)
-            || matches!(
-                event,
-                EventMsg::SessionConfigured(configured)
-                    if self.session_id.is_none() && configured.session_id == session_id
-            )
     }
 
     fn side_initial_message(mut message: UserMessage) -> Option<UserMessage> {
@@ -31034,7 +31058,7 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
-    fn fresh_widget_admits_only_its_first_session_configured_event() {
+    fn fresh_widget_rejects_unaddressed_conversation_events() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
         let session_id = uuid::Uuid::new_v4();
@@ -31045,13 +31069,37 @@ use code_core::protocol::OrderMeta;
             history_entry_count: 0,
         };
 
-        assert!(chat.accepts_conversation_event(
+        assert!(!chat.accepts_conversation_event(
             session_id,
             &EventMsg::SessionConfigured(configured),
         ));
         assert!(!chat.accepts_conversation_event(
             uuid::Uuid::new_v4(),
             &EventMsg::TaskStarted,
+        ));
+    }
+
+    #[test]
+    fn fresh_widget_admits_only_its_addressed_initial_configuration() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        let session_id = uuid::Uuid::new_v4();
+        let configured = EventMsg::SessionConfigured(SessionConfiguredEvent {
+            session_id,
+            model: chat.config.model.clone(),
+            history_log_id: 0,
+            history_entry_count: 0,
+        });
+
+        assert!(chat.accepts_initial_session_configured(
+            chat.event_route_id,
+            session_id,
+            &configured,
+        ));
+        assert!(!chat.accepts_initial_session_configured(
+            uuid::Uuid::new_v4(),
+            session_id,
+            &configured,
         ));
     }
 

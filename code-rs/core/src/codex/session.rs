@@ -1,6 +1,7 @@
 use super::*;
 use crate::protocol::TaskOriginKind;
 use serde_json::Value;
+use std::sync::OnceLock;
 use crate::util::extract_shell_script;
 use code_protocol::dynamic_tools::DynamicToolResponse;
 use code_protocol::dynamic_tools::DynamicToolNamespaceTool;
@@ -24,6 +25,22 @@ pub(super) const MAX_WAIT_TRACKED_BATCHES: usize = 1024;
 pub(super) const MAX_WAIT_TRACKED_AGENT_IDS_PER_BATCH: usize = 2048;
 pub(super) const MAX_AGENT_COMPLETION_WAKE_BATCHES: usize = 2048;
 pub(super) const MAX_PENDING_MANUAL_COMPACTS: usize = 64;
+
+/// Serializes tools that can mutate a shared workspace across independently
+/// running conversations. The key is normalized once at acquisition time so a
+/// parent and its ephemeral side conversation use the same lease.
+static WORKSPACE_TOOL_LEASES: OnceLock<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
+    OnceLock::new();
+
+fn workspace_tool_lease_for(cwd: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    let root = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let leases = WORKSPACE_TOOL_LEASES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut leases = leases.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    leases
+        .entry(root)
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ApprovedCommandPattern {
@@ -340,6 +357,7 @@ mod tests {
         QueuedUserInput,
         State,
         take_follow_up_turn_action,
+        workspace_tool_lease_for,
     };
     use crate::error::CodexErr;
     use code_protocol::models::{ContentItem, ResponseInputItem};
@@ -416,6 +434,20 @@ mod tests {
         assert!(state.pending_user_input.is_empty());
     }
 
+    #[tokio::test]
+    async fn workspace_tool_lease_serializes_same_workspace_only() {
+        let base = std::env::temp_dir().join(format!("code-workspace-lease-{}", std::process::id()));
+        let first = workspace_tool_lease_for(&base);
+        let second = workspace_tool_lease_for(&base);
+        let other = workspace_tool_lease_for(&base.join("other"));
+
+        let held = first.lock_owned().await;
+        assert!(second.try_lock().is_err(), "same workspace must share one lease");
+        assert!(other.try_lock().is_ok(), "different workspaces must not block each other");
+        drop(held);
+        assert!(second.try_lock().is_ok(), "lease must release after the tool finishes");
+    }
+
     #[test]
     fn approved_command_prefix_matches_raw_shell_script_tokens() {
         let pattern = ApprovedCommandPattern::new(
@@ -470,6 +502,7 @@ pub(crate) struct Session {
     pub(super) disable_response_storage: bool,
     pub(super) tools_config: ToolsConfig,
     pub(super) dynamic_tools: Vec<DynamicToolSpec>,
+    pub(super) session_kind: crate::config::SessionKind,
 
     /// Manager for external MCP servers/tools.
     pub(super) mcp_connection_manager: McpConnectionManager,
@@ -634,6 +667,19 @@ impl Session {
 
     pub(crate) fn get_cwd(&self) -> &Path {
         &self.cwd
+    }
+
+    /// A shared, workspace-scoped lease for tool calls that could mutate files,
+    /// Git state, or an attached MCP filesystem. Callers hold it around tool
+    /// families whose mutation capability cannot be determined in advance.
+    pub(crate) async fn acquire_workspace_tool_lease(
+        &self,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        workspace_tool_lease_for(&self.cwd).lock_owned().await
+    }
+
+    pub(crate) fn is_ephemeral_side_session(&self) -> bool {
+        self.session_kind == crate::config::SessionKind::EphemeralSide
     }
 
     pub(super) async fn apply_remote_model_overrides(&self, prompt: &mut Prompt) -> bool {

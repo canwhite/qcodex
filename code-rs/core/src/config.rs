@@ -243,6 +243,9 @@ fn sanitize_auto_drive_routing_entries(entries: &mut Vec<AutoDriveModelRoutingEn
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
+    /// Internal lifecycle classification. This is deliberately not loaded from
+    /// user configuration: callers create ephemeral side sessions explicitly.
+    pub session_kind: SessionKind,
     /// Optional override of model selection.
     pub model: String,
 
@@ -580,6 +583,15 @@ pub struct Config {
     ///
     /// Set by exec; not loaded from config.toml.
     pub timeboxed_exec_mode: bool,
+}
+
+/// Identifies a session whose capability surface is intentionally narrower
+/// than a normal, resumable parent conversation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SessionKind {
+    #[default]
+    Main,
+    EphemeralSide,
 }
 
 impl Config {
@@ -1689,6 +1701,7 @@ impl Config {
         );
 
         let config = Self {
+            session_kind: SessionKind::Main,
             model,
             model_explicit,
             planning_model,

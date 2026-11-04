@@ -231,9 +231,12 @@ pub(super) enum SideConversationState<'a> {
         child_session_id: uuid::Uuid,
         child_cleanup: Option<EphemeralConversationCleanup>,
     },
-    Returning {
+    /// The parent is visible again, but the child has not yet been fully
+    /// interrupted, unregistered, and removed. New side sessions are blocked.
+    Closing {
         request_id: u64,
         child_session_id: uuid::Uuid,
+        cleanup_timed_out: bool,
     },
 }
 
@@ -250,6 +253,9 @@ pub(crate) struct App<'a> {
     pub(super) next_side_request_id: u64,
     pub(super) pending_side_events: HashMap<uuid::Uuid, Vec<Event>>,
     pub(super) pending_side_cleanups: Vec<Receiver<()>>,
+    /// Drops one post-switch key before a parent approval/input modal can
+    /// consume keystrokes that were intended for the side conversation.
+    pub(super) side_focus_input_quarantine: bool,
 
     /// Config is stored here so we can recreate ChatWidgets as needed.
     pub(super) config: Config,

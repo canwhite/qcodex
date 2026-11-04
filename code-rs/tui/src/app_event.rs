@@ -115,6 +115,14 @@ pub(crate) use code_auto_drive_core::{
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, AsRefStr)]
 pub(crate) enum AppEvent {
+    /// The initial configuration event for a just-created widget. It carries a
+    /// widget-local id so a stale runtime cannot bind a replacement widget.
+    InitialSessionConfigured {
+        widget_id: Uuid,
+        session_id: Uuid,
+        event: Event,
+    },
+
     /// Event emitted by a managed conversation. The id determines whether it
     /// reaches the visible parent/side widget or its retained peer.
     CodexEventForConversation {
@@ -197,6 +205,7 @@ pub(crate) enum AppEvent {
 
     /// Submit a response for a pending `request_user_input` tool call.
     RequestUserInputAnswer {
+        session_id: Uuid,
         turn_id: String,
         response: RequestUserInputResponse,
     },

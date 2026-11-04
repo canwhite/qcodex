@@ -215,20 +215,22 @@ where
     }
 }
 
-async fn supervise_side_cleanup<F, N>(cleanup: F, deadline: Duration, notify: N)
+async fn supervise_side_cleanup<F, N>(cleanup: F, deadline: Duration, mut notify: N)
 where
-    F: Future<Output = ()>,
-    N: FnOnce(bool),
+    F: Future<Output = ()> + Send + 'static,
+    N: FnMut(bool),
 {
-    tokio::pin!(cleanup);
-    let timed_out = tokio::select! {
-        () = &mut cleanup => false,
-        () = tokio::time::sleep(deadline) => true,
-    };
-    if timed_out {
-        cleanup.await;
+    let mut cleanup_task = tokio::spawn(cleanup);
+    match tokio::time::timeout(deadline, &mut cleanup_task).await {
+        Ok(_) => notify(false),
+        Err(_) => {
+            // The UI becomes responsive after the deadline, but the state
+            // remains Closing until the detached cleanup actually completes.
+            notify(true);
+            let _ = cleanup_task.await;
+            notify(false);
+        }
     }
-    notify(timed_out);
 }
 
 impl App<'_> {
@@ -246,7 +248,9 @@ impl App<'_> {
             if let Some(event_forwarder) = event_forwarder {
                 let _ = event_forwarder.await;
             }
-            let cleanup = server.dispose_ephemeral_conversation(child_cleanup);
+            let cleanup = async move {
+                server.dispose_ephemeral_conversation(child_cleanup).await;
+            };
             supervise_side_cleanup(cleanup, SIDE_CLEANUP_TIMEOUT, |timed_out| {
                 app_event_tx.send(AppEvent::SideConversationCleanupFinished {
                     request_id,
@@ -647,6 +651,11 @@ impl App<'_> {
                         self.last_esc_time = None;
                     }
 
+                    if self.side_focus_input_quarantine && !side_toggle_key_event(key_event) {
+                        self.side_focus_input_quarantine = false;
+                        continue;
+                    }
+
                     match key_event {
                         KeyEvent { code: KeyCode::Esc, kind: KeyEventKind::Press | KeyEventKind::Repeat, .. } => {
                             if let AppState::Chat { widget } = &mut self.app_state
@@ -864,6 +873,21 @@ impl App<'_> {
                         widget.register_pasted_image(placeholder, path);
                     }
                 }
+                AppEvent::InitialSessionConfigured {
+                    widget_id,
+                    session_id,
+                    event,
+                } => {
+                    if let AppState::Chat { widget } = &mut self.app_state
+                        && widget.accepts_initial_session_configured(
+                            widget_id,
+                            session_id,
+                            &event.msg,
+                        )
+                    {
+                        self.dispatch_code_event(event);
+                    }
+                }
                 AppEvent::CodexEventForConversation { session_id, event } => {
                     match &mut self.side_conversation {
                         SideConversationState::Active {
@@ -937,7 +961,7 @@ impl App<'_> {
                                 .or_default()
                                 .push(event);
                         }
-                        SideConversationState::Idle | SideConversationState::Returning { .. } => {
+                        SideConversationState::Idle | SideConversationState::Closing { .. } => {
                             if matches!(
                                 &self.app_state,
                                 AppState::Chat { widget }
@@ -1317,9 +1341,78 @@ impl App<'_> {
                     AppState::Chat { widget } => widget.submit_op(op),
                     AppState::Onboarding { .. } => {}
                 },
-                AppEvent::RequestUserInputAnswer { turn_id, response } => {
-                    if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.on_request_user_input_answer(turn_id, response);
+                AppEvent::RequestUserInputAnswer {
+                    session_id,
+                    turn_id,
+                    response,
+                } => {
+                    let mut response = Some(response);
+                    match &mut self.side_conversation {
+                        SideConversationState::Active {
+                            child_session_id,
+                            child,
+                            focused,
+                            ..
+                        } if *child_session_id == session_id => match focused {
+                            SideConversationFocus::Side => {
+                                if let AppState::Chat { widget } = &mut self.app_state {
+                                    widget.on_request_user_input_answer(
+                                        turn_id,
+                                        response.take().expect("response is available"),
+                                    );
+                                }
+                            }
+                            SideConversationFocus::Parent => {
+                                if let Some(child) = child.as_mut() {
+                                    child.on_request_user_input_answer(
+                                        turn_id,
+                                        response.take().expect("response is available"),
+                                    );
+                                }
+                            }
+                        },
+                        SideConversationState::Active { focused, parent, .. } => {
+                            let parent_matches = match focused {
+                                SideConversationFocus::Side => parent
+                                    .as_ref()
+                                    .is_some_and(|widget| widget.session_id() == Some(session_id)),
+                                SideConversationFocus::Parent => matches!(
+                                    &self.app_state,
+                                    AppState::Chat { widget }
+                                        if widget.session_id() == Some(session_id)
+                                ),
+                            };
+                            if parent_matches {
+                                match focused {
+                                    SideConversationFocus::Side => {
+                                        if let Some(parent) = parent.as_mut() {
+                                            parent.on_request_user_input_answer(
+                                                turn_id,
+                                                response.take().expect("response is available"),
+                                            );
+                                        }
+                                    }
+                                    SideConversationFocus::Parent => {
+                                        if let AppState::Chat { widget } = &mut self.app_state {
+                                            widget.on_request_user_input_answer(
+                                                turn_id,
+                                                response.take().expect("response is available"),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            if let AppState::Chat { widget } = &mut self.app_state
+                                && widget.session_id() == Some(session_id)
+                            {
+                                widget.on_request_user_input_answer(
+                                    turn_id,
+                                    response.take().expect("response is available"),
+                                );
+                            }
+                        }
                     }
                 }
                 AppEvent::PerformUndoRestore {
@@ -1846,6 +1939,7 @@ impl App<'_> {
                     // model bypasses the TUI slash-command policy and calls the
                     // agent tool directly.
                     config.subagent_max_depth = 0;
+                    config.session_kind = code_core::config::SessionKind::EphemeralSide;
                     let server = self._server.clone();
                     let tx = self.app_event_tx.clone();
                     let cleanup_owner = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -2042,6 +2136,7 @@ impl App<'_> {
                         let event_forwarder = widget.stop_conversation_event_forwarder();
                         parent.prepare_for_side_return();
                         parent.debug_notice("Returned from side conversation.".to_string());
+                        parent.set_side_closing_status();
                         let child = std::mem::replace(widget, parent);
                         drop(child);
                         self.begin_side_cleanup(
@@ -2050,9 +2145,10 @@ impl App<'_> {
                             child_cleanup,
                             event_forwarder,
                         );
-                        self.side_conversation = SideConversationState::Returning {
+                        self.side_conversation = SideConversationState::Closing {
                             request_id,
                             child_session_id,
+                            cleanup_timed_out: false,
                         };
                         self.clear_on_first_frame = true;
                         self.app_event_tx.send(AppEvent::RequestRedraw);
@@ -2085,6 +2181,7 @@ impl App<'_> {
                                     *child = Some(previous);
                                     widget.set_parent_with_side_mode();
                                     *focused = SideConversationFocus::Parent;
+                                    self.side_focus_input_quarantine = true;
                                 }
                                 SideConversationFocus::Parent => {
                                     let Some(child_widget) = child.take() else {
@@ -2094,6 +2191,7 @@ impl App<'_> {
                                     *parent = Some(previous);
                                     widget.set_side_parent_status(parent_status.as_deref());
                                     *focused = SideConversationFocus::Side;
+                                    self.side_focus_input_quarantine = false;
                                 }
                                 }
                             }
@@ -2110,20 +2208,31 @@ impl App<'_> {
                 } => {
                     if matches!(
                         self.side_conversation,
-                        SideConversationState::Returning {
+                        SideConversationState::Closing {
                             request_id: expected_request,
                             child_session_id: expected_child,
                             ..
                         } if expected_request == request_id && expected_child == child_session_id
                     ) {
-                        self.side_conversation = SideConversationState::Idle;
-                        if timed_out
-                            && let AppState::Chat { widget } = &mut self.app_state
-                        {
-                            widget.debug_notice(
-                                "Side conversation cleanup timed out; it was detached from this session."
-                                    .to_string(),
-                            );
+                        if timed_out {
+                            if let SideConversationState::Closing {
+                                cleanup_timed_out,
+                                ..
+                            } = &mut self.side_conversation
+                            {
+                                *cleanup_timed_out = true;
+                            }
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.debug_notice(
+                                    "Side conversation is still closing; starting another side conversation is disabled."
+                                        .to_string(),
+                                );
+                            }
+                        } else {
+                            self.side_conversation = SideConversationState::Idle;
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.clear_side_closing_status();
+                            }
                         }
                     }
                 }
@@ -3169,7 +3278,7 @@ impl App<'_> {
                     );
                 }
             }
-            SideConversationState::Returning { .. } => {}
+            SideConversationState::Closing { .. } => {}
             SideConversationState::Forking {
                 abort_handle,
                 cleanup_owner,
@@ -3367,7 +3476,7 @@ mod next_event_priority_tests {
     async fn side_cleanup_timeout_notifies_without_cancelling_cleanup() {
         let completed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let completed_by_task = completed.clone();
-        let (notice_tx, notice_rx) = tokio::sync::oneshot::channel();
+        let (notice_tx, mut notice_rx) = tokio::sync::mpsc::unbounded_channel();
 
         supervise_side_cleanup(
             async move {
@@ -3381,8 +3490,15 @@ mod next_event_priority_tests {
         )
         .await;
 
-        assert!(notice_rx.await.expect("cleanup notice"));
-        assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(notice_rx.recv().await.expect("timeout notice"));
+        tokio::time::timeout(Duration::from_millis(100), async {
+            while !completed.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cleanup must continue in the background");
+        assert!(!notice_rx.recv().await.expect("completion notice"));
     }
 
     #[test]

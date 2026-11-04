@@ -802,6 +802,7 @@ pub(super) async fn submission_loop(
                     remote_models_manager,
                     tools_config,
                     dynamic_tools,
+                    session_kind: config.session_kind,
                     tx_event: tx_event.clone(),
                     user_instructions: effective_user_instructions.clone(),
                     base_instructions,
@@ -4808,6 +4809,7 @@ async fn handle_response_item(
             };
 
             let exec_params = to_exec_params(params, sess);
+            let _workspace_lease = sess.acquire_workspace_tool_lease().await;
             Some(
             handle_container_exec_with_params(
                 exec_params,
@@ -5211,6 +5213,7 @@ async fn handle_function_call(
                     return *output;
                 }
             };
+            let _workspace_lease = sess.acquire_workspace_tool_lease().await;
             handle_container_exec_with_params(params, sess, turn_diff_tracker, sub_id, call_id, seq_hint, output_index, attempt_req)
                 .await
         }
@@ -5221,6 +5224,7 @@ async fn handle_function_call(
                     return *output;
                 }
             };
+            let _workspace_lease = sess.acquire_workspace_tool_lease().await;
             handle_container_exec_with_params(
                 params,
                 sess,
@@ -5240,6 +5244,7 @@ async fn handle_function_call(
                     return *output;
                 }
             };
+            let _workspace_lease = sess.acquire_workspace_tool_lease().await;
             handle_container_exec_with_params(
                 params,
                 sess,
@@ -5255,8 +5260,18 @@ async fn handle_function_call(
         "update_plan" => handle_update_plan(sess, &ctx, arguments).await,
         "create_goal" | "get_goal" | "update_goal" => crate::goal_tool::handle(sess, &ctx, &name, arguments).await,
         "request_user_input" => handle_request_user_input(sess, &ctx, arguments).await,
+        // Side sessions are deliberately not allowed to create nested agent
+        // lifecycles, even if a model bypasses the TUI command menu.
+        "agent" if sess.is_ephemeral_side_session() && side_session_rejects_core_tool(&name) => {
+            agent_tool_failure(&ctx, "agent is unavailable in a side conversation")
+        }
         // agent tool
         "agent" => handle_agent_tool(sess, &ctx, arguments).await,
+        // Browser attachment is owned by the parent workspace/session. A side
+        // conversation must not attach, navigate, or mutate it directly.
+        "browser" if sess.is_ephemeral_side_session() && side_session_rejects_core_tool(&name) => {
+            agent_tool_failure(&ctx, "browser is unavailable in a side conversation")
+        }
         // unified browser tool
         "browser" => handle_browser_tool(sess, &ctx, arguments).await,
         "web_fetch" => handle_web_fetch(sess, &ctx, arguments).await,
@@ -5264,7 +5279,15 @@ async fn handle_function_call(
         "wait" => handle_wait(sess, &ctx, arguments).await,
         "gh_run_wait" => handle_gh_run_wait(sess, &ctx, arguments).await,
         "kill" => handle_kill(sess, &ctx, arguments).await,
-        "code_bridge" | "code_bridge_subscription" => handle_code_bridge(sess, &ctx, arguments).await,
+        "code_bridge" | "code_bridge_subscription"
+            if sess.is_ephemeral_side_session() && side_session_rejects_core_tool(&name) =>
+        {
+            agent_tool_failure(&ctx, "code bridge is unavailable in a side conversation")
+        }
+        "code_bridge" | "code_bridge_subscription" => {
+            let _workspace_lease = sess.acquire_workspace_tool_lease().await;
+            handle_code_bridge(sess, &ctx, arguments).await
+        }
         TOOL_SEARCH_TOOL_NAME | LEGACY_SEARCH_TOOL_BM25_TOOL_NAME => {
             let arguments = match serde_json::from_str::<serde_json::Value>(&arguments) {
                 Ok(arguments) => arguments,
@@ -5290,11 +5313,19 @@ async fn handle_function_call(
         }
         _ => {
             if sess.is_dynamic_tool(namespace.as_deref(), &name) {
+                if sess.is_ephemeral_side_session() {
+                    return agent_tool_failure(&ctx, "dynamic tools are unavailable in a side conversation");
+                }
+                let _workspace_lease = sess.acquire_workspace_tool_lease().await;
                 return handle_dynamic_tool_call(sess, &ctx, namespace, name, arguments).await;
             }
             match sess.mcp_connection_manager.parse_tool_name(&name) {
                 Some((server, tool_name)) => {
+                    if sess.is_ephemeral_side_session() {
+                        return agent_tool_failure(&ctx, "MCP tools are unavailable in a side conversation");
+                    }
                     // Tool timeouts are derived from per-server config; no per-call override here.
+                    let _workspace_lease = sess.acquire_workspace_tool_lease().await;
                     handle_mcp_tool_call(sess, &ctx, server, tool_name, arguments).await
                 }
                 None => {
@@ -5309,6 +5340,10 @@ async fn handle_function_call(
             }
         }
     }
+}
+
+fn side_session_rejects_core_tool(name: &str) -> bool {
+    matches!(name, "agent" | "browser" | "code_bridge" | "code_bridge_subscription")
 }
 
 #[derive(serde::Deserialize)]
@@ -14564,6 +14599,7 @@ mod tests {
         parse_apply_patch_input,
         save_image_generation_result,
         save_image_generation_sidecar,
+        side_session_rejects_core_tool,
         should_process_stream_event,
         should_retry_stream_after_error,
         ImageGenerationTurnMetadata,
@@ -14589,6 +14625,16 @@ mod tests {
             duration: Duration::from_secs(1),
             timed_out: false,
         }
+    }
+
+    #[test]
+    fn side_session_core_capability_policy_blocks_lifecycle_tools() {
+        assert!(side_session_rejects_core_tool("agent"));
+        assert!(side_session_rejects_core_tool("browser"));
+        assert!(side_session_rejects_core_tool("code_bridge"));
+        assert!(side_session_rejects_core_tool("code_bridge_subscription"));
+        assert!(!side_session_rejects_core_tool("shell"));
+        assert!(!side_session_rejects_core_tool("apply_patch"));
     }
 
     fn make_tool_output(call_id: &str) -> ResponseInputItem {

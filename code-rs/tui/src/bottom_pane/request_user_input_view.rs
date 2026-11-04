@@ -28,6 +28,7 @@ struct AnswerState {
 
 pub(crate) struct RequestUserInputView {
     app_event_tx: AppEventSender,
+    session_id: uuid::Uuid,
     turn_id: String,
     questions: Vec<RequestUserInputQuestion>,
     answers: Vec<AnswerState>,
@@ -38,6 +39,7 @@ pub(crate) struct RequestUserInputView {
 
 impl RequestUserInputView {
     pub(crate) fn new(
+        session_id: uuid::Uuid,
         turn_id: String,
         questions: Vec<RequestUserInputQuestion>,
         app_event_tx: AppEventSender,
@@ -62,6 +64,7 @@ impl RequestUserInputView {
 
         Self {
             app_event_tx,
+            session_id,
             turn_id,
             questions,
             answers,
@@ -216,6 +219,7 @@ impl RequestUserInputView {
         }
 
         self.app_event_tx.send(AppEvent::RequestUserInputAnswer {
+            session_id: self.session_id,
             turn_id: self.turn_id.clone(),
             response: RequestUserInputResponse { answers },
         });
