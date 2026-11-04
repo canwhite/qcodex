@@ -348,17 +348,17 @@ pub async fn run_main(cli: Cli, code_linux_sandbox_exe: Option<PathBuf>) -> anyh
             config.auto_drive.coordinator_turn_cap = turn_cap;
         }
     }
-    let slash_default_agent_models = code_core::agent_defaults::provider_supports_builtin_agent_defaults(
+    let slash_default_agent_models = if code_core::agent_defaults::provider_supports_builtin_agent_defaults(
         &config.model_provider_id,
         &config.model_provider,
-    )
-    .then(|| {
+    ) {
         code_core::agent_defaults::enabled_agent_model_specs()
             .into_iter()
             .map(|spec| spec.slug.to_string())
             .collect::<Vec<_>>()
-    })
-    .unwrap_or_default();
+    } else {
+        Vec::new()
+    };
     let slash_context = SlashContext {
         agents: &config.agents,
         subagent_commands: &config.subagent_commands,

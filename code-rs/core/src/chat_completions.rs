@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::debug;
 use tracing::trace;
+use uuid::Uuid;
 
 use crate::auth::AuthManager;
 use crate::ModelProviderInfo;
@@ -148,6 +149,16 @@ fn flush_think_tag_router(
     let (answer, reasoning) = router.finish();
     assistant_text.push_str(&answer);
     reasoning_text.push_str(&reasoning);
+}
+
+fn item_id_or_fallback(item_id: &Option<String>, fallback_item_id: &str) -> Option<String> {
+    Some(
+        item_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .unwrap_or(fallback_item_id)
+            .to_string(),
+    )
 }
 
 /// Implementation for the classic Chat Completions API.
@@ -759,18 +770,24 @@ async fn process_chat_sse<S>(
     let mut reasoning_text = String::new();
     let mut think_tag_router = ThinkTagRouter::default();
     let mut current_item_id: Option<String> = None;
+    let fallback_item_id = format!("chat-stream-{}", Uuid::new_v4());
     let mut current_response_id: Option<String> = None;
     let mut current_response_model: Option<String> = None;
     let mut created_emitted = false;
+
+    struct CompletionContext<'a> {
+        current_item_id: &'a Option<String>,
+        fallback_item_id: &'a str,
+        response_id: Option<&'a str>,
+        debug_logger: &'a Arc<Mutex<DebugLogger>>,
+        request_id: &'a str,
+    }
 
     async fn flush_and_complete(
         tx_event: &mpsc::Sender<Result<ResponseEvent>>,
         assistant_text: &mut String,
         reasoning_text: &mut String,
-        current_item_id: &Option<String>,
-        response_id: Option<&str>,
-        debug_logger: &Arc<Mutex<DebugLogger>>,
-        request_id: &str,
+        context: CompletionContext<'_>,
     ) {
         // Emit any finalized items before closing so downstream consumers receive
         // terminal events for both assistant content and raw reasoning.
@@ -780,7 +797,7 @@ async fn process_chat_sse<S>(
                 content: vec![ContentItem::OutputText {
                     text: std::mem::take(assistant_text),
                 }],
-                id: current_item_id.clone(), end_turn: None, phase: None};
+                id: item_id_or_fallback(context.current_item_id, context.fallback_item_id), end_turn: None, phase: None};
             let _ = tx_event
                 .send(Ok(ResponseEvent::OutputItemDone {
                     item,
@@ -792,7 +809,7 @@ async fn process_chat_sse<S>(
 
         if !reasoning_text.is_empty() {
             let item = ResponseItem::Reasoning {
-                id: current_item_id.clone(),
+                id: item_id_or_fallback(context.current_item_id, context.fallback_item_id),
                 summary: Vec::new(),
                 content: Some(vec![ReasoningItemContent::ReasoningText {
                     text: std::mem::take(reasoning_text),
@@ -810,12 +827,12 @@ async fn process_chat_sse<S>(
 
         let _ = tx_event
             .send(Ok(ResponseEvent::Completed {
-                response_id: response_id.unwrap_or_default().to_string(),
+                response_id: context.response_id.unwrap_or_default().to_string(),
                 token_usage: None,
             }))
             .await;
-        if let Ok(logger) = debug_logger.lock() {
-            let _ = logger.end_request_log(request_id);
+        if let Ok(logger) = context.debug_logger.lock() {
+            let _ = logger.end_request_log(context.request_id);
         }
     }
 
@@ -862,10 +879,13 @@ async fn process_chat_sse<S>(
                     &tx_event,
                     &mut assistant_text,
                     &mut reasoning_text,
-                    &current_item_id,
-                    current_response_id.as_deref(),
-                    &debug_logger,
-                    &request_id,
+                    CompletionContext {
+                        current_item_id: &current_item_id,
+                        fallback_item_id: &fallback_item_id,
+                        response_id: current_response_id.as_deref(),
+                        debug_logger: &debug_logger,
+                        request_id: &request_id,
+                    },
                 )
                 .await;
                 return;
@@ -899,10 +919,13 @@ async fn process_chat_sse<S>(
                 &tx_event,
                 &mut assistant_text,
                 &mut reasoning_text,
-                &current_item_id,
-                current_response_id.as_deref(),
-                &debug_logger,
-                &request_id,
+                CompletionContext {
+                    current_item_id: &current_item_id,
+                    fallback_item_id: &fallback_item_id,
+                    response_id: current_response_id.as_deref(),
+                    debug_logger: &debug_logger,
+                    request_id: &request_id,
+                },
             )
             .await;
             return;
@@ -962,7 +985,9 @@ async fn process_chat_sse<S>(
         }
 
         // Extract item_id if present at the top level or in choice
-        if let Some(item_id) = chunk.get("item_id").and_then(|id| id.as_str()) {
+        if current_item_id.is_none()
+            && let Some(item_id) = chunk.get("item_id").and_then(|id| id.as_str())
+        {
             current_item_id = Some(item_id.to_string());
         }
 
@@ -970,8 +995,17 @@ async fn process_chat_sse<S>(
 
         if let Some(choice) = choice_opt {
             // Check for item_id in the choice as well
-            if let Some(item_id) = choice.get("item_id").and_then(|id| id.as_str()) {
+            if current_item_id.is_none()
+                && let Some(item_id) = choice.get("item_id").and_then(|id| id.as_str())
+            {
                 current_item_id = Some(item_id.to_string());
+            }
+
+            // A few compatible APIs omit the item id in early chunks and add
+            // it later. Commit to one fallback before emitting any content so
+            // a late id cannot split a single streamed item in the TUI.
+            if current_item_id.is_none() {
+                current_item_id = Some(fallback_item_id.clone());
             }
 
             // MiniMax and some compatible providers encode raw thinking in
@@ -991,7 +1025,7 @@ async fn process_chat_sse<S>(
                         let _ = tx_event
                             .send(Ok(ResponseEvent::OutputTextDelta {
                                 delta: answer,
-                                item_id: current_item_id.clone(),
+                                item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
                                 sequence_number: None,
                                 output_index: None,
                             }))
@@ -1001,7 +1035,7 @@ async fn process_chat_sse<S>(
                         let _ = tx_event
                             .send(Ok(ResponseEvent::ReasoningContentDelta {
                                 delta: tagged_reasoning,
-                                item_id: current_item_id.clone(),
+                                item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
                                 sequence_number: None,
                                 output_index: None,
                                 content_index: None,
@@ -1041,7 +1075,7 @@ async fn process_chat_sse<S>(
                     let _ = tx_event
                         .send(Ok(ResponseEvent::ReasoningContentDelta {
                             delta: reasoning,
-                            item_id: current_item_id.clone(),
+                            item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
                             sequence_number: None,
                             output_index: None,
                             content_index: None,
@@ -1060,7 +1094,7 @@ async fn process_chat_sse<S>(
                         let _ = tx_event
                             .send(Ok(ResponseEvent::ReasoningContentDelta {
                                 delta: s.to_string(),
-                                item_id: current_item_id.clone(),
+                                item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
                                 sequence_number: None,
                                 output_index: None,
                                 content_index: None,
@@ -1077,7 +1111,7 @@ async fn process_chat_sse<S>(
                             let _ = tx_event
                                 .send(Ok(ResponseEvent::ReasoningContentDelta {
                                     delta: s.to_string(),
-                                    item_id: current_item_id.clone(),
+                                    item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
                                     sequence_number: None,
                                     output_index: None,
                                     content_index: None,
@@ -1127,7 +1161,7 @@ async fn process_chat_sse<S>(
                         // the reasoning stream before any exec/tool events begin.
                         if !reasoning_text.is_empty() {
                             let item = ResponseItem::Reasoning {
-                                id: current_item_id.clone(),
+                                id: item_id_or_fallback(&current_item_id, &fallback_item_id),
                                 summary: Vec::new(),
                                 content: Some(vec![ReasoningItemContent::ReasoningText {
                                     text: std::mem::take(&mut reasoning_text),
@@ -1162,13 +1196,13 @@ async fn process_chat_sse<S>(
                                 content: vec![ContentItem::OutputText {
                                     text: std::mem::take(&mut assistant_text),
                                 }],
-                                id: current_item_id.clone(), end_turn: None, phase: None};
+                                id: item_id_or_fallback(&current_item_id, &fallback_item_id), end_turn: None, phase: None};
                             let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
                         }
                         // Also emit a terminal Reasoning item so UIs can finalize raw reasoning.
                         if !reasoning_text.is_empty() {
                             let item = ResponseItem::Reasoning {
-                                id: current_item_id.clone(),
+                                id: item_id_or_fallback(&current_item_id, &fallback_item_id),
                                 summary: Vec::new(),
                                 content: Some(vec![ReasoningItemContent::ReasoningText {
                                     text: std::mem::take(&mut reasoning_text),
@@ -1205,14 +1239,10 @@ async fn process_chat_sse<S>(
 
 /// Optional client-side aggregation helper
 ///
-/// Stream adapter that merges the incremental `OutputItemDone` chunks coming from
-/// [`process_chat_sse`] into a *running* assistant message, **suppressing the
-/// per-token deltas**.  The stream stays silent while the model is thinking
-/// and only emits two events per turn:
-///
-///   1. `ResponseEvent::OutputItemDone` with the *complete* assistant message
-///      (fully concatenated).
-///   2. The original `ResponseEvent::Completed` right after it.
+/// Stream adapter that merges incremental assistant and reasoning deltas from
+/// [`process_chat_sse`] into terminal items. In aggregated-only mode it
+/// suppresses the per-token deltas, flushes visible content before a tool call,
+/// and emits at most one terminal item of each kind per streamed item.
 ///
 /// This mirrors the behaviour the TypeScript CLI exposes to its higher layers.
 ///
@@ -1228,7 +1258,8 @@ pub(crate) struct AggregatedChatStream<S> {
     inner: S,
     cumulative: String,
     cumulative_reasoning: String,
-    cumulative_item_id: Option<String>,
+    cumulative_answer_item_id: Option<String>,
+    cumulative_reasoning_item_id: Option<String>,
     pending: std::collections::VecDeque<ResponseEvent>,
     mode: AggregateMode,
 }
@@ -1253,40 +1284,131 @@ where
                 Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
                 Poll::Ready(Some(Ok(ResponseEvent::OutputItemDone { item, sequence_number: _, .. }))) => {
-                    // If this is an incremental assistant message chunk, accumulate but
-                    // do NOT emit yet. Forward any other item (e.g. FunctionCall) right
-                    // away so downstream consumers see it.
-
-                    let is_assistant_delta = matches!(&item, code_protocol::models::ResponseItem::Message { role, .. } if role == "assistant");
-
-                    if is_assistant_delta {
-                        // Only use the final assistant message if we have not
-                        // seen any deltas; otherwise, deltas already built the
-                        // cumulative text and this would duplicate it.
-                        if this.cumulative.is_empty()
-                            && let ResponseItem::Message { content, id, .. } = &item
-                            {
-                                // Capture the item_id if present
-                                if let Some(item_id) = id {
-                                    this.cumulative_item_id = Some(item_id.clone());
-                                }
-                                if let Some(text) = content.iter().find_map(|c| match c {
-                                    ContentItem::OutputText { text } => Some(text),
-                                    _ => None,
-                                }) {
-                                    this.cumulative.push_str(text);
-                                }
+                    match &item {
+                        ResponseItem::Message { role, content, id, .. } if role == "assistant" => {
+                            if let Some(id) = id.as_ref().filter(|id| !id.is_empty()) {
+                                this.cumulative_answer_item_id = Some(id.clone());
                             }
-                    }
+                            let terminal_text = content
+                                .iter()
+                                .filter_map(|content| match content {
+                                    ContentItem::OutputText { text } => Some(text.as_str()),
+                                    _ => None,
+                                })
+                                .collect::<String>();
+                            if !terminal_text.is_empty()
+                                && (this.cumulative.is_empty()
+                                    || terminal_text.starts_with(this.cumulative.as_str()))
+                            {
+                                // Chat Completions terminal items normally contain the
+                                // complete assistant text. Prefer that authoritative
+                                // value when it extends the received deltas, but retain
+                                // the deltas for providers that send only a final chunk.
+                                this.cumulative = terminal_text;
+                            }
 
-                    // Also capture item_id from Reasoning items
-                    if let ResponseItem::Reasoning { id, .. } = &item
-                        && let Some(id) = id.as_ref().filter(|id| !id.is_empty()) {
-                            this.cumulative_item_id = Some(id.clone());
+                            if matches!(this.mode, AggregateMode::Streaming) {
+                                // The provider terminal item finalizes the deltas already
+                                // forwarded in streaming mode. Do not synthesize it again at
+                                // `Completed`.
+                                this.cumulative.clear();
+                                this.cumulative_answer_item_id = None;
+                                return Poll::Ready(Some(Ok(ResponseEvent::OutputItemDone {
+                                    item,
+                                    sequence_number: None,
+                                    output_index: None,
+                                })));
+                            }
+
+                            if let Some(answer) = this.take_answer_final() {
+                                return Poll::Ready(Some(Ok(answer)));
+                            }
+                            continue;
                         }
+                        ResponseItem::Reasoning { id, content, .. } => {
+                            if let Some(id) = id.as_ref().filter(|id| !id.is_empty()) {
+                                this.cumulative_reasoning_item_id = Some(id.clone());
+                            }
+                            let terminal_text = content
+                                .as_ref()
+                                .map(|content| {
+                                    content
+                                        .iter()
+                                        .map(|content| match content {
+                                            ReasoningItemContent::ReasoningText { text }
+                                            | ReasoningItemContent::Text { text } => text.as_str(),
+                                        })
+                                        .collect::<String>()
+                                })
+                                .unwrap_or_default();
+                            if !terminal_text.is_empty()
+                                && (this.cumulative_reasoning.is_empty()
+                                    || terminal_text
+                                        .starts_with(this.cumulative_reasoning.as_str()))
+                            {
+                                this.cumulative_reasoning = terminal_text;
+                            }
 
-                    // Not an assistant message – forward immediately.
-                    return Poll::Ready(Some(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })));
+                            if matches!(this.mode, AggregateMode::Streaming) {
+                                // A reasoning terminal immediately following answer deltas
+                                // marks a tool-call boundary. Flush that answer first.
+                                if let Some(answer) = this.take_answer_final() {
+                                    this.pending.push_back(ResponseEvent::OutputItemDone {
+                                        item,
+                                        sequence_number: None,
+                                        output_index: None,
+                                    });
+                                    return Poll::Ready(Some(Ok(answer)));
+                                }
+                                this.cumulative_reasoning.clear();
+                                this.cumulative_reasoning_item_id = None;
+                                return Poll::Ready(Some(Ok(ResponseEvent::OutputItemDone {
+                                    item,
+                                    sequence_number: None,
+                                    output_index: None,
+                                })));
+                            }
+
+                            let answer = this.take_answer_final();
+                            let reasoning = this.take_reasoning_final();
+                            if let Some(reasoning) = reasoning {
+                                this.pending.push_back(reasoning);
+                            }
+                            if let Some(answer) = answer {
+                                return Poll::Ready(Some(Ok(answer)));
+                            }
+                            if let Some(reasoning) = this.pending.pop_front() {
+                                return Poll::Ready(Some(Ok(reasoning)));
+                            }
+                            continue;
+                        }
+                        ResponseItem::FunctionCall { .. } => {
+                            let answer = this.take_answer_final();
+                            let reasoning = this.take_reasoning_final();
+                            if let Some(reasoning) = reasoning {
+                                this.pending.push_back(reasoning);
+                            }
+                            this.pending.push_back(ResponseEvent::OutputItemDone {
+                                item,
+                                sequence_number: None,
+                                output_index: None,
+                            });
+                            if let Some(answer) = answer {
+                                return Poll::Ready(Some(Ok(answer)));
+                            }
+                            if let Some(event) = this.pending.pop_front() {
+                                return Poll::Ready(Some(Ok(event)));
+                            }
+                            continue;
+                        }
+                        _ => {
+                            return Poll::Ready(Some(Ok(ResponseEvent::OutputItemDone {
+                                item,
+                                sequence_number: None,
+                                output_index: None,
+                            })));
+                        }
+                    }
                 }
                 Poll::Ready(Some(Ok(ResponseEvent::RateLimits(snapshot)))) => {
                     return Poll::Ready(Some(Ok(ResponseEvent::RateLimits(snapshot))));
@@ -1304,61 +1426,22 @@ where
                     response_id,
                     token_usage,
                 }))) => {
-                    // Build any aggregated items in the correct order: Reasoning first, then Message.
-                    let mut emitted_any = false;
-
-                    if !this.cumulative_reasoning.is_empty()
-                        && matches!(this.mode, AggregateMode::AggregatedOnly)
-                    {
-                        let aggregated_reasoning = ResponseItem::Reasoning {
-                            id: this.cumulative_item_id.clone(),
-                            summary: Vec::new(),
-                            content: Some(vec![
-                                ReasoningItemContent::ReasoningText {
-                                    text: std::mem::take(&mut this.cumulative_reasoning),
-                                },
-                            ]),
-                            encrypted_content: None,
-                        };
-                        this.pending
-                            .push_back(ResponseEvent::OutputItemDone { item: aggregated_reasoning, sequence_number: None, output_index: None });
-                        emitted_any = true;
-                    }
-
-                    // Always emit the final aggregated assistant message when any
-                    // content deltas have been observed. In AggregatedOnly mode this
-                    // is the sole assistant output; in Streaming mode this finalizes
-                    // the streamed deltas into a terminal OutputItemDone so callers
-                    // can persist/render the message once per turn.
-                    if !this.cumulative.is_empty() {
-                        let aggregated_message = ResponseItem::Message {
-                            id: this.cumulative_item_id.clone(),
-                            role: "assistant".to_string(),
-                            content: vec![code_protocol::models::ContentItem::OutputText {
-                                text: std::mem::take(&mut this.cumulative),
-                            }], end_turn: None, phase: None};
-                        this.pending
-                            .push_back(ResponseEvent::OutputItemDone { item: aggregated_message, sequence_number: None, output_index: None });
-                        emitted_any = true;
-                    }
-
-                    // Always emit Completed last when anything was aggregated.
-                    if emitted_any {
-                        this.pending.push_back(ResponseEvent::Completed {
-                            response_id: response_id.clone(),
-                            token_usage: token_usage.clone(),
-                        });
-                        // Return the first pending event now.
-                        if let Some(ev) = this.pending.pop_front() {
-                            return Poll::Ready(Some(Ok(ev)));
+                    if matches!(this.mode, AggregateMode::AggregatedOnly) {
+                        if let Some(answer) = this.take_answer_final() {
+                            this.pending.push_back(answer);
+                        }
+                        if let Some(reasoning) = this.take_reasoning_final() {
+                            this.pending.push_back(reasoning);
                         }
                     }
-
-                    // Nothing aggregated – forward Completed directly.
-                    return Poll::Ready(Some(Ok(ResponseEvent::Completed {
+                    this.pending.push_back(ResponseEvent::Completed {
                         response_id,
                         token_usage,
-                    })));
+                    });
+                    if let Some(event) = this.pending.pop_front() {
+                        return Poll::Ready(Some(Ok(event)));
+                    }
+                    unreachable!("completed event is always queued");
                 }
                 Poll::Ready(Some(Ok(ResponseEvent::Created {
                     response_id,
@@ -1375,8 +1458,8 @@ where
                     // Always accumulate deltas so we can emit a final OutputItemDone at Completed.
                     this.cumulative.push_str(&delta);
                     // Capture the item_id if we haven't already
-                    if item_id.is_some() && this.cumulative_item_id.is_none() {
-                        this.cumulative_item_id = item_id.clone();
+                    if item_id.is_some() && this.cumulative_answer_item_id.is_none() {
+                        this.cumulative_answer_item_id = item_id.clone();
                     }
                     if matches!(this.mode, AggregateMode::Streaming) {
                         // In streaming mode, also forward the delta immediately.
@@ -1394,8 +1477,8 @@ where
                     // Always accumulate reasoning deltas so we can emit a final Reasoning item at Completed.
                     this.cumulative_reasoning.push_str(&delta);
                     // Capture the item_id if we haven't already
-                    if item_id.is_some() && this.cumulative_item_id.is_none() {
-                        this.cumulative_item_id = item_id.clone();
+                    if item_id.is_some() && this.cumulative_reasoning_item_id.is_none() {
+                        this.cumulative_reasoning_item_id = item_id.clone();
                     }
                     if matches!(this.mode, AggregateMode::Streaming) {
                         // In streaming mode, also forward the delta immediately.
@@ -1464,7 +1547,8 @@ impl<S> AggregatedChatStream<S> {
             inner,
             cumulative: String::new(),
             cumulative_reasoning: String::new(),
-            cumulative_item_id: None,
+            cumulative_answer_item_id: None,
+            cumulative_reasoning_item_id: None,
             pending: std::collections::VecDeque::new(),
             mode,
         }
@@ -1472,6 +1556,39 @@ impl<S> AggregatedChatStream<S> {
 
     pub(crate) fn streaming_mode(inner: S) -> Self {
         Self::new(inner, AggregateMode::Streaming)
+    }
+}
+
+impl<S> AggregatedChatStream<S> {
+    fn take_answer_final(&mut self) -> Option<ResponseEvent> {
+        (!self.cumulative.is_empty()).then(|| ResponseEvent::OutputItemDone {
+            item: ResponseItem::Message {
+                id: self.cumulative_answer_item_id.take(),
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: std::mem::take(&mut self.cumulative),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            sequence_number: None,
+            output_index: None,
+        })
+    }
+
+    fn take_reasoning_final(&mut self) -> Option<ResponseEvent> {
+        (!self.cumulative_reasoning.is_empty()).then(|| ResponseEvent::OutputItemDone {
+            item: ResponseItem::Reasoning {
+                id: self.cumulative_reasoning_item_id.take(),
+                summary: Vec::new(),
+                content: Some(vec![ReasoningItemContent::ReasoningText {
+                    text: std::mem::take(&mut self.cumulative_reasoning),
+                }]),
+                encrypted_content: None,
+            },
+            sequence_number: None,
+            output_index: None,
+        })
     }
 }
 
@@ -1515,6 +1632,8 @@ fn sanitize_message_roles_for_strict_chat_providers(payload: &mut serde_json::Va
 
 #[cfg(test)]
 mod tests {
+    use super::AggregateMode;
+    use super::AggregatedChatStream;
     use super::process_chat_sse;
     use super::create_chat_completions_payload;
     use super::sanitize_message_roles_for_strict_chat_providers;
@@ -1522,10 +1641,15 @@ mod tests {
     use crate::client_common::ResponseEvent;
     use crate::debug_logger::DebugLogger;
     use bytes::Bytes;
+    use code_protocol::models::ContentItem;
+    use code_protocol::models::ReasoningItemContent;
+    use code_protocol::models::ResponseItem;
+    use futures::StreamExt;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
 
     #[test]
     fn routes_fragmented_think_tags_to_reasoning_not_answer() {
@@ -1551,6 +1675,17 @@ mod tests {
                 String::new(),
             )
         );
+    }
+
+    #[test]
+    fn keeps_an_incomplete_closing_think_tag_in_reasoning_at_eof() {
+        let mut router = ThinkTagRouter::default();
+
+        assert_eq!(
+            router.push("<think>private thought</thi"),
+            (String::new(), String::from("private thought")),
+        );
+        assert_eq!(router.finish(), (String::new(), String::from("</thi")));
     }
 
     #[tokio::test]
@@ -1593,6 +1728,408 @@ mod tests {
 
         assert_eq!(answer_deltas, "visible answer");
         assert_eq!(reasoning_deltas, "private thought");
+    }
+
+    #[tokio::test]
+    async fn chat_sse_assigns_a_stable_fallback_item_id() {
+        let events = vec![
+            Ok(Bytes::from_static(
+                b"data: {\"id\":\"response-1\",\"choices\":[{\"delta\":{\"content\":\"visible \"}}]}\n\n",
+            )),
+            Ok(Bytes::from_static(
+                b"data: {\"choices\":[{\"item_id\":\"late-provider-id\",\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\n",
+            )),
+        ];
+        let (tx, mut rx) = mpsc::channel(16);
+        let logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+
+        process_chat_sse(
+            futures::stream::iter(events),
+            tx,
+            Duration::from_secs(1),
+            logger,
+            "test-request".to_string(),
+            None,
+        )
+        .await;
+
+        let mut delta_ids = Vec::new();
+        let mut final_id = None;
+        while let Some(event) = rx.recv().await {
+            match event.unwrap() {
+                ResponseEvent::OutputTextDelta { item_id, .. } => delta_ids.push(item_id),
+                ResponseEvent::OutputItemDone {
+                    item: ResponseItem::Message { id, .. },
+                    ..
+                } => final_id = id,
+                _ => {}
+            }
+        }
+
+        assert_eq!(delta_ids.len(), 2);
+        assert!(delta_ids.iter().all(|id| id == &final_id));
+        assert!(
+            final_id.is_some_and(|id| id.starts_with("chat-stream-")),
+            "missing fallback stream id"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_sse_closure_flushes_partial_think_marker_once() {
+        let events = vec![Ok(Bytes::from_static(
+            b"data: {\"id\":\"response-1\",\"choices\":[{\"delta\":{\"content\":\"<think>private</thi\"}}]}\n\n",
+        ))];
+        let (tx, mut rx) = mpsc::channel(16);
+        let logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+
+        process_chat_sse(
+            futures::stream::iter(events),
+            tx,
+            Duration::from_secs(1),
+            logger,
+            "test-request".to_string(),
+            None,
+        )
+        .await;
+
+        let events = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|event| event.expect("parser should not emit an error"))
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            &events[..],
+            [
+                ResponseEvent::Created { .. },
+                ResponseEvent::ReasoningContentDelta { delta, .. },
+                ResponseEvent::OutputItemDone {
+                    item: ResponseItem::Reasoning { content, .. },
+                    ..
+                },
+                ResponseEvent::Completed { .. },
+            ] if delta == "private"
+                && matches!(content, Some(items) if matches!(items.as_slice(), [ReasoningItemContent::ReasoningText { text }] if text == "private</thi"))
+        ), "events={events:?}");
+    }
+
+    #[tokio::test]
+    async fn parser_and_aggregator_emit_one_answer_and_reasoning_final() {
+        let chunks = vec![
+            Ok(Bytes::from_static(
+                b"data: {\"id\":\"response-1\",\"choices\":[{\"item_id\":\"item-1\",\"delta\":{\"content\":\"<think>private thought</think>visible answer\"},\"finish_reason\":\"stop\"}]}\n\n",
+            )),
+        ];
+        let (tx, rx) = mpsc::channel(16);
+        let logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+
+        process_chat_sse(
+            futures::stream::iter(chunks),
+            tx,
+            Duration::from_secs(1),
+            logger,
+            "test-request".to_string(),
+            None,
+        )
+        .await;
+
+        let events = AggregatedChatStream::new(
+            ReceiverStream::new(rx),
+            AggregateMode::AggregatedOnly,
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+        assert!(matches!(
+            &events[..],
+            [
+                Ok(ResponseEvent::Created { .. }),
+                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Message { content: answer_content, .. }, .. }),
+                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Reasoning { content: reasoning_content, .. }, .. }),
+                Ok(ResponseEvent::Completed { .. }),
+            ] if matches!(answer_content.as_slice(), [ContentItem::OutputText { text }] if text == "visible answer")
+                && matches!(reasoning_content, Some(items) if matches!(items.as_slice(), [ReasoningItemContent::ReasoningText { text }] if text == "private thought"))
+        ), "events={events:?}");
+    }
+
+    #[tokio::test]
+    async fn parser_and_aggregator_finalize_message_reasoning_once() {
+        let chunks = vec![Ok(Bytes::from_static(
+            b"data: {\"id\":\"response-1\",\"choices\":[{\"item_id\":\"item-1\",\"delta\":{\"content\":\"visible answer\"},\"message\":{\"reasoning\":\"private thought\"},\"finish_reason\":\"stop\"}]}\n\n",
+        ))];
+        let (tx, rx) = mpsc::channel(16);
+        let logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+
+        process_chat_sse(
+            futures::stream::iter(chunks),
+            tx,
+            Duration::from_secs(1),
+            logger,
+            "test-request".to_string(),
+            None,
+        )
+        .await;
+
+        let events = AggregatedChatStream::new(
+            ReceiverStream::new(rx),
+            AggregateMode::AggregatedOnly,
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+        assert!(matches!(
+            &events[..],
+            [
+                Ok(ResponseEvent::Created { .. }),
+                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Message { content: answer_content, .. }, .. }),
+                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Reasoning { content: reasoning_content, .. }, .. }),
+                Ok(ResponseEvent::Completed { .. }),
+            ] if matches!(answer_content.as_slice(), [ContentItem::OutputText { text }] if text == "visible answer")
+                && matches!(reasoning_content, Some(items) if matches!(items.as_slice(), [ReasoningItemContent::ReasoningText { text }] if text == "private thought"))
+        ), "events={events:?}");
+    }
+
+    #[tokio::test]
+    async fn aggregated_stream_emits_one_final_answer_after_deltas() {
+        let raw = vec![
+            Ok(ResponseEvent::OutputTextDelta {
+                delta: "visible answer".to_string(),
+                item_id: Some("answer-1".to_string()),
+                sequence_number: None,
+                output_index: None,
+            }),
+            Ok(ResponseEvent::OutputItemDone {
+                item: ResponseItem::Message {
+                    id: Some("answer-1".to_string()),
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "visible answer".to_string(),
+                    }],
+                    end_turn: None,
+                    phase: None,
+                },
+                sequence_number: None,
+                output_index: None,
+            }),
+            Ok(ResponseEvent::Completed {
+                response_id: "response-1".to_string(),
+                token_usage: None,
+            }),
+        ];
+
+        let events = AggregatedChatStream::new(
+            futures::stream::iter(raw),
+            AggregateMode::AggregatedOnly,
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+        assert_eq!(events.len(), 2, "events={events:?}");
+        assert!(matches!(
+            &events[0],
+            Ok(ResponseEvent::OutputItemDone {
+                item: ResponseItem::Message { content, .. },
+                ..
+            }) if matches!(content.as_slice(), [ContentItem::OutputText { text }] if text == "visible answer")
+        ));
+        assert!(matches!(events[1], Ok(ResponseEvent::Completed { .. })));
+    }
+
+    #[tokio::test]
+    async fn aggregated_stream_uses_terminal_answer_to_complete_partial_deltas() {
+        let raw = vec![
+            Ok(ResponseEvent::OutputTextDelta {
+                delta: "visible ".to_string(),
+                item_id: Some("answer-1".to_string()),
+                sequence_number: None,
+                output_index: None,
+            }),
+            Ok(ResponseEvent::OutputItemDone {
+                item: ResponseItem::Message {
+                    id: Some("answer-1".to_string()),
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "visible answer".to_string(),
+                    }],
+                    end_turn: None,
+                    phase: None,
+                },
+                sequence_number: None,
+                output_index: None,
+            }),
+            Ok(ResponseEvent::Completed {
+                response_id: "response-1".to_string(),
+                token_usage: None,
+            }),
+        ];
+
+        let events = AggregatedChatStream::new(
+            futures::stream::iter(raw),
+            AggregateMode::AggregatedOnly,
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+        assert!(matches!(
+            &events[..],
+            [
+                Ok(ResponseEvent::OutputItemDone {
+                    item: ResponseItem::Message { content, .. },
+                    ..
+                }),
+                Ok(ResponseEvent::Completed { .. }),
+            ] if matches!(content.as_slice(), [ContentItem::OutputText { text }] if text == "visible answer")
+        ), "events={events:?}");
+    }
+
+    #[tokio::test]
+    async fn aggregated_stream_flushes_content_before_tool_call() {
+        let raw = vec![
+            Ok(ResponseEvent::OutputTextDelta {
+                delta: "before tool".to_string(),
+                item_id: Some("answer-1".to_string()),
+                sequence_number: None,
+                output_index: None,
+            }),
+            Ok(ResponseEvent::ReasoningContentDelta {
+                delta: "private thought".to_string(),
+                item_id: Some("reasoning-1".to_string()),
+                sequence_number: None,
+                output_index: None,
+                content_index: None,
+            }),
+            Ok(ResponseEvent::OutputItemDone {
+                item: ResponseItem::Reasoning {
+                    id: Some("reasoning-1".to_string()),
+                    summary: Vec::new(),
+                    content: Some(vec![ReasoningItemContent::ReasoningText {
+                        text: "private thought".to_string(),
+                    }]),
+                    encrypted_content: None,
+                },
+                sequence_number: None,
+                output_index: None,
+            }),
+            Ok(ResponseEvent::OutputItemDone {
+                item: ResponseItem::FunctionCall {
+                    id: Some("tool-1".to_string()),
+                    name: "shell".to_string(),
+                    namespace: None,
+                    arguments: "{}".to_string(),
+                    call_id: "call-1".to_string(),
+                },
+                sequence_number: None,
+                output_index: None,
+            }),
+            Ok(ResponseEvent::Completed {
+                response_id: "response-1".to_string(),
+                token_usage: None,
+            }),
+        ];
+
+        let events = AggregatedChatStream::new(
+            futures::stream::iter(raw),
+            AggregateMode::AggregatedOnly,
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+        assert!(matches!(
+            &events[..],
+            [
+                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Message { .. }, .. }),
+                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Reasoning { .. }, .. }),
+                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::FunctionCall { .. }, .. }),
+                Ok(ResponseEvent::Completed { .. }),
+            ]
+        ), "events={events:?}");
+    }
+
+    #[tokio::test]
+    async fn streaming_aggregated_stream_forwards_one_terminal_answer() {
+        let raw = vec![
+            Ok(ResponseEvent::OutputTextDelta {
+                delta: "visible answer".to_string(),
+                item_id: Some("answer-1".to_string()),
+                sequence_number: None,
+                output_index: None,
+            }),
+            Ok(ResponseEvent::OutputItemDone {
+                item: ResponseItem::Message {
+                    id: Some("answer-1".to_string()),
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "visible answer".to_string(),
+                    }],
+                    end_turn: None,
+                    phase: None,
+                },
+                sequence_number: None,
+                output_index: None,
+            }),
+            Ok(ResponseEvent::Completed {
+                response_id: "response-1".to_string(),
+                token_usage: None,
+            }),
+        ];
+
+        let events = AggregatedChatStream::new(
+            futures::stream::iter(raw),
+            AggregateMode::Streaming,
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+        assert!(matches!(
+            &events[..],
+            [
+                Ok(ResponseEvent::OutputTextDelta { .. }),
+                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Message { .. }, .. }),
+                Ok(ResponseEvent::Completed { .. }),
+            ]
+        ), "events={events:?}");
+    }
+
+    #[tokio::test]
+    async fn streaming_aggregated_stream_forwards_one_terminal_reasoning() {
+        let raw = vec![
+            Ok(ResponseEvent::ReasoningContentDelta {
+                delta: "private thought".to_string(),
+                item_id: Some("reasoning-1".to_string()),
+                sequence_number: None,
+                output_index: None,
+                content_index: None,
+            }),
+            Ok(ResponseEvent::OutputItemDone {
+                item: ResponseItem::Reasoning {
+                    id: Some("reasoning-1".to_string()),
+                    summary: Vec::new(),
+                    content: Some(vec![ReasoningItemContent::ReasoningText {
+                        text: "private thought".to_string(),
+                    }]),
+                    encrypted_content: None,
+                },
+                sequence_number: None,
+                output_index: None,
+            }),
+            Ok(ResponseEvent::Completed {
+                response_id: "response-1".to_string(),
+                token_usage: None,
+            }),
+        ];
+
+        let events = AggregatedChatStream::new(
+            futures::stream::iter(raw),
+            AggregateMode::Streaming,
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+        assert!(matches!(
+            &events[..],
+            [
+                Ok(ResponseEvent::ReasoningContentDelta { .. }),
+                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Reasoning { .. }, .. }),
+                Ok(ResponseEvent::Completed { .. }),
+            ]
+        ), "events={events:?}");
     }
 
     #[test]

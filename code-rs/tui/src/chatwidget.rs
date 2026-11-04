@@ -25047,17 +25047,17 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     fn default_agent_models_for_provider(&self) -> Vec<String> {
-        provider_supports_builtin_agent_defaults(
+        if provider_supports_builtin_agent_defaults(
             &self.config.model_provider_id,
             &self.config.model_provider,
-        )
-        .then(|| {
+        ) {
             enabled_agent_model_specs()
                 .into_iter()
                 .map(|spec| spec.slug.to_string())
                 .collect()
-        })
-        .unwrap_or_default()
+        } else {
+            Vec::new()
+        }
     }
 
     fn collect_agents_overview_rows(&self) -> (Vec<AgentOverviewRow>, Vec<String>) {

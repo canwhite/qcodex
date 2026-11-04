@@ -1933,15 +1933,15 @@ fn run_auto_loop(
         &config.model_provider_id,
         &model_provider,
     );
-    let available_cli_routing_models = supports_builtin_agent_defaults
-        .then(|| {
-            enabled_agent_model_specs_for_auth(auth_mode_for_model_access, supports_pro_only_models)
-                .into_iter()
-                .map(|spec| spec.slug.to_ascii_lowercase())
-                .filter(|model| model.starts_with("gpt-"))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let available_cli_routing_models = if supports_builtin_agent_defaults {
+        enabled_agent_model_specs_for_auth(auth_mode_for_model_access, supports_pro_only_models)
+            .into_iter()
+            .map(|spec| spec.slug.to_ascii_lowercase())
+            .filter(|model| model.starts_with("gpt-"))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let allowed_cli_routing_entries = resolve_auto_drive_cli_routing_entries(
         &config.auto_drive,
         auth_mode_for_model_access,
