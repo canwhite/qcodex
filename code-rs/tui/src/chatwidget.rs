@@ -13999,6 +13999,14 @@ impl ChatWidget<'_> {
                     tracing::debug!("Suppressing hidden AgentMessage for current task");
                     return;
                 }
+                // Compatible Chat Completions providers can emit an empty assistant
+                // item around a tool call. It reuses the turn's fallback stream id,
+                // so accepting it would replace the visible answer for that stream
+                // with whitespace.
+                if message.trim().is_empty() {
+                    tracing::debug!("Ignoring blank AgentMessage for stream id={id}");
+                    return;
+                }
                 // If the user requested an interrupt, ignore late final answers.
                 if self.stream_state.drop_streaming {
                     tracing::debug!("Ignoring AgentMessage after interrupt");
@@ -35817,6 +35825,45 @@ use code_core::protocol::OrderMeta;
             ],
             "assistant output should appear after existing background cells",
         );
+    }
+
+    #[test]
+    fn blank_agent_message_does_not_replace_visible_answer_for_same_stream() {
+        let mut harness = ChatWidgetHarness::new();
+        reset_history(harness.chat());
+
+        let stream_id = "chat-stream".to_string();
+        harness.handle_event(Event {
+            id: stream_id.clone(),
+            event_seq: 1,
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "Visible answer.".to_string(),
+            }),
+            order: None,
+        });
+        harness.flush_into_widget();
+
+        harness.handle_event(Event {
+            id: stream_id,
+            event_seq: 2,
+            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                message: "\n\n".to_string(),
+            }),
+            order: None,
+        });
+        harness.flush_into_widget();
+
+        let answer = harness
+            .chat()
+            .history_cells
+            .iter()
+            .find_map(|cell| {
+                cell.as_any()
+                    .downcast_ref::<history_cell::AssistantMarkdownCell>()
+                    .map(|cell| cell.markdown().to_string())
+            })
+            .expect("visible answer should remain in history");
+        assert_eq!(answer.trim(), "Visible answer.");
     }
 
     #[test]
