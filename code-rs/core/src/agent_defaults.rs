@@ -5,6 +5,8 @@
 //! (to surface the available sub-agent options).
 
 use crate::config_types::AgentConfig;
+use crate::model_provider_info::ModelProviderInfo;
+use crate::model_provider_info::WireApi;
 use code_app_server_protocol::AuthMode;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -510,6 +512,25 @@ pub fn enabled_agent_model_specs_for_auth(
         .collect()
 }
 
+/// Whether a provider owns the built-in external-agent catalog.
+///
+/// Built-in agent names map to local CLI launchers, not to an
+/// OpenAI-compatible provider's model identifiers. Only first-party OpenAI
+/// endpoints and command-auth providers receive that implicit catalog.
+pub fn provider_supports_builtin_agent_defaults(
+    model_provider_id: &str,
+    provider: &ModelProviderInfo,
+) -> bool {
+    provider.has_command_auth()
+        || (model_provider_id == "openai"
+            && match provider.wire_api {
+                WireApi::Chat => provider.is_public_openai_chat_endpoint(),
+                WireApi::Responses | WireApi::ResponsesWebsocket => {
+                    provider.is_public_openai_responses_endpoint()
+                }
+            })
+}
+
 pub fn filter_agent_model_names_for_auth(
     model_names: Vec<String>,
     auth_mode: Option<AuthMode>,
@@ -652,34 +673,36 @@ pub fn model_guide_markdown_with_custom(configured_agents: &[AgentConfig]) -> Op
     }
 }
 
-pub fn default_agent_configs() -> Vec<AgentConfig> {
-    enabled_agent_model_specs()
-        .into_iter()
-        .map(agent_config_from_spec)
-        .collect()
-}
+/// Build a model guide for explicit local agents only.
+///
+/// This is used for third-party compatible providers, which must not inherit
+/// the built-in CLI catalog merely because they support OpenAI tool calls.
+pub fn model_guide_markdown_for_explicit_agents(
+    active_agents: &[String],
+    configured_agents: &[AgentConfig],
+) -> Option<String> {
+    let lines: Vec<String> = active_agents
+        .iter()
+        .filter_map(|name| {
+            let name = name.trim();
+            if name.is_empty() {
+                return None;
+            }
+            if let Some(spec) = agent_model_spec(name) {
+                return Some(model_guide_line(spec));
+            }
+            let description = configured_agents
+                .iter()
+                .find(|agent| agent.name.eq_ignore_ascii_case(name))
+                .and_then(|agent| agent.description.as_deref())
+                .map(str::trim)
+                .filter(|description| !description.is_empty())
+                .unwrap_or("User-configured local agent");
+            Some(custom_model_guide_line(name, description))
+        })
+        .collect();
 
-pub fn agent_config_from_spec(spec: &AgentModelSpec) -> AgentConfig {
-    AgentConfig {
-        name: spec.slug.to_string(),
-        command: spec.cli.to_string(),
-        args: Vec::new(),
-        read_only: false,
-        enabled: spec.is_enabled(),
-        description: None,
-        env: None,
-        args_read_only: some_args(spec.read_only_args),
-        args_write: some_args(spec.write_args),
-        instructions: None,
-    }
-}
-
-fn some_args(args: &[&str]) -> Option<Vec<String>> {
-    if args.is_empty() {
-        None
-    } else {
-        Some(args.iter().map(|arg| (*arg).to_string()).collect())
-    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 /// Return default CLI arguments (excluding the prompt flag) for a given agent
@@ -888,5 +911,24 @@ mod tests {
                 .iter()
                 .all(|spec| spec.slug != "code-gpt-5.3-codex")
         );
+    }
+
+    #[test]
+    fn builtin_agent_defaults_are_limited_to_first_party_endpoints() {
+        let mut minimax = crate::model_provider_info::built_in_model_providers(Some(
+            "https://api.minimax.cn/v1".to_string(),
+        ))
+        .remove("openai")
+        .expect("built-in OpenAI provider");
+        minimax.wire_api = WireApi::Chat;
+        assert!(!provider_supports_builtin_agent_defaults("openai", &minimax));
+
+        let mut openai = crate::model_provider_info::built_in_model_providers(Some(
+            "https://api.openai.com/v1".to_string(),
+        ))
+        .remove("openai")
+        .expect("built-in OpenAI provider");
+        openai.wire_api = WireApi::Chat;
+        assert!(provider_supports_builtin_agent_defaults("openai", &openai));
     }
 }

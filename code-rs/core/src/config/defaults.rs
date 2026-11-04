@@ -1,6 +1,6 @@
-use crate::agent_defaults::{agent_model_spec, default_agent_configs};
+use crate::agent_defaults::agent_model_spec;
 use crate::config_types::AgentConfig;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 static RESPONSES_ORIGINATOR_OVERRIDE: LazyLock<Mutex<Option<String>>> =
@@ -39,14 +39,12 @@ fn normalize_agent(mut agent: AgentConfig) -> AgentConfig {
     agent
 }
 
-fn canonical_agent_key(agent: &AgentConfig) -> String {
-    agent_model_spec(&agent.name)
-        .or_else(|| agent_model_spec(&agent.command))
-        .map(|spec| spec.slug.to_ascii_lowercase())
-        .unwrap_or_else(|| agent.name.to_ascii_lowercase())
-}
-
-pub(crate) fn merge_with_default_agents(agents: Vec<AgentConfig>) -> Vec<AgentConfig> {
+/// Normalize and de-duplicate only the agents explicitly declared by the user.
+///
+/// Runtime code decides whether the built-in catalog is appropriate for the
+/// selected model provider. Keeping that decision out of config loading avoids
+/// leaking first-party CLI routes into OpenAI-compatible providers.
+pub(crate) fn normalize_configured_agents(agents: Vec<AgentConfig>) -> Vec<AgentConfig> {
     let mut deduped: Vec<AgentConfig> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
 
@@ -60,24 +58,14 @@ pub(crate) fn merge_with_default_agents(agents: Vec<AgentConfig>) -> Vec<AgentCo
         }
     }
 
-    if deduped.is_empty() {
-        return default_agent_configs();
-    }
-
-    let mut seen = HashSet::new();
-    for agent in &deduped {
-        seen.insert(canonical_agent_key(agent));
-    }
-
-    for default_agent in default_agent_configs() {
-        let key = canonical_agent_key(&default_agent);
-        if !seen.contains(&key) {
-            seen.insert(key.clone());
-            deduped.push(default_agent);
-        }
-    }
-
     deduped
+}
+
+fn canonical_agent_key(agent: &AgentConfig) -> String {
+    agent_model_spec(&agent.name)
+        .or_else(|| agent_model_spec(&agent.command))
+        .map(|spec| spec.slug.to_ascii_lowercase())
+        .unwrap_or_else(|| agent.name.to_ascii_lowercase())
 }
 
 pub(crate) fn default_review_model() -> String {

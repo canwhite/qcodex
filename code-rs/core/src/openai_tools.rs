@@ -1554,8 +1554,11 @@ pub fn get_openai_tools(
 
     tools.push(create_browser_tool(browser_enabled));
 
-    // Add agent management tool for launching and monitoring asynchronous agents
-    tools.push(create_agent_tool(config.agent_models()));
+    // Built-in agent names map to local CLI launchers. Do not expose an empty
+    // agent tool to compatible providers that have no eligible local agents.
+    if !config.agent_models().is_empty() {
+        tools.push(create_agent_tool(config.agent_models()));
+    }
 
     // Add general wait tool for background completions
     tools.push(create_wait_tool());
@@ -2075,6 +2078,32 @@ mod tests {
                 "code_bridge",
                 "web_search",
             ],
+        );
+    }
+
+    #[test]
+    fn get_openai_tools_omits_agent_when_no_models_are_allowed() {
+        let model_family = find_family_for_model("codex-mini-latest")
+            .expect("codex-mini-latest should be a valid model family");
+        let config = ToolsConfig::new(
+            &model_family,
+            AskForApproval::Never,
+            SandboxPolicy::ReadOnly,
+            true,
+            false,
+            true,
+            /*use_experimental_streamable_shell_tool*/ false,
+            false,
+        );
+
+        let tools = get_openai_tools(&config, Some(HashMap::new()), false, false, &[]);
+
+        assert!(
+            !tools.iter().any(|tool| matches!(
+                tool,
+                OpenAiTool::Function(ResponsesApiTool { name, .. }) if name == "agent"
+            )),
+            "agent must not be advertised without an eligible local agent"
         );
     }
 

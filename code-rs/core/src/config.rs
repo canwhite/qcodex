@@ -170,7 +170,7 @@ pub use crate::config_constraint::Constrained;
 pub use crate::config_constraint::ConstraintError;
 pub use crate::config_constraint::ConstraintResult;
 
-pub(crate) use defaults::merge_with_default_agents;
+use defaults::normalize_configured_agents;
 pub(crate) use validation::upgrade_legacy_model_slugs;
 
 pub(crate) const OPENAI_DEFAULT_MODEL: &str = "gpt-5.5";
@@ -1481,7 +1481,7 @@ impl Config {
             .responses_originator_header_internal_override
             .unwrap_or_else(default_responses_originator);
 
-        let agents: Vec<AgentConfig> = merge_with_default_agents(cfg.agents);
+        let agents = normalize_configured_agents(cfg.agents);
 
         for agent in &agents {
             if agent.name.eq_ignore_ascii_case("code")
@@ -3720,7 +3720,7 @@ model_verbosity = "high"
 
 #[cfg(test)]
 mod agent_merge_tests {
-    use super::merge_with_default_agents;
+    use super::defaults::normalize_configured_agents;
     use super::Config;
     use super::ConfigOverrides;
     use super::ConfigToml;
@@ -3747,7 +3747,7 @@ mod agent_merge_tests {
     #[test]
     fn disabled_codex_mini_alias_is_preserved() {
         let agents = vec![agent("codex-mini", "coder", false)];
-        let merged = merge_with_default_agents(agents);
+        let merged = normalize_configured_agents(agents);
 
         let mini = merged
             .iter()
@@ -3768,7 +3768,7 @@ mod agent_merge_tests {
     #[test]
     fn disabled_codex_mini_slug_is_preserved_with_command() {
         let agents = vec![agent("code-gpt-5.4-mini", "coder", false)];
-        let merged = merge_with_default_agents(agents);
+        let merged = normalize_configured_agents(agents);
 
         let mini = merged
             .iter()
@@ -3792,7 +3792,7 @@ mod agent_merge_tests {
             agent("codex-mini", "coder", true),
             agent("code-gpt-5.4-mini", "coder", false),
         ];
-        let merged = merge_with_default_agents(agents);
+        let merged = normalize_configured_agents(agents);
 
         let mini = merged
             .iter()
@@ -3816,7 +3816,7 @@ mod agent_merge_tests {
             agent("code-gpt-5.4-mini", "coder", true),
             agent("codex-mini", "coder", false),
         ];
-        let merged = merge_with_default_agents(agents);
+        let merged = normalize_configured_agents(agents);
 
         let mini = merged
             .iter()
@@ -3840,7 +3840,7 @@ mod agent_merge_tests {
             agent("gemini-2.5-pro", "gemini", true),
             agent("gemini-3.1-pro", "gemini", false),
         ];
-        let merged = merge_with_default_agents(agents);
+        let merged = normalize_configured_agents(agents);
 
         let gemini = merged
             .iter()
@@ -3864,7 +3864,7 @@ mod agent_merge_tests {
             agent("gemini-3.1-pro", "gemini", true),
             agent("gemini-2.5-pro", "gemini", false),
         ];
-        let merged = merge_with_default_agents(agents);
+        let merged = normalize_configured_agents(agents);
 
         let gemini = merged
             .iter()

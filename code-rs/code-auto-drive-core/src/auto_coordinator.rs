@@ -11,6 +11,7 @@ use code_core::agent_defaults::{
     build_model_guide_description,
     enabled_agent_model_specs_for_auth,
     filter_agent_model_names_for_auth,
+    provider_supports_builtin_agent_defaults,
 };
 use code_core::config_types::{
     AutoDriveModelRoutingEntry,
@@ -1927,21 +1928,26 @@ fn run_auto_loop(
         .map(|auth| auth.mode)
         .or(Some(preferred_auth));
     let supports_pro_only_models = auth_mgr.supports_pro_only_models();
-    let available_cli_routing_models = enabled_agent_model_specs_for_auth(
-        auth_mode_for_model_access,
-        supports_pro_only_models,
-    )
-    .into_iter()
-    .map(|spec| spec.slug.to_ascii_lowercase())
-    .filter(|model| model.starts_with("gpt-"))
-    .collect::<Vec<_>>();
+    let model_provider = config.model_provider.clone();
+    let supports_builtin_agent_defaults = provider_supports_builtin_agent_defaults(
+        &config.model_provider_id,
+        &model_provider,
+    );
+    let available_cli_routing_models = supports_builtin_agent_defaults
+        .then(|| {
+            enabled_agent_model_specs_for_auth(auth_mode_for_model_access, supports_pro_only_models)
+                .into_iter()
+                .map(|spec| spec.slug.to_ascii_lowercase())
+                .filter(|model| model.starts_with("gpt-"))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let allowed_cli_routing_entries = resolve_auto_drive_cli_routing_entries(
         &config.auto_drive,
         auth_mode_for_model_access,
         supports_pro_only_models,
         &available_cli_routing_models,
     );
-    let model_provider = config.model_provider.clone();
     let model_reasoning_summary = config.model_reasoning_summary;
     let model_text_verbosity = config.model_text_verbosity;
     let sandbox_policy = config.sandbox_policy.clone();
@@ -1959,7 +1965,10 @@ fn run_auto_loop(
         auth_mode_for_model_access,
         supports_pro_only_models,
     );
-    if active_agent_names.is_empty() {
+    if active_agent_names.is_empty()
+        && config.agents.is_empty()
+        && supports_builtin_agent_defaults
+    {
         active_agent_names = enabled_agent_model_specs_for_auth(
             auth_mode_for_model_access,
             supports_pro_only_models,
@@ -2043,6 +2052,9 @@ fn run_auto_loop(
         }
     }
     let mut schema_features = SchemaFeatures::from_auto_settings(&config.auto_drive);
+    if active_agent_names.is_empty() {
+        schema_features.include_agents = false;
+    }
     if schema_features.include_cli_model_routing && allowed_cli_routing_entries.is_empty() {
         schema_features.include_cli_model_routing = false;
     }

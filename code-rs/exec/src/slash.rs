@@ -1,12 +1,13 @@
 use code_core::config_types::{AgentConfig, SubagentCommandConfig};
 use code_core::protocol::ReviewRequest;
 
-use code_core::slash_commands::format_subagent_command;
+use code_core::slash_commands::format_subagent_command_with_default_models;
 
 #[derive(Clone, Copy)]
 pub struct SlashContext<'a> {
     pub agents: &'a [AgentConfig],
     pub subagent_commands: &'a [SubagentCommandConfig],
+    pub default_agent_models: &'a [String],
 }
 
 #[derive(Debug)]
@@ -70,7 +71,13 @@ fn handle_subagent(
         ));
     }
 
-    let formatted = format_subagent_command(name, args, Some(ctx.agents), Some(ctx.subagent_commands));
+    let formatted = format_subagent_command_with_default_models(
+        name,
+        args,
+        Some(ctx.agents),
+        Some(ctx.subagent_commands),
+        ctx.default_agent_models,
+    );
     let summary_args = args.replace('\n', " ").trim().to_string();
     let summary = if summary_args.is_empty() {
         format!("/{name}")
@@ -127,7 +134,7 @@ mod tests {
     use code_core::config_types::{AgentConfig, SubagentCommandConfig};
 
     fn ctx<'a>(agents: &'a [AgentConfig], subagents: &'a [SubagentCommandConfig]) -> SlashContext<'a> {
-        SlashContext { agents, subagent_commands: subagents }
+        SlashContext { agents, subagent_commands: subagents, default_agent_models: &[] }
     }
 
     #[test]

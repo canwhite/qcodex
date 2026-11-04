@@ -33,7 +33,11 @@ use code_common::elapsed::format_duration;
 use code_common::model_presets::builtin_model_presets;
 use code_common::model_presets::clamp_reasoning_effort_for_model;
 use code_common::model_presets::ModelPreset;
-use code_core::agent_defaults::{agent_model_spec, enabled_agent_model_specs};
+use code_core::agent_defaults::{
+    agent_model_spec,
+    enabled_agent_model_specs,
+    provider_supports_builtin_agent_defaults,
+};
 use code_core::smoke_test_agent_blocking;
 use code_core::config::Config;
 use code_core::git_info::CommitLogEntry;
@@ -11992,11 +11996,13 @@ impl ChatWidget<'_> {
                     .into_iter()
                     .any(|(name, _)| name.eq_ignore_ascii_case(cmd_name));
                 if has_custom && !is_builtin {
-                    let res = code_core::slash_commands::format_subagent_command(
+                    let default_agent_models = self.default_agent_models_for_provider();
+                    let res = code_core::slash_commands::format_subagent_command_with_default_models(
                         cmd_name,
                         &args,
                         Some(&self.config.agents),
                         Some(&self.config.subagent_commands),
+                        &default_agent_models,
                     );
                     if !res.read_only
                         && self.ensure_git_repo_for_action(
@@ -12052,11 +12058,13 @@ impl ChatWidget<'_> {
                 };
 
                 if let Some(task) = args_opt {
-                    let res = code_core::slash_commands::format_subagent_command(
+                    let default_agent_models = self.default_agent_models_for_provider();
+                    let res = code_core::slash_commands::format_subagent_command_with_default_models(
                         cmd_name,
                         &task,
                         Some(&self.config.agents),
                         Some(&self.config.subagent_commands),
+                        &default_agent_models,
                     );
                     if !res.read_only
                         && self.ensure_git_repo_for_action(
@@ -17276,7 +17284,10 @@ impl ChatWidget<'_> {
                 let builtin = matches!(cmd.as_str(), "code" | "codex" | "cloud");
                 to_check.push((name, cmd, builtin));
             }
-        } else {
+        } else if provider_supports_builtin_agent_defaults(
+            &self.config.model_provider_id,
+            &self.config.model_provider,
+        ) {
             for spec in enabled_agent_model_specs() {
                 let name = spec.slug.to_string();
                 let cmd = spec.cli.to_string();
@@ -22290,10 +22301,7 @@ Have we met every part of this goal and is there no further work to do?"#
     pub(crate) fn show_subagent_editor_for_name(&mut self, name: String) {
         // Build available agents from enabled ones (or sensible defaults)
         let available_agents: Vec<String> = if self.config.agents.is_empty() {
-            enabled_agent_model_specs()
-                .into_iter()
-                .map(|spec| spec.slug.to_string())
-                .collect()
+            self.default_agent_models_for_provider()
         } else {
             self.config
                 .agents
@@ -22327,10 +22335,7 @@ Have we met every part of this goal and is there no further work to do?"#
 
     pub(crate) fn show_new_subagent_editor(&mut self) {
         let available_agents: Vec<String> = if self.config.agents.is_empty() {
-            enabled_agent_model_specs()
-                .into_iter()
-                .map(|spec| spec.slug.to_string())
-                .collect()
+            self.default_agent_models_for_provider()
         } else {
             self.config
                 .agents
@@ -25033,6 +25038,20 @@ Have we met every part of this goal and is there no further work to do?"#
             || command.eq_ignore_ascii_case("coder")
     }
 
+    fn default_agent_models_for_provider(&self) -> Vec<String> {
+        provider_supports_builtin_agent_defaults(
+            &self.config.model_provider_id,
+            &self.config.model_provider,
+        )
+        .then(|| {
+            enabled_agent_model_specs()
+                .into_iter()
+                .map(|spec| spec.slug.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
     fn collect_agents_overview_rows(&self) -> (Vec<AgentOverviewRow>, Vec<String>) {
         fn command_for_check(command: &str) -> String {
             let (base, _) = split_command_and_args(command);
@@ -25044,10 +25063,7 @@ Have we met every part of this goal and is there no further work to do?"#
         }
 
         let mut agent_rows: Vec<AgentOverviewRow> = Vec::new();
-        let mut ordered: Vec<String> = enabled_agent_model_specs()
-            .into_iter()
-            .map(|spec| spec.slug.to_string())
-            .collect();
+        let mut ordered = self.default_agent_models_for_provider();
         let mut extras: Vec<String> = Vec::new();
         for agent in &self.config.agents {
             if !ordered.iter().any(|name| agent.name.eq_ignore_ascii_case(name)) {

@@ -744,21 +744,21 @@ pub(super) async fn submission_loop(
                     .as_ref()
                     .is_some_and(|manager| manager.supports_pro_only_models());
 
-                let mut agent_models: Vec<String> = if config.agents.is_empty() {
-                    default_agent_configs()
-                        .into_iter()
-                        .filter(|cfg| cfg.enabled)
-                        .map(|cfg| cfg.name)
-                        .collect()
-                } else {
-                    get_enabled_agents(&config.agents)
-                };
+                let mut agent_models = get_enabled_agents(&config.agents);
                 agent_models = filter_agent_model_names_for_auth(
                     agent_models,
                     auth_mode,
                     supports_pro_only_models,
                 );
-                if agent_models.is_empty() {
+                let supports_builtin_agent_defaults =
+                    crate::agent_defaults::provider_supports_builtin_agent_defaults(
+                        &config.model_provider_id,
+                        &provider,
+                    );
+                if agent_models.is_empty()
+                    && config.agents.is_empty()
+                    && supports_builtin_agent_defaults
+                {
                     agent_models =
                         enabled_agent_model_specs_for_auth(auth_mode, supports_pro_only_models)
                         .into_iter()
@@ -767,9 +767,15 @@ pub(super) async fn submission_loop(
                 }
                 agent_models.sort_by_key(|a| a.to_ascii_lowercase());
                 agent_models.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+                let model_descriptions = if supports_builtin_agent_defaults {
+                    model_guide_markdown_with_custom(&config.agents)
+                } else {
+                    crate::agent_defaults::model_guide_markdown_for_explicit_agents(
+                        &agent_models,
+                        &config.agents,
+                    )
+                };
                 tools_config.set_agent_models(agent_models);
-
-                let model_descriptions = model_guide_markdown_with_custom(&config.agents);
                 // codex-rs gives each provider ownership of its model manager.
                 // code-rs still has one legacy RemoteModelsManager, so only
                 // wire it for the equivalent first-party/command-auth cases;

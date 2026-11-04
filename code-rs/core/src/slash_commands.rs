@@ -77,7 +77,11 @@ pub fn default_read_only_for(name: &str) -> bool {
     }
 }
 
-fn resolve_models(explicit: &[String], agents: Option<&[AgentConfig]>) -> Vec<String> {
+fn resolve_models(
+    explicit: &[String],
+    agents: Option<&[AgentConfig]>,
+    default_models: &[String],
+) -> Vec<String> {
     if !explicit.is_empty() {
         return explicit.to_vec();
     }
@@ -86,8 +90,9 @@ fn resolve_models(explicit: &[String], agents: Option<&[AgentConfig]>) -> Vec<St
         if !enabled.is_empty() {
             return enabled;
         }
+        return default_models.to_vec();
     }
-    get_default_models()
+    default_models.to_vec()
 }
 
 /// Format a subagent command (built-in or custom) using optional overrides
@@ -137,6 +142,24 @@ pub fn format_subagent_command(
     agents: Option<&[AgentConfig]>,
     commands: Option<&[SubagentCommandConfig]>,
 ) -> SubagentResolution {
+    let default_models = get_default_models();
+    format_subagent_command_with_default_models(
+        name,
+        task,
+        agents,
+        commands,
+        &default_models,
+    )
+}
+
+/// Format a subagent command using caller-resolved provider-safe defaults.
+pub fn format_subagent_command_with_default_models(
+    name: &str,
+    task: &str,
+    agents: Option<&[AgentConfig]>,
+    commands: Option<&[SubagentCommandConfig]>,
+    default_models: &[String],
+) -> SubagentResolution {
     let (user_cmd, read_only_default) = {
         let ro = default_read_only_for(name);
         let found = commands
@@ -148,11 +171,16 @@ pub fn format_subagent_command(
     let (read_only, models, orch_extra, agent_extra) = match user_cmd {
         Some(cfg) => (
             cfg.read_only, // User-provided read_only (defaults to false unless set)
-            resolve_models(&cfg.agents, agents),
+            resolve_models(&cfg.agents, agents, default_models),
             cfg.orchestrator_instructions,
             cfg.agent_instructions,
         ),
-        None => (read_only_default, resolve_models(&[], agents), None, None),
+        None => (
+            read_only_default,
+            resolve_models(&[], agents, default_models),
+            None,
+            None,
+        ),
     };
 
     // Compose unified prompt used for all subagent commands (built-ins and custom)
