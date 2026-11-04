@@ -1908,6 +1908,7 @@ fn migrate_entry(path: &Path, target_dir: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
+    use crate::config_types::AutoDriveModelRoutingEntry;
     use crate::config_types::HistoryPersistence;
     use crate::config_types::McpServerTransportConfig;
     use crate::config_types::Notifications;
