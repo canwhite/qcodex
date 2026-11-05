@@ -10,10 +10,16 @@ use crate::exec_command::session_id::SessionId;
 pub struct ExecCommandParams {
     pub(crate) cmd: String,
 
-    #[serde(default = "default_yield_time")]
+    #[serde(
+        default = "default_yield_time",
+        deserialize_with = "code_protocol::models::deserialize_integer_valued_u64"
+    )]
     pub(crate) yield_time_ms: u64,
 
-    #[serde(default = "max_output_tokens")]
+    #[serde(
+        default = "max_output_tokens",
+        deserialize_with = "code_protocol::models::deserialize_integer_valued_u64"
+    )]
     pub(crate) max_output_tokens: u64,
 
     #[serde(default)]
@@ -57,10 +63,16 @@ pub struct WriteStdinParams {
     #[serde(default)]
     pub(crate) chars: String,
 
-    #[serde(default = "write_stdin_default_yield_time_ms")]
+    #[serde(
+        default = "write_stdin_default_yield_time_ms",
+        deserialize_with = "code_protocol::models::deserialize_integer_valued_u64"
+    )]
     pub(crate) yield_time_ms: u64,
 
-    #[serde(default = "write_stdin_default_max_output_tokens")]
+    #[serde(
+        default = "write_stdin_default_max_output_tokens",
+        deserialize_with = "code_protocol::models::deserialize_integer_valued_u64"
+    )]
     pub(crate) max_output_tokens: u64,
 }
 

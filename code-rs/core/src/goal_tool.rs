@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct GoalRecord { objective: String, status: String, #[serde(default)] token_budget: Option<i64>, #[serde(default)] blocker: Option<String>, #[serde(default)] blocker_count: u8 }
+struct GoalRecord { objective: String, status: String, #[serde(default, deserialize_with = "code_protocol::models::deserialize_optional_integer_valued_i64")] token_budget: Option<i64>, #[serde(default)] blocker: Option<String>, #[serde(default)] blocker_count: u8 }
 
 fn save(path: &Path, record: &GoalRecord) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
@@ -24,7 +24,7 @@ fn tool(name: &str, description: &str, properties: BTreeMap<String, JsonSchema>,
 
 pub(crate) fn tools() -> [OpenAiTool; 3] {
     let objective = JsonSchema::String { description: Some("Concrete objective for this saved session.".to_string()), allowed_values: None };
-    let budget = JsonSchema::Number { description: Some("Optional token budget; set only when the user explicitly requested one.".to_string()) };
+    let budget = JsonSchema::Integer { description: Some("Optional token budget; set only when the user explicitly requested one.".to_string()) };
     let mut create = BTreeMap::new(); create.insert("objective".to_string(), objective); create.insert("token_budget".to_string(), budget);
     let mut update = BTreeMap::new(); update.insert("status".to_string(), JsonSchema::String { description: Some("Only complete or blocked. Complete only after all requirements are verified; blocked only after the same blocker recurs for three turns.".to_string()), allowed_values: Some(vec!["complete".to_string(), "blocked".to_string()]) });
     [tool("create_goal", "Create one durable goal for this session. Fails when an unfinished goal exists.", create, vec!["objective".to_string()]), tool("get_goal", "Read the current durable goal for this session.", BTreeMap::new(), vec![]), tool("update_goal", "Mark the current goal complete or blocked when its lifecycle rules are satisfied.", update, vec!["status".to_string()])]
@@ -49,4 +49,23 @@ pub(crate) async fn handle(session: &Session, ctx: &ToolCallCtx, name: &str, arg
     })();
     let output = match result { Ok(text) => FunctionCallOutputPayload { body: code_protocol::models::FunctionCallOutputBody::Text(text), success: Some(true) }, Err(error) => FunctionCallOutputPayload { body: code_protocol::models::FunctionCallOutputBody::Text(format!("goal error: {error}")), success: Some(false) } };
     ResponseInputItem::FunctionCallOutput { call_id: ctx.call_id.clone(), output }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GoalRecord;
+
+    #[test]
+    fn goal_record_accepts_an_integer_valued_decimal_budget() {
+        let record: GoalRecord = serde_json::from_str(
+            r#"{"objective":"ship the feature","status":"active","token_budget":1000.0}"#,
+        )
+        .expect("integer-valued decimal token budget should parse");
+
+        assert_eq!(record.token_budget, Some(1_000));
+        assert!(serde_json::from_str::<GoalRecord>(
+            r#"{"objective":"ship the feature","status":"active","token_budget":1000.5}"#
+        )
+        .is_err());
+    }
 }

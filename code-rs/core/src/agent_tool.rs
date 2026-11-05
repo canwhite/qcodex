@@ -2575,7 +2575,7 @@ pub fn create_agent_tool(allowed_models: &[String]) -> OpenAiTool {
     );
     wait_properties.insert(
         "timeout_seconds".to_string(),
-        JsonSchema::Number {
+        JsonSchema::Integer {
             description: Some(
                 "Optional timeout before giving up (default 300, max 600)".to_string(),
             ),
@@ -2693,6 +2693,10 @@ pub struct AgentCancelOptions {
 pub struct AgentWaitOptions {
     pub agent_id: Option<String>,
     pub batch_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "code_protocol::models::deserialize_optional_integer_valued_u64"
+    )]
     pub timeout_seconds: Option<u64>,
     pub return_all: Option<bool>,
 }
@@ -3446,6 +3450,10 @@ pub struct CancelAgentParams {
 pub struct WaitForAgentParams {
     pub agent_id: Option<String>,
     pub batch_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "code_protocol::models::deserialize_optional_integer_valued_u64"
+    )]
     pub timeout_seconds: Option<u64>,
     pub return_all: Option<bool>,
 }

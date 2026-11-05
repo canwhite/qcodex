@@ -3,6 +3,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use code_utils_image::load_and_resize_to_fit;
+use serde::de::Error as _;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -24,6 +25,80 @@ use code_utils_image::error::ImageProcessingError;
 use schemars::JsonSchema;
 
 use crate::mcp::CallToolResult;
+
+/// Deserializes a JSON number as a u64, accepting decimal notation only when
+/// its fractional component is zero (for example, `30000.0`).
+pub fn deserialize_integer_valued_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    parse_integer_valued_u64(&serde_json::Number::deserialize(deserializer)?)
+        .map_err(D::Error::custom)
+}
+
+/// Deserializes an optional JSON number as a u64, accepting decimal notation
+/// only when its fractional component is zero.
+pub fn deserialize_optional_integer_valued_u64<'de, D>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<serde_json::Number>::deserialize(deserializer)?
+        .map(|value| parse_integer_valued_u64(&value))
+        .transpose()
+        .map_err(D::Error::custom)
+}
+
+/// Deserializes an optional JSON number as an i64, accepting decimal notation
+/// only when its fractional component is zero.
+pub fn deserialize_optional_integer_valued_i64<'de, D>(
+    deserializer: D,
+) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<serde_json::Number>::deserialize(deserializer)?
+        .map(|value| parse_integer_valued_i64(&value))
+        .transpose()
+        .map_err(D::Error::custom)
+}
+
+pub fn parse_integer_valued_u64(value: &serde_json::Number) -> Result<u64, String> {
+    if let Some(value) = value.as_u64() {
+        return Ok(value);
+    }
+
+    let value = value.to_string();
+    let Some((integer, fraction)) = value.split_once('.') else {
+        return Err(format!("expected an unsigned integer, got {value}"));
+    };
+    if fraction.is_empty() || !fraction.bytes().all(|byte| byte == b'0') {
+        return Err(format!("expected an unsigned integer, got {value}"));
+    }
+
+    integer
+        .parse::<u64>()
+        .map_err(|_| format!("expected an unsigned integer, got {value}"))
+}
+
+pub fn parse_integer_valued_i64(value: &serde_json::Number) -> Result<i64, String> {
+    if let Some(value) = value.as_i64() {
+        return Ok(value);
+    }
+
+    let value = value.to_string();
+    let Some((integer, fraction)) = value.split_once('.') else {
+        return Err(format!("expected an integer, got {value}"));
+    };
+    if fraction.is_empty() || !fraction.bytes().all(|byte| byte == b'0') {
+        return Err(format!("expected an integer, got {value}"));
+    }
+
+    integer
+        .parse::<i64>()
+        .map_err(|_| format!("expected an integer, got {value}"))
+}
 
 /// Controls whether a command should use the session sandbox or bypass it.
 #[derive(
@@ -939,6 +1014,10 @@ pub enum LocalShellAction {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
 pub struct LocalShellExecAction {
     pub command: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_integer_valued_u64"
+    )]
     pub timeout_ms: Option<u64>,
     pub working_directory: Option<String>,
     pub env: Option<HashMap<String, String>>,
@@ -1024,7 +1103,11 @@ pub struct ShellToolCallParams {
     pub workdir: Option<String>,
 
     /// This is the maximum time in milliseconds that the command is allowed to run.
-    #[serde(alias = "timeout")]
+    #[serde(
+        default,
+        alias = "timeout",
+        deserialize_with = "deserialize_optional_integer_valued_u64"
+    )]
     pub timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -1051,7 +1134,11 @@ pub struct ShellCommandToolCallParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login: Option<bool>,
     /// This is the maximum time in milliseconds that the command is allowed to run.
-    #[serde(alias = "timeout")]
+    #[serde(
+        default,
+        alias = "timeout",
+        deserialize_with = "deserialize_optional_integer_valued_u64"
+    )]
     pub timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -2257,6 +2344,27 @@ mod tests {
             params
         );
         Ok(())
+    }
+
+    #[test]
+    fn integer_valued_numbers_accept_decimal_and_exponent_notation() {
+        for (input, expected) in [
+            ("30000.0", Some(30_000)),
+            ("3e4", Some(30_000)),
+            ("3.0e4", Some(30_000)),
+            ("300e-2", Some(3)),
+            ("3e-1", None),
+            ("30000.5", None),
+            ("-1", None),
+        ] {
+            let value = serde_json::from_str::<serde_json::Number>(input)
+                .expect("valid JSON number");
+            assert_eq!(parse_integer_valued_u64(&value).ok(), expected, "{input}");
+        }
+
+        let value = serde_json::from_str::<serde_json::Number>("-42.0")
+            .expect("valid JSON number");
+        assert_eq!(parse_integer_valued_i64(&value), Ok(-42));
     }
 
     #[test]

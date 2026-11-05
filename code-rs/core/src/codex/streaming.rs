@@ -5603,8 +5603,19 @@ fn tool_search_default_limit() -> usize {
 #[derive(Deserialize)]
 struct ToolSearchArgs {
     query: String,
-    #[serde(default = "tool_search_default_limit")]
+    #[serde(
+        default = "tool_search_default_limit",
+        deserialize_with = "deserialize_integer_valued_usize"
+    )]
     limit: usize,
+}
+
+fn deserialize_integer_valued_usize<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = code_protocol::models::deserialize_integer_valued_u64(deserializer)?;
+    usize::try_from(value).map_err(serde::de::Error::custom)
 }
 
 enum ToolSearchResponseMode {
@@ -6061,6 +6072,22 @@ mod bridge_tool_tests {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct WebFetchParams {
+    url: String,
+    #[serde(
+        default,
+        deserialize_with = "code_protocol::models::deserialize_optional_integer_valued_u64"
+    )]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    mode: Option<String>, // "auto" (default), "browser", or "http"
+}
+
+fn parse_web_fetch_params(arguments: &str) -> Result<WebFetchParams, serde_json::Error> {
+    serde_json::from_str(arguments)
+}
+
 async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) -> ResponseInputItem {
     // Include raw params in begin event for observability
     let mut params_for_event = serde_json::from_str::<serde_json::Value>(&arguments).ok();
@@ -6081,16 +6108,7 @@ async fn handle_web_fetch(sess: &Session, ctx: &ToolCallCtx, arguments: String) 
         "web_fetch".to_string(),
         params_for_event,
         || async move {
-            #[derive(serde::Deserialize)]
-            struct WebFetchParams {
-                url: String,
-                #[serde(default)]
-                timeout_ms: Option<u64>,
-                #[serde(default)]
-                mode: Option<String>, // "auto" (default), "browser", or "http"
-            }
-
-            let parsed: Result<WebFetchParams, _> = serde_json::from_str(&arguments_clone);
+            let parsed = parse_web_fetch_params(&arguments_clone);
             let params = match parsed {
                 Ok(p) => p,
                 Err(e) => {
@@ -7175,7 +7193,15 @@ async fn handle_wait(
 ) -> ResponseInputItem {
     use serde::Deserialize;
     #[derive(Deserialize, Clone)]
-    struct Params { #[serde(default)] call_id: Option<String>, #[serde(default)] timeout_ms: Option<u64> }
+    struct Params {
+        #[serde(default)]
+        call_id: Option<String>,
+        #[serde(
+            default,
+            deserialize_with = "code_protocol::models::deserialize_optional_integer_valued_u64"
+        )]
+        timeout_ms: Option<u64>,
+    }
     let mut params_for_event = serde_json::from_str::<serde_json::Value>(&arguments).ok();
     if let Some(serde_json::Value::Object(map)) = params_for_event.as_mut()
         && let Some(serde_json::Value::String(cid)) = map.get("call_id") {
@@ -7466,7 +7492,10 @@ async fn handle_gh_run_wait(
         workflow: Option<String>,
         #[serde(default)]
         branch: Option<String>,
-        #[serde(default)]
+        #[serde(
+            default,
+            deserialize_with = "code_protocol::models::deserialize_optional_integer_valued_u64"
+        )]
         interval_seconds: Option<u64>,
     }
 
@@ -7880,7 +7909,9 @@ async fn handle_gh_run_wait(
 
     let mut resolved_run_id = match parsed.run_id {
         Some(Value::String(value)) if !value.trim().is_empty() => Some(value),
-        Some(Value::Number(num)) => num.as_u64().map(|v| v.to_string()),
+        Some(Value::Number(num)) => code_protocol::models::parse_integer_valued_u64(&num)
+            .ok()
+            .map(|value| value.to_string()),
         _ => None,
     };
     let mut resolved_workflow = parsed
@@ -7946,7 +7977,9 @@ async fn handle_gh_run_wait(
                 .as_ref()
                 .and_then(|item| item.get("databaseId").cloned())
                 .and_then(|val| match val {
-                    Value::Number(num) => num.as_u64().map(|v| v.to_string()),
+                    Value::Number(num) => code_protocol::models::parse_integer_valued_u64(&num)
+                        .ok()
+                        .map(|value| value.to_string()),
                     Value::String(s) => Some(s),
                     _ => None,
                 });
@@ -13118,7 +13151,11 @@ async fn handle_browser_console(sess: &Session, ctx: &ToolCallCtx, arguments: St
             if let Some(browser_manager) = browser_manager {
                 let args: Result<Value, _> = serde_json::from_str(&arguments_clone);
                 let lines = match args {
-                    Ok(json) => json.get("lines").and_then(serde_json::Value::as_u64).map(|n| n as usize),
+                    Ok(json) => json
+                        .get("lines")
+                        .and_then(serde_json::Value::as_number)
+                        .and_then(|number| code_protocol::models::parse_integer_valued_u64(number).ok())
+                        .and_then(|number| usize::try_from(number).ok()),
                     Err(_) => None,
                 };
 
@@ -14603,6 +14640,7 @@ mod tests {
         is_context_overflow_stream_error,
         is_usage_limit_stream_error,
         parse_apply_patch_input,
+        parse_web_fetch_params,
         save_image_generation_result,
         save_image_generation_sidecar,
         side_session_rejects_core_tool,
@@ -14641,6 +14679,20 @@ mod tests {
         assert!(side_session_rejects_core_tool("code_bridge_subscription"));
         assert!(!side_session_rejects_core_tool("shell"));
         assert!(!side_session_rejects_core_tool("apply_patch"));
+    }
+
+    #[test]
+    fn web_fetch_accepts_an_integer_valued_decimal_timeout() {
+        let params = parse_web_fetch_params(
+            r#"{"url":"https://news.ycombinator.com/","timeout_ms":30000.0,"mode":"http"}"#,
+        )
+        .expect("integer-valued decimal timeout should parse");
+
+        assert_eq!(params.timeout_ms, Some(30_000));
+        assert!(parse_web_fetch_params(
+            r#"{"url":"https://news.ycombinator.com/","timeout_ms":30000.5}"#
+        )
+        .is_err());
     }
 
     fn make_tool_output(call_id: &str) -> ResponseInputItem {

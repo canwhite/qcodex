@@ -464,8 +464,10 @@ pub enum JsonSchema {
         description: Option<String>,
         allowed_values: Option<Vec<String>>,
     },
-    /// MCP schema allows "number" | "integer" for Number
     Number {
+        description: Option<String>,
+    },
+    Integer {
         description: Option<String>,
     },
     Array {
@@ -548,7 +550,8 @@ fn parse_json_schema_value(value: JsonValue) -> Result<JsonSchema, String> {
                 allowed_values,
             })
         }
-        "number" | "integer" => Ok(JsonSchema::Number { description }),
+        "number" => Ok(JsonSchema::Number { description }),
+        "integer" => Ok(JsonSchema::Integer { description }),
         "array" => {
             let items = map
                 .remove("items")
@@ -674,6 +677,14 @@ impl Serialize for JsonSchema {
                 }
                 state.end()
             }
+            JsonSchema::Integer { description } => {
+                let mut state = serializer.serialize_struct("JsonSchema", if description.is_some() { 2 } else { 1 })?;
+                state.serialize_field("type", "integer")?;
+                if let Some(desc) = description {
+                    state.serialize_field("description", desc)?;
+                }
+                state.end()
+            }
             JsonSchema::Array { items, description } => {
                 let mut fields = 2; // type + items
                 if description.is_some() {
@@ -767,7 +778,7 @@ fn create_shell_tool() -> OpenAiTool {
     );
     properties.insert(
         "timeout".to_string(),
-        JsonSchema::Number {
+        JsonSchema::Integer {
             description: Some("Optional hard timeout in milliseconds (minimum 1,800,000 / 30 minutes). By default, commands have no hard timeout; long runs are streamed and may be backgrounded by the agent.".to_string()),
         },
     );
@@ -814,7 +825,7 @@ fn create_shell_command_tool(sandbox_policy: &SandboxPolicy) -> OpenAiTool {
     );
     properties.insert(
         "timeout_ms".to_string(),
-        JsonSchema::Number {
+        JsonSchema::Integer {
             description: Some("The timeout for the command in milliseconds".to_string()),
         },
     );
@@ -1028,7 +1039,7 @@ fn create_search_tool_bm25_tool() -> OpenAiTool {
     );
     properties.insert(
         "limit".to_string(),
-        JsonSchema::Number {
+        JsonSchema::Integer {
             description: Some(
                 "Maximum number of tools to return (defaults to 8).".to_string(),
             ),
@@ -1078,7 +1089,7 @@ fn create_shell_tool_for_sandbox(sandbox_policy: &SandboxPolicy) -> OpenAiTool {
     );
     properties.insert(
         "timeout_ms".to_string(),
-        JsonSchema::Number {
+        JsonSchema::Integer {
             description: Some("Optional hard timeout in milliseconds (minimum 1,800,000 / 30 minutes). By default, commands have no hard timeout; long runs are streamed and may be backgrounded by the agent.".to_string()),
         },
     );
@@ -1656,7 +1667,7 @@ pub fn create_wait_tool() -> OpenAiTool {
     );
     properties.insert(
         "timeout_ms".to_string(),
-        JsonSchema::Number {
+        JsonSchema::Integer {
             description: Some(
                 "Maximum time in milliseconds to wait (default 600000 = 10 minutes, max 3600000 = 60 minutes)."
                     .to_string(),
@@ -1735,7 +1746,7 @@ pub fn create_gh_run_wait_tool() -> OpenAiTool {
     );
     properties.insert(
         "interval_seconds".to_string(),
-        JsonSchema::Number {
+        JsonSchema::Integer {
             description: Some("Polling interval in seconds (default 8).".to_string()),
         },
     );
@@ -1937,7 +1948,7 @@ fn create_browser_tool(browser_enabled: bool) -> OpenAiTool {
     );
     properties.insert(
         "lines".to_string(),
-        JsonSchema::Number {
+        JsonSchema::Integer {
             description: Some(
                 "For action=console: optional number of recent console lines to return.".to_string(),
             ),
@@ -1970,7 +1981,7 @@ fn create_browser_tool(browser_enabled: bool) -> OpenAiTool {
     );
     properties.insert(
         "timeout_ms".to_string(),
-        JsonSchema::Number {
+        JsonSchema::Integer {
             description: Some(
                 "For action=fetch: optional timeout in milliseconds for the HTTP request.".to_string(),
             ),
@@ -2069,6 +2080,9 @@ mod tests {
             &[
                 "local_shell",
                 "update_plan",
+                "create_goal",
+                "get_goal",
+                "update_goal",
                 "request_user_input",
                 "browser",
                 "agent",
@@ -2292,6 +2306,9 @@ mod tests {
             &[
                 "local_shell",
                 "update_plan",
+                "create_goal",
+                "get_goal",
+                "update_goal",
                 "request_user_input",
                 "browser",
                 "agent",
@@ -2325,6 +2342,9 @@ mod tests {
             &[
                 "shell",
                 "update_plan",
+                "create_goal",
+                "get_goal",
+                "update_goal",
                 "request_user_input",
                 "browser",
                 "agent",
@@ -2357,6 +2377,9 @@ mod tests {
             &tools,
             &[
                 "shell_command",
+                "create_goal",
+                "get_goal",
+                "update_goal",
                 "request_user_input",
                 "browser",
                 "agent",
@@ -2477,6 +2500,9 @@ mod tests {
             &tools,
             &[
                 "shell",
+                "create_goal",
+                "get_goal",
+                "update_goal",
                 "request_user_input",
                 "browser",
                 "agent",
@@ -2490,7 +2516,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[9],
+            tools[12],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -2602,6 +2628,9 @@ mod tests {
             &[
                 "shell",
                 "image_view",
+                "create_goal",
+                "get_goal",
+                "update_goal",
                 "request_user_input",
                 "browser",
                 "agent",
@@ -2615,7 +2644,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[10],
+            tools[13],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -2729,6 +2758,9 @@ mod tests {
             &[
                 "shell",
                 "image_view",
+                "create_goal",
+                "get_goal",
+                "update_goal",
                 "request_user_input",
                 "browser",
                 "agent",
@@ -2742,7 +2774,7 @@ mod tests {
         );
 
         assert_eq!(
-            tools[10],
+            tools[13],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/search".to_string(),
                 parameters: JsonSchema::Object {
@@ -2763,7 +2795,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mcp_tool_integer_normalized_to_number() {
+    fn test_mcp_tool_integer_is_preserved() {
         let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
         let mut config = ToolsConfig::new(
             &model_family,
@@ -2805,6 +2837,9 @@ mod tests {
             &tools,
             &[
                 "shell",
+                "create_goal",
+                "get_goal",
+                "update_goal",
                 "request_user_input",
                 "browser",
                 "agent",
@@ -2828,7 +2863,7 @@ mod tests {
                 parameters: JsonSchema::Object {
                     properties: BTreeMap::from([(
                         "page".to_string(),
-                        JsonSchema::Number { description: None }
+                        JsonSchema::Integer { description: None }
                     )]),
                     required: None,
                     additional_properties: None,
@@ -2836,6 +2871,15 @@ mod tests {
                 description: "Pagination".to_string(),
                 strict: false,
             })
+        );
+
+        let OpenAiTool::Function(ResponsesApiTool { parameters, .. }) = paginate_tool else {
+            panic!("paginate tool should be a function");
+        };
+        assert_eq!(
+            serde_json::to_value(parameters).expect("serialize paginate schema")
+                ["properties"]["page"]["type"],
+            "integer"
         );
     }
 
@@ -2882,6 +2926,9 @@ mod tests {
             &tools,
             &[
                 "shell",
+                "create_goal",
+                "get_goal",
+                "update_goal",
                 "request_user_input",
                 "browser",
                 "agent",
@@ -2894,7 +2941,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            tools[9],
+            tools[12],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/tags".to_string(),
                 parameters: JsonSchema::Object {
@@ -2965,6 +3012,9 @@ mod tests {
                 &tools,
                 &[
                     "shell",
+                    "create_goal",
+                    "get_goal",
+                    "update_goal",
                     "request_user_input",
                     "browser",
                     "agent",
@@ -2977,7 +3027,7 @@ mod tests {
                 ],
             );
 
-            let OpenAiTool::Function(tool) = &tools[9] else {
+            let OpenAiTool::Function(tool) = &tools[12] else {
                 panic!("expected MCP tool to be a function");
             };
             let parameters = serde_json::to_value(&tool.parameters)

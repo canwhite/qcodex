@@ -43,7 +43,7 @@ pub fn create_exec_command_tool_for_responses_api() -> ResponsesApiTool {
     );
     properties.insert(
         "yield_time_ms".to_string(),
-        JsonSchema::Number {
+        JsonSchema::Integer {
             description: Some(
                 "How long to wait (in milliseconds) for output before yielding.".to_string(),
             ),
@@ -51,7 +51,7 @@ pub fn create_exec_command_tool_for_responses_api() -> ResponsesApiTool {
     );
     properties.insert(
         "max_output_tokens".to_string(),
-        JsonSchema::Number {
+        JsonSchema::Integer {
             description: Some(
                 "Maximum number of tokens to return. Excess output will be truncated."
                     .to_string(),
@@ -105,7 +105,7 @@ pub fn create_write_stdin_tool_for_responses_api() -> ResponsesApiTool {
     let mut properties = BTreeMap::<String, JsonSchema>::new();
     properties.insert(
         "session_id".to_string(),
-        JsonSchema::Number {
+        JsonSchema::Integer {
             description: Some("Identifier of the running unified exec session.".to_string()),
         },
     );
@@ -118,7 +118,7 @@ pub fn create_write_stdin_tool_for_responses_api() -> ResponsesApiTool {
     );
     properties.insert(
         "yield_time_ms".to_string(),
-        JsonSchema::Number {
+        JsonSchema::Integer {
             description: Some(
                 "How long to wait (in milliseconds) for output before yielding.".to_string(),
             ),
@@ -126,7 +126,7 @@ pub fn create_write_stdin_tool_for_responses_api() -> ResponsesApiTool {
     );
     properties.insert(
         "max_output_tokens".to_string(),
-        JsonSchema::Number {
+        JsonSchema::Integer {
             description: Some(
                 "Maximum number of tokens to return. Excess output will be truncated."
                     .to_string(),
