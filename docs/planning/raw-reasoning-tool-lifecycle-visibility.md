@@ -239,12 +239,18 @@ For the captured response shape and all equivalent supported paths:
 2. **Provider-reflected tool output could arrive before its call.** The first implementation only claimed an output after seeing a pending call. The lifecycle now records every direct `FunctionCallOutput` by call id, claims it whichever item arrives first, and emits exactly one structured card without invoking the local executor.
 3. **Deferred projection could invert card/answer order.** A matched output now emits its begin/end lifecycle as soon as the pair is known, rather than waiting until `response.completed`; output-before-call retains the same immediate projection once the call arrives.
 4. **Historical direct outputs replayed as anonymous text.** Replay now uses a completed generic tool card instead of a background message, so raw output is never shown without an operation container.
+5. **Raw-only reasoning disappeared after session recovery.** Replay previously reconstructed only summary-bearing reasoning items. It now creates a completed, status-only `Thinking` cell for raw-only history while retaining zero raw lines; the regression covers both collapsed and expanded rendering.
 
 ### Audit coverage
 
 - Traced streaming raw reasoning delta, terminal reasoning item, task completion, session persistence, replay, headless output, TUI insertion, and collapsed/expanded rendering.
 - Traced `FunctionCall` and `FunctionCallOutput` in both arrival orders, duplicate terminal outputs, local execution ownership, tool-card projection, and replay.
 - Compiled the non-TUI protocol consumers (`code-mcp-server`, `code-exec`) after adding the additive status event.
+- Ran the required root `./build-fast.sh` after all audit fixes: passed with no warnings or errors.
+
+### Final risk state
+
+- **HIGH risks remaining: 0.** The replay omission was the final audit finding and is covered by a direct regression; all three original HIGH risks retain their explicit mitigations and cardinality/privacy/order checks.
 
 ### Prevention
 
