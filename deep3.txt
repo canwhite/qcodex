@@ -1,0 +1,101 @@
+=================== https://openai.com/index/how-we-detect-frontier-model-misalignment
+Title: How we detect frontier model misalignment
+
+URL Source: https://openai.com/index/how-we-detect-frontier-model-misalignment
+
+Final URL: https://openai.com/index/how-we-detect-frontier-model-misalignment/
+
+Markdown Content:
+As we train increasingly capable AI models, we need reliable ways to detect when their behavior departs from what we intended. Agents can misbehave and take unauthorized actions during training, evaluation, or deployment, with potentially serious consequences. In order to detect these failures—and, where necessary, to intervene in time—we monitor how agents reason, what actions they take, and how those actions affect their environment.
+
+While we’ve been [monitoring our internal coding agents](https://openai.com/index/how-we-monitor-internal-coding-agents-misalignment/) for some time, the [Hugging Face incident](https://openai.com/index/hugging-face-incident-and-the-road-ahead/) exposed a gap in our coverage: the incident began during internal cybersecurity evaluations on which we were not running our monitors for misaligned behavior. In response to that incident, and to the [increasing capabilities](https://openai.com/index/path-to-astra/) of our models more generally, we’ve substantially expanded our system for monitoring agents’ behavior. Our misalignment monitors now cover our frontier models across a much wider variety of surfaces, including training, evaluation, internal use, and, with modifications depending on the product surface, external deployment.
+
+In order to see how this expanded system could have helped prevent the Hugging Face incident, we replayed the behavior recorded in that episode with our strengthened monitors in place. In that simulation, our monitoring system alerted our security team about 30 minutes after the agents first escaped their sandbox—and more than 30 hours before Hugging Face’s systems were breached in the actual incident. We believe that this warning would have given our responders time to interrupt the activity well before our models were able to access external services.
+
+In September, we saw how responders used an alert during a live training run. A model found a way to [reach the internet⁠(opens in a new window)](https://alignment.openai.com/misalignment-reports/an-agent-used-dns-to-reach-an-external-chatbot/) from an environment that was meant to be isolated. Our monitors flagged the breach within 15 minutes, and a responder began reviewing it three minutes later. We then paused frontier reinforcement learning while we strengthened the systems that contain our agents.
+
+While this monitoring system demands substantial compute, we think that cost is worth paying as our models become more capable and the potential consequences of model misalignment increase. Monitoring is one of several layers in our strategy of [defense in depth](https://openai.com/index/the-defenders-window/) against harm from misaligned model behavior. Alignment training aims to reduce models’ propensities toward harmful behavior; security controls [limit the systems an agent can access or affect](https://openai.com/index/securing-our-frontier-model-training-environment/); and, when those safeguards fail, monitoring helps us detect the failures that remain, intervene before harm occurs, and learn from what went wrong. We believe that [all model developers](https://openai.com/index/empowering-cyber-defenders/) should monitor the behavior of their most capable models.
+
+Below, we describe ho
+
+=================== https://www.anthropic.com/news
+Title: Newsroom
+
+URL Source: https://www.anthropic.com/news
+
+Markdown Content:
+[Skip to main content](https://www.anthropic.com/news#main-content)
+
+[News](https://www.anthropic.com/news)Research Policy Commitments
+
+[](https://www.anthropic.com/)
+
+Company
+
+Try Claude
+
+[](https://www.anthropic.com/search)
+
+# News
+
+Latest news
+
+November 5, 2026
+
+[Announcements](https://www.anthropic.com/news/announcements)
+
+Sep 22, 2026
+
+![Image 1: Video thumbnail](https://www.anthropic.com/_next/image?url=https%3A%2F%2Fcdn.sanity.io%2Fimages%2F4zrzovbb%2Fwebsite%2Ff4d37a1d1f582f53f4e89440062b649b6273a093-1200x630.jpg&w=3840&q=75)
+
+## [Introducing Claude Opus 5.5 Claude Opus 5.5 leads in agentic coding and knowledge work, and costs 40% less to run than Opus 5 on typical workloads.](https://www.anthropic.com/claude-opus-5-5)
+
+[Announcements](https://www.anthropic.com/news/announcements)
+
+Oct 18, 2026[![Image 2: Investing in the public benefit](https://www.anthropic.com/_next/image?url=https%3A%2F%2Fwww-cdn.anthropic.com%2Fimages%2F4zrzovbb%2Fwebsite%2Fcbdc2eac6dfb37cf596d8f9fb32783036b5737c2-2000x1125.jpg&w=3840&q=75)](https://www.anthropic.com/news/public-benefit-fund)### [Investing in the public benefit We’re committing a portion of Anthropic’s shares to the Anthropic Public Benefit Fund, a new entity with a structure that increases the stake as the company grows.](https://www.anthropic.com/news/public-benefit-fund)
+[Announcements](https://www.anthropic.com/news/announcements)
+
+Oct 26, 2026### [Anthropic files S-1 with the SEC for proposed initial public offering Today, Anthropic, PBC filed a registration statement on Form S-1 with the U.S. Securities and Exchange Commission relating to its proposed initial public offering of its Class A common stock.](https://www.anthropic.com/news/s1-sec)
+
+[Science](https://www.anthropic.com/science)
+
+Oct 27, 2026### [Early progress on accelerating drug development with Claude We're at the start of a major effort to speed up drug development with Claude. Over the past several months, our scientists have engaged in deep research partnerships with six organizations developing new medicines.](https://www.anthropic.com/research/early-progress-drug-development)
+[Announcements](https://www.anthropic.com/news/announcements)
+
+Oct 7, 2026### [Introducing Claude Haiku 5.5 Claude Haiku 5.5 is our fastest, most capable small model. Built for high-volume work like summarization, subagents, and browser use.](https://www.anthropic.com/claude-haiku-5-5)
+[Announcements](https://www.anthropic.com/news/announcements)
+
+Sep 28, 2026### [Introducing Claude Sonnet 5.5 Claude Sonnet 5.5 is a clear upgrade over Claude Sonnet 5, runs 30%+ faster, and costs up to 30% less for most work.](https://www.anthropic.com/claude-sonnet-5-5)
+
+Features
+
+*   [![Image 3: The Situation Report](https://www.anthropic.com/_next/image?url=https%3A%2F%2Fwww-cdn.anthropic.com%2Fimages%2F4zrzovbb%2Fwebsite%2Fe7cbb46184df120426bc360cf9c6410d0f6dbb7f-2000x1334.webp%3Ffm%3Dwebp&w=3840&q=75)](https://www.anthropic.com/features/ebola-response)
+*   [![Image 4: Scenarios for our economic future](https://www.anthropic.com/_next/image?url=https%3A%2F%2Fwww-cdn.anthropic.com%2Fimages%2F4zrzovbb%2Fwebsite%2Ffccf43cf4e36b0c26b4215861d909aadabbc32ce-1920x1080.png&w=3840&q=75)](https://www.anthropic.com/institute/econ-scenarios)
+*   [![Image 5: The making of Claude Code](https://www.anthropic.com/_next/image?url=https%3A%2F%2Fwww-cdn.anthropic.com%2Fimages%2F4zrzovbb%2Fwebsite
+
+=================== https://techcrunch.com/2026/11/03/anthropic-is-still-grappling-with-the-economics-of-compute/
+Title: Anthropic is still grappling with the economics of compute
+
+URL Source: https://techcrunch.com/2026/11/03/anthropic-is-still-grappling-with-the-economics-of-compute/
+
+Published Time: 2026-11-03T17:07:01+00:00
+
+Markdown Content:
+There’s a lot of mystery around the finances of major AI labs, and as Anthropic inches towards it IPO, we’re starting to get some answers. In particular, the company is finally disclosing more about the economics of compute, and how much of Anthropic’s skyrocketing revenue is being lost to compute costs.
+
+In [a new filing on Monday](https://www.sec.gov/Archives/edgar/data/2130357/000162828026068676/anthropicpbc-sx1ax1.htm#i199fd6a8a0664d5da497db9a78cf0452_79), Anthropic released data that showed those margins on compute actually getting worse. The filing was an update to [the S-1 released last week](https://www.sec.gov/Archives/edgar/data/2130357/000162828026067168/anthropicpbc-sx1.htm) — but where that filing’s financial disclosures only covered through June 30 of this year, the new data extended to disclose results through an extra quarter, to September 30. Broadly, Anthropic had a good quarter: revenue reached $17 billion, up from $11.5 billion in the previous quarter, suggesting durable growth. But the operating loss grew at the same time, thanks in large part to growing compute costs.
+
+Looking at the compute margins makes the picture even worse. In the new quarter, compute took up 58% of the company’s revenue, up from 48% the quarter before. At a moment when the company could win over IPO investors by showing margins improving, they’re getting worse.
+
+A chart in the filing shows this even more clearly, tracking the company’s revenue for every dollar spent on compute. Since the start of 2025, it’s been steadily growing, peaking at just over 2x this past quarter, then falling back down to 1.72x.
+
+![Image 1](https://techcrunch.com/wp-content/uploads/2026/11/image-2-1.png?w=680)
+
+**Image Credits:**Anthropic S-1 filing
+
+Many indications imply that this shift in compute margins is more of a blip than a long-term problem, but it still tells us important things about the business of running a major lab. Trying to keep up with demand, Anthropic’s compute bill shot up to $10 billion for the quarter, including, as the filing notes, “$5.0 billion of compute under short-term commitments, which currently costs significantly more than comparable compute procured under our multi-year commitments.” Basically, demand was growing so fast that Anthropic had to scramble for compute, which meant paying higher rates.
+
+Some of those deals have already played out in public. Anthropic [has been paying SpaceX](https://techcrunch.com/2026/05/20/anthropic-will-pay-xai-1-25-billion-per-month-for-compute/)$1.25 billion a month for compute, alongside multibillion-dollar deals with [Nscale](https://techcrunch.com/2026/08/26/anthropic-continues-compute-gobbling-streak-in-45-billion-deal-with-nscale/), [Akamai](https://techcrunch.com/2026/09/25/anthropic-to-pay-akamai-11-6-billion-over-seven-years-in-cloud-deal/), and [Volta](https://techcrunch.com/2026/08/04/anthropic-signs-10-billion-deal-with-ai-cloud-startup-volta/). In the parlance of the industry, these are neoclouds rather than hyperscalers — smaller outfits that offer more flexible compute deals at higher rates.
+
+Anthropic’s margins got worse in Q3 because of deals like these, and there’s no sign they’ll be able to do without them anytime soon. A
+

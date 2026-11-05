@@ -4538,6 +4538,10 @@ async fn try_run_turn(
                     _ => None,
                 };
                 if let Some((call_id, output)) = reflected_output {
+                    if reflected_function_outputs.contains_key(&call_id) {
+                        warn!(call_id, "duplicate reflected function output; ignoring terminal duplicate");
+                        continue;
+                    }
                     let matching_call = pending_turn_validated_items.iter().find_map(|pending| {
                         match &pending.item {
                             ResponseItem::FunctionCall {
@@ -4570,22 +4574,17 @@ async fn try_run_turn(
                     } else {
                         false
                     };
-                    if reflected_function_outputs
-                        .insert(
-                            call_id.clone(),
-                            ReflectedFunctionOutput {
-                                pending: PendingResponseItem {
-                                    item,
-                                    sequence_number,
-                                    output_index,
-                                },
-                                lifecycle_emitted,
+                    reflected_function_outputs.insert(
+                        call_id,
+                        ReflectedFunctionOutput {
+                            pending: PendingResponseItem {
+                                item,
+                                sequence_number,
+                                output_index,
                             },
-                        )
-                        .is_some()
-                    {
-                        warn!(call_id, "duplicate reflected function output; keeping latest");
-                    }
+                            lifecycle_emitted,
+                        },
+                    );
                     continue;
                 }
                 if should_handle_response_item_after_turn_validation(&item) {
