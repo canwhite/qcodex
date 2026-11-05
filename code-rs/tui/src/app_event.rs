@@ -611,12 +611,28 @@ pub(crate) enum AppEvent {
     #[allow(dead_code)]
     DiffResult(String),
 
-    InsertHistory(Vec<Line<'static>>),
-    InsertHistoryWithKind { id: Option<String>, kind: StreamKind, lines: Vec<Line<'static>> },
+    InsertHistory {
+        session_id: Option<Uuid>,
+        lines: Vec<Line<'static>>,
+    },
+    InsertHistoryWithKind {
+        session_id: Option<Uuid>,
+        id: Option<String>,
+        kind: StreamKind,
+        lines: Vec<Line<'static>>,
+    },
     /// Finalized assistant answer with raw markdown for re-rendering under theme changes.
-    InsertFinalAnswer { id: Option<String>, lines: Vec<Line<'static>>, source: String },
+    InsertFinalAnswer {
+        session_id: Option<Uuid>,
+        id: Option<String>,
+        lines: Vec<Line<'static>>,
+        source: String,
+    },
     /// Insert a background event with explicit placement semantics.
     InsertBackgroundEvent {
+        /// The conversation that owns this event. `None` is reserved for
+        /// application-wide notices that belong to the currently visible view.
+        session_id: Option<Uuid>,
         message: String,
         placement: BackgroundPlacement,
         order: Option<OrderMeta>,

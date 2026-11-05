@@ -19,30 +19,43 @@ pub(crate) trait HistorySink {
 }
 
 /// Concrete sink backed by `AppEventSender`.
-pub(crate) struct AppEventHistorySink(pub(crate) crate::app_event_sender::AppEventSender);
+pub(crate) struct AppEventHistorySink {
+    pub(crate) app_event_tx: crate::app_event_sender::AppEventSender,
+    pub(crate) session_id: Option<uuid::Uuid>,
+}
 
 impl HistorySink for AppEventHistorySink {
     fn insert_history(&self, lines: Vec<Line<'static>>) {
         tracing::debug!("sink.insert_history lines={}", lines.len());
-        self.0
-            .send(crate::app_event::AppEvent::InsertHistory(lines))
+        self.app_event_tx.send(crate::app_event::AppEvent::InsertHistory {
+            session_id: self.session_id,
+            lines,
+        })
     }
     fn insert_history_with_kind(&self, id: Option<String>, kind: StreamKind, lines: Vec<Line<'static>>) {
         tracing::debug!("sink.insert_history_with_kind kind={:?} id={:?} lines={}", kind, id, lines.len());
-        self.0
-            .send(crate::app_event::AppEvent::InsertHistoryWithKind { id, kind, lines })
+        self.app_event_tx.send(crate::app_event::AppEvent::InsertHistoryWithKind {
+            session_id: self.session_id,
+            id,
+            kind,
+            lines,
+        })
     }
     fn insert_final_answer(&self, id: Option<String>, lines: Vec<Line<'static>>, full_markdown_source: String) {
         tracing::debug!("sink.insert_final_answer id={:?} lines={} source_len={}", id, lines.len(), full_markdown_source.len());
-        self.0
-            .send(crate::app_event::AppEvent::InsertFinalAnswer { id, lines, source: full_markdown_source })
+        self.app_event_tx.send(crate::app_event::AppEvent::InsertFinalAnswer {
+            session_id: self.session_id,
+            id,
+            lines,
+            source: full_markdown_source,
+        })
     }
     fn start_commit_animation(&self) {
-        self.0
+        self.app_event_tx
             .send(crate::app_event::AppEvent::StartCommitAnimation)
     }
     fn stop_commit_animation(&self) {
-        self.0.send(crate::app_event::AppEvent::StopCommitAnimation)
+        self.app_event_tx.send(crate::app_event::AppEvent::StopCommitAnimation)
     }
 }
 

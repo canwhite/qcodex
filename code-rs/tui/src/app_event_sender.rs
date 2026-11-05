@@ -3,7 +3,6 @@ use std::sync::mpsc::Sender;
 use crate::app_event::{AppEvent, BackgroundPlacement};
 use crate::chatwidget::BackgroundOrderTicket;
 use crate::session_log;
-use code_core::protocol::OrderMeta;
 
 #[derive(Clone, Debug)]
 pub(crate) struct AppEventSender {
@@ -64,30 +63,17 @@ impl AppEventSender {
         }
     }
 
-    pub(crate) fn send_background_event_with_placement_and_order(
-        &self,
-        message: impl Into<String>,
-        placement: BackgroundPlacement,
-        order: Option<OrderMeta>,
-    ) {
-        self.send(AppEvent::InsertBackgroundEvent {
-            message: message.into(),
-            placement,
-            order,
-        });
-    }
-
     pub(crate) fn send_background_event_with_ticket(
         &self,
         ticket: &BackgroundOrderTicket,
         message: impl Into<String>,
     ) {
-        let order = ticket.next_order();
-        self.send_background_event_with_placement_and_order(
-            message,
-            BackgroundPlacement::Tail,
-            Some(order),
-        );
+        self.send(AppEvent::InsertBackgroundEvent {
+            session_id: Some(ticket.session_id()),
+            message: message.into(),
+            placement: BackgroundPlacement::Tail,
+            order: Some(ticket.next_order()),
+        });
     }
 
     pub(crate) fn send_background_before_next_output_with_ticket(
@@ -95,24 +81,12 @@ impl AppEventSender {
         ticket: &BackgroundOrderTicket,
         message: impl Into<String>,
     ) {
-        let order = ticket.next_order();
-        self.send_background_event_with_placement_and_order(
-            message,
-            BackgroundPlacement::BeforeNextOutput,
-            Some(order),
-        );
-    }
-
-    pub(crate) fn send_background_event_with_order(
-        &self,
-        message: impl Into<String>,
-        order: OrderMeta,
-    ) {
-        self.send_background_event_with_placement_and_order(
-            message,
-            BackgroundPlacement::Tail,
-            Some(order),
-        );
+        self.send(AppEvent::InsertBackgroundEvent {
+            session_id: Some(ticket.session_id()),
+            message: message.into(),
+            placement: BackgroundPlacement::BeforeNextOutput,
+            order: Some(ticket.next_order()),
+        });
     }
 
 }

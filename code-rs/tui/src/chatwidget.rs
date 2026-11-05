@@ -2228,6 +2228,10 @@ pub(crate) struct BackgroundOrderTicket {
 }
 
 impl BackgroundOrderTicket {
+    pub(crate) fn session_id(&self) -> uuid::Uuid {
+        self.session_id
+    }
+
     pub(crate) fn next_order(&self) -> code_core::protocol::OrderMeta {
         let seq = self.seq_counter.fetch_add(1, Ordering::SeqCst);
         code_core::protocol::OrderMeta {
@@ -3719,14 +3723,10 @@ impl ChatWidget<'_> {
         }
     }
 
-    fn background_tail_order_meta(&mut self) -> code_core::protocol::OrderMeta {
-        self.background_tail_order_ticket_internal().next_order()
-    }
-
     fn send_background_tail_ordered(&mut self, message: impl Into<String>) {
-        let order = self.background_tail_order_meta();
+        let ticket = self.background_tail_order_ticket_internal();
         self.app_event_tx
-            .send_background_event_with_order(message.into(), order);
+            .send_background_event_with_ticket(&ticket, message);
     }
 
     fn rebuild_ui_background_seq_counters(&mut self) {
@@ -4916,9 +4916,10 @@ impl ChatWidget<'_> {
                     let code_protocol::models::ReasoningItemReasoningSummary::SummaryText { text } =
                         s;
                     // Reasoning cell – use the existing reasoning output styling
-                    let sink = crate::streaming::controller::AppEventHistorySink(
-                        self.app_event_tx.clone(),
-                    );
+                    let sink = crate::streaming::controller::AppEventHistorySink {
+                        app_event_tx: self.app_event_tx.clone(),
+                        session_id: self.session_id,
+                    };
                     streaming::begin(self, StreamKind::Reasoning, None);
                     let _ = self.stream.apply_final_reasoning(&text, &sink);
                     // finalize immediately for static replay
@@ -6138,7 +6139,10 @@ impl ChatWidget<'_> {
             lines.push(ratatui::text::Line::from(""));
             lines.extend(self.export_transcript_lines_for_buffer());
             self.app_event_tx
-                .send(crate::app_event::AppEvent::InsertHistory(lines));
+                .send(crate::app_event::AppEvent::InsertHistory {
+                    session_id: self.session_id,
+                    lines,
+                });
         }
     }
 
@@ -14063,7 +14067,10 @@ impl ChatWidget<'_> {
 
                 // Route final message through streaming controller so AppEvent::InsertFinalAnswer
                 // is the single source of truth for assistant content.
-                let sink = AppEventHistorySink(self.app_event_tx.clone());
+                let sink = AppEventHistorySink {
+                    app_event_tx: self.app_event_tx.clone(),
+                    session_id: self.session_id,
+                };
                 streaming::begin(self, StreamKind::Answer, Some(id.clone()));
                 let _ = self.stream.apply_final_answer(&message, &sink);
 
@@ -14280,7 +14287,10 @@ impl ChatWidget<'_> {
                 tracing::info!("[order] EventMsg::AgentReasoning id={} key={:?}", id, ok);
                 self.seed_stream_order_key(StreamKind::Reasoning, &id, ok);
                 // Use StreamController for final reasoning
-                let sink = AppEventHistorySink(self.app_event_tx.clone());
+                let sink = AppEventHistorySink {
+                    app_event_tx: self.app_event_tx.clone(),
+                    session_id: self.session_id,
+                };
                 streaming::begin(self, StreamKind::Reasoning, Some(id.clone()));
 
                 // The StreamController now properly handles duplicate detection and prevents
@@ -14362,7 +14372,10 @@ impl ChatWidget<'_> {
                     return;
                 }
                 // Insert section break in reasoning stream
-                let sink = AppEventHistorySink(self.app_event_tx.clone());
+                let sink = AppEventHistorySink {
+                    app_event_tx: self.app_event_tx.clone(),
+                    session_id: self.session_id,
+                };
                 self.stream.insert_reasoning_section_break(&sink);
             }
             EventMsg::TaskStarted => {
@@ -14594,7 +14607,10 @@ impl ChatWidget<'_> {
                 };
                 self.seed_stream_order_key(StreamKind::Reasoning, &id, ok);
                 // Use StreamController for final raw reasoning
-                let sink = AppEventHistorySink(self.app_event_tx.clone());
+                let sink = AppEventHistorySink {
+                    app_event_tx: self.app_event_tx.clone(),
+                    session_id: self.session_id,
+                };
                 streaming::begin(self, StreamKind::Reasoning, Some(id.clone()));
                 let _finished = self.stream.apply_final_reasoning(&text, &sink);
                 // Stream finishing is handled by StreamController
@@ -27497,7 +27513,10 @@ Have we met every part of this goal and is there no further work to do?"#
             lines.push(ratatui::text::Line::from(""));
             lines.extend(self.export_transcript_lines_for_buffer());
             self.app_event_tx
-                .send(crate::app_event::AppEvent::InsertHistory(lines));
+                .send(crate::app_event::AppEvent::InsertHistory {
+                    session_id: self.session_id,
+                    lines,
+                });
         }
     }
 
@@ -31281,6 +31300,49 @@ use code_core::protocol::OrderMeta;
         assert!(chat.side_return_shortcut_available());
         chat.set_composer_text("unfinished draft".to_string());
         assert!(chat.side_return_shortcut_available());
+    }
+
+    #[test]
+    fn background_ticket_keeps_its_conversation_id() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        let session_id = uuid::Uuid::new_v4();
+        chat.session_id = Some(session_id);
+
+        let ticket = chat.make_background_tail_ticket();
+        chat.app_event_tx
+            .send_background_event_with_ticket(&ticket, "parent background event");
+
+        assert!(harness.drain_events().iter().any(|event| matches!(
+            event,
+            AppEvent::InsertBackgroundEvent {
+                session_id: Some(event_session_id),
+                message,
+                ..
+            } if *event_session_id == session_id && message == "parent background event"
+        )));
+    }
+
+    #[test]
+    fn streaming_history_sink_keeps_its_conversation_id() {
+        use crate::streaming::controller::HistorySink;
+
+        let mut harness = ChatWidgetHarness::new();
+        let session_id = uuid::Uuid::new_v4();
+        let sink = AppEventHistorySink {
+            app_event_tx: harness.chat().app_event_tx.clone(),
+            session_id: Some(session_id),
+        };
+
+        sink.insert_history(vec![Line::from("parent stream")]);
+
+        assert!(harness.drain_events().iter().any(|event| matches!(
+            event,
+            AppEvent::InsertHistory {
+                session_id: Some(event_session_id),
+                ..
+            } if *event_session_id == session_id
+        )));
     }
 
     #[test]

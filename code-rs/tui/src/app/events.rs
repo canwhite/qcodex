@@ -254,6 +254,77 @@ where
 }
 
 impl App<'_> {
+    fn with_session_widget(
+        &mut self,
+        session_id: Option<uuid::Uuid>,
+        action: impl FnOnce(&mut ChatWidget<'_>),
+    ) -> bool {
+        let Some(session_id) = session_id else {
+            if let AppState::Chat { widget } = &mut self.app_state {
+                action(widget);
+                return true;
+            }
+            return false;
+        };
+
+        match &mut self.side_conversation {
+            SideConversationState::Active {
+                child_session_id,
+                child,
+                focused,
+                ..
+            } if *child_session_id == session_id => match focused {
+                SideConversationFocus::Side => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        action(widget);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                SideConversationFocus::Parent => {
+                    if let Some(child) = child.as_mut() {
+                        action(child);
+                        false
+                    } else {
+                        false
+                    }
+                }
+            },
+            SideConversationState::Active { parent, focused, .. } => match focused {
+                SideConversationFocus::Side => {
+                    if let Some(parent) = parent.as_mut()
+                        && parent.session_id() == Some(session_id)
+                    {
+                        action(parent);
+                    }
+                    false
+                }
+                SideConversationFocus::Parent => {
+                    if let AppState::Chat { widget } = &mut self.app_state
+                        && widget.session_id() == Some(session_id)
+                    {
+                        action(widget);
+                        return true;
+                    }
+                    false
+                }
+            },
+            SideConversationState::Idle
+            | SideConversationState::Forking { .. }
+            | SideConversationState::Closing { .. } => {
+                if let AppState::Chat { widget } = &mut self.app_state
+                    && widget.session_id() == Some(session_id)
+                {
+                    action(widget);
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
     fn return_from_side(&mut self) {
         let (parent, request_id, child_session_id, child_cleanup) =
             match &mut self.side_conversation {
@@ -440,77 +511,134 @@ impl App<'_> {
         'main: loop {
             let event = match self.next_event_priority() { Some(e) => e, None => break 'main };
             match event {
-                AppEvent::InsertHistory(mut lines) => match &mut self.app_state {
-                    AppState::Chat { widget } => {
-                        // Coalesce consecutive InsertHistory events to reduce redraw churn.
-                        while let Ok(AppEvent::InsertHistory(mut more)) = self.app_event_rx_bulk.try_recv() {
-                            lines.append(&mut more);
-                        }
-                        tracing::debug!("app: InsertHistory lines={}", lines.len());
-                        if self.alt_screen_active {
-                            widget.insert_history_lines(lines)
-                        } else {
-                            use std::io::stdout;
-                            // Compute desired bottom height now, so growing/shrinking input
-                            // adjusts the reserved region immediately even before the next frame.
-                            let width = terminal.size().map(|s| s.width).unwrap_or(80);
-                            let reserve = widget.desired_bottom_height(width).max(1);
-                            let _ = execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
-                            crate::insert_history::insert_history_lines_above(terminal, reserve, lines);
-                            let _ = execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate);
-                            self.schedule_redraw();
-                        }
-                    },
-                    AppState::Onboarding { .. } => {}
-                },
-                AppEvent::InsertHistoryWithKind { id, kind, lines } => match &mut self.app_state {
-                    AppState::Chat { widget } => {
-                        tracing::debug!("app: InsertHistoryWithKind kind={:?} id={:?} lines={}", kind, id, lines.len());
-                        // Always update widget history, even in terminal mode.
-                        // In terminal mode, the widget will emit an InsertHistory event
-                        // which we will mirror to scrollback in the handler above.
-                        let to_mirror = lines.clone();
-                        widget.insert_history_lines_with_kind(kind, id, lines);
-                        if !self.alt_screen_active {
-                            use std::io::stdout;
-                            let width = terminal.size().map(|s| s.width).unwrap_or(80);
-                            let reserve = widget.desired_bottom_height(width).max(1);
-                            let _ = execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
-                            crate::insert_history::insert_history_lines_above(terminal, reserve, to_mirror);
-                            let _ = execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate);
-                            self.schedule_redraw();
-                        }
-                    },
-                    AppState::Onboarding { .. } => {}
-                },
-                AppEvent::InsertFinalAnswer { id, lines, source } => match &mut self.app_state {
-                    AppState::Chat { widget } => {
-                        tracing::debug!("app: InsertFinalAnswer id={:?} lines={} source_len={}", id, lines.len(), source.len());
-                        let to_mirror = lines.clone();
-                        widget.insert_final_answer_with_id(id, lines, source);
-                        if !self.alt_screen_active {
-                            use std::io::stdout;
-                            let width = terminal.size().map(|s| s.width).unwrap_or(80);
-                            let reserve = widget.desired_bottom_height(width).max(1);
-                            let _ = execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
-                            crate::insert_history::insert_history_lines_above(terminal, reserve, to_mirror);
-                            let _ = execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate);
-                            self.schedule_redraw();
-                        }
-                    },
-                    AppState::Onboarding { .. } => {}
-                },
-                AppEvent::InsertBackgroundEvent { message, placement, order } => match &mut self.app_state {
-                    AppState::Chat { widget } => {
-                        tracing::debug!(
-                            "app: InsertBackgroundEvent placement={:?} len={}",
-                            placement,
-                            message.len()
-                        );
-                        widget.insert_background_event_with_placement(message, placement, order);
+                AppEvent::InsertHistory { session_id, lines } => {
+                    let to_mirror = lines.clone();
+                    let visible = self.with_session_widget(session_id, |widget| {
+                        widget.insert_history_lines(lines);
+                    });
+                    if visible && !self.alt_screen_active {
+                        use std::io::stdout;
+                        let width = terminal.size().map(|s| s.width).unwrap_or(80);
+                        let reserve = match &self.app_state {
+                            AppState::Chat { widget } => widget.desired_bottom_height(width).max(1),
+                            AppState::Onboarding { .. } => 1,
+                        };
+                        let _ = execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
+                        crate::insert_history::insert_history_lines_above(terminal, reserve, to_mirror);
+                        let _ = execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate);
+                        self.schedule_redraw();
                     }
-                    AppState::Onboarding { .. } => {}
-                },
+                }
+                AppEvent::InsertHistoryWithKind { session_id, id, kind, lines } => {
+                    tracing::debug!("app: InsertHistoryWithKind kind={:?} id={:?} lines={}", kind, id, lines.len());
+                    let to_mirror = lines.clone();
+                    let visible = self.with_session_widget(session_id, |widget| {
+                        widget.insert_history_lines_with_kind(kind, id, lines);
+                    });
+                    if visible && !self.alt_screen_active {
+                        use std::io::stdout;
+                        let width = terminal.size().map(|s| s.width).unwrap_or(80);
+                        let reserve = match &self.app_state {
+                            AppState::Chat { widget } => widget.desired_bottom_height(width).max(1),
+                            AppState::Onboarding { .. } => 1,
+                        };
+                        let _ = execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
+                        crate::insert_history::insert_history_lines_above(terminal, reserve, to_mirror);
+                        let _ = execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate);
+                        self.schedule_redraw();
+                    }
+                }
+                AppEvent::InsertFinalAnswer { session_id, id, lines, source } => {
+                    tracing::debug!("app: InsertFinalAnswer id={:?} lines={} source_len={}", id, lines.len(), source.len());
+                    let to_mirror = lines.clone();
+                    let visible = self.with_session_widget(session_id, |widget| {
+                        widget.insert_final_answer_with_id(id, lines, source);
+                    });
+                    if visible && !self.alt_screen_active {
+                        use std::io::stdout;
+                        let width = terminal.size().map(|s| s.width).unwrap_or(80);
+                        let reserve = match &self.app_state {
+                            AppState::Chat { widget } => widget.desired_bottom_height(width).max(1),
+                            AppState::Onboarding { .. } => 1,
+                        };
+                        let _ = execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
+                        crate::insert_history::insert_history_lines_above(terminal, reserve, to_mirror);
+                        let _ = execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate);
+                        self.schedule_redraw();
+                    }
+                }
+                AppEvent::InsertBackgroundEvent { session_id, message, placement, order } => {
+                    tracing::debug!(
+                        ?session_id,
+                        "app: InsertBackgroundEvent placement={:?} len={}",
+                        placement,
+                        message.len()
+                    );
+                    let insert = |widget: &mut ChatWidget<'_>| {
+                        widget.insert_background_event_with_placement(message, placement, order);
+                    };
+                    match session_id {
+                        None => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                insert(widget);
+                            }
+                        }
+                        Some(session_id) => match &mut self.side_conversation {
+                            SideConversationState::Active {
+                                child_session_id,
+                                child,
+                                focused,
+                                ..
+                            } if *child_session_id == session_id => match focused {
+                                SideConversationFocus::Side => {
+                                    if let AppState::Chat { widget } = &mut self.app_state {
+                                        insert(widget);
+                                    }
+                                }
+                                SideConversationFocus::Parent => {
+                                    if let Some(child) = child.as_mut() {
+                                        insert(child);
+                                    }
+                                }
+                            },
+                            SideConversationState::Active { parent, focused, .. } => {
+                                let parent_matches = match focused {
+                                    SideConversationFocus::Side => parent
+                                        .as_ref()
+                                        .is_some_and(|widget| widget.session_id() == Some(session_id)),
+                                    SideConversationFocus::Parent => matches!(
+                                        &self.app_state,
+                                        AppState::Chat { widget }
+                                            if widget.session_id() == Some(session_id)
+                                    ),
+                                };
+                                if parent_matches {
+                                    match focused {
+                                        SideConversationFocus::Side => {
+                                            if let Some(parent) = parent.as_mut() {
+                                                insert(parent);
+                                            }
+                                        }
+                                        SideConversationFocus::Parent => {
+                                            if let AppState::Chat { widget } = &mut self.app_state {
+                                                insert(widget);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            SideConversationState::Idle
+                            | SideConversationState::Forking { .. }
+                            | SideConversationState::Closing { .. } => {
+                                if let AppState::Chat { widget } = &mut self.app_state
+                                    && widget.session_id() == Some(session_id)
+                                {
+                                    insert(widget);
+                                }
+                            }
+                        },
+                    }
+                }
                 AppEvent::AutoUpgradeCompleted { version } => match &mut self.app_state {
                     AppState::Chat { widget } => widget.on_auto_upgrade_completed(version),
                     AppState::Onboarding { .. } => {}
@@ -2684,6 +2812,7 @@ impl App<'_> {
                             Ok(messages) if !messages.is_empty() => {
                                 let joined = messages.join("\n\n");
                                 tx.send(AppEvent::InsertBackgroundEvent {
+                                    session_id: None,
                                     message: format!("Cloud task output for {task_id}:\n{joined}"),
                                     placement: crate::app_event::BackgroundPlacement::Tail,
                                     order: None,

@@ -344,7 +344,7 @@ pub mod test_helpers {
                 events.iter().any(|event| {
                     matches!(
                         event,
-                        AppEvent::InsertHistory(_)
+                        AppEvent::InsertHistory { .. }
                             | AppEvent::InsertHistoryWithKind { .. }
                             | AppEvent::InsertFinalAnswer { .. }
                     )

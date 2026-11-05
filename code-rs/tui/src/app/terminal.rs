@@ -527,7 +527,10 @@ impl App<'_> {
                     // Best-effort: compute current width and bottom reservation.
                     // We don't have `terminal` here; schedule a one-shot redraw event
                     // that carries the transcript via InsertHistory to reuse the normal path.
-                    self.app_event_tx.send(AppEvent::InsertHistory(transcript));
+                    self.app_event_tx.send(AppEvent::InsertHistory {
+                        session_id: None,
+                        lines: transcript,
+                    });
                 }
             }
             // Ensure the input is painted in its reserved region immediately.

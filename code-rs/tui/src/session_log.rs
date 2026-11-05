@@ -313,7 +313,7 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
             LOGGER.write_json_line(value);
         }
         // Internal UI events; still log for fidelity, but avoid heavy payloads.
-        AppEvent::InsertHistory(lines) => {
+        AppEvent::InsertHistory { lines, .. } => {
             let value = json!({
                 "ts": now_ts(),
                 "dir": "to_tui",

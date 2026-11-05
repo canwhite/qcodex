@@ -6,7 +6,7 @@ use crate::streaming::controller::AppEventHistorySink;
 use crate::streaming::StreamKind;
 
 pub(super) fn on_commit_tick(chat: &mut ChatWidget<'_>) {
-    let sink = AppEventHistorySink(chat.app_event_tx.clone());
+    let sink = AppEventHistorySink { app_event_tx: chat.app_event_tx.clone(), session_id: chat.session_id };
     let _finished = chat.stream.on_commit_tick(&sink);
     chat.maybe_enforce_queue_unblock();
 }
@@ -20,14 +20,14 @@ pub(super) fn is_write_cycle_active(chat: &ChatWidget<'_>) -> bool {
 // New facade: begin a stream for a kind, with optional id
 pub(super) fn begin(chat: &mut ChatWidget<'_>, kind: StreamKind, id: Option<String>) {
     chat.stream_state.current_kind = Some(kind);
-    let sink = AppEventHistorySink(chat.app_event_tx.clone());
+    let sink = AppEventHistorySink { app_event_tx: chat.app_event_tx.clone(), session_id: chat.session_id };
     chat.stream.begin_with_id(kind, id, &sink);
 }
 
 // New facade: apply a delta (ensures begin is called for this id/kind)
 pub(super) fn delta_text(chat: &mut ChatWidget<'_>, kind: StreamKind, id: String, delta: String, seq: Option<u64>) {
     chat.stream_state.current_kind = Some(kind);
-    let sink = AppEventHistorySink(chat.app_event_tx.clone());
+    let sink = AppEventHistorySink { app_event_tx: chat.app_event_tx.clone(), session_id: chat.session_id };
     let stream_id = id.clone();
     chat.stream.begin_with_id(kind, Some(id), &sink);
     chat.stream.set_last_sequence_number(kind, seq);
@@ -40,7 +40,7 @@ pub(super) fn delta_text(chat: &mut ChatWidget<'_>, kind: StreamKind, id: String
 
 // New facade: finalize a specific kind and optionally follow bottom
 pub(super) fn finalize(chat: &mut ChatWidget<'_>, kind: StreamKind, follow_bottom: bool) {
-    let sink = AppEventHistorySink(chat.app_event_tx.clone());
+    let sink = AppEventHistorySink { app_event_tx: chat.app_event_tx.clone(), session_id: chat.session_id };
     chat.stream_state.current_kind = Some(kind);
     chat.stream.finalize(kind, follow_bottom, &sink);
 }

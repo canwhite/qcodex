@@ -152,16 +152,16 @@ impl ChatWidgetHarness {
 
         while let Some(event) = queue.pop_front() {
             match event {
-                AppEvent::InsertHistory(lines) => {
+                AppEvent::InsertHistory { lines, .. } => {
                     self.chat.insert_history_lines(lines);
                 }
-                AppEvent::InsertHistoryWithKind { id, kind, lines } => {
+                AppEvent::InsertHistoryWithKind { id, kind, lines, .. } => {
                     self.chat.insert_history_lines_with_kind(kind, id, lines);
                 }
-                AppEvent::InsertFinalAnswer { id, lines, source } => {
+                AppEvent::InsertFinalAnswer { id, lines, source, .. } => {
                     self.chat.insert_final_answer_with_id(id, lines, source);
                 }
-                AppEvent::InsertBackgroundEvent { message, placement, order } => {
+                AppEvent::InsertBackgroundEvent { message, placement, order, .. } => {
                     self.chat
                         .insert_background_event_with_placement(message, placement, order);
                 }
@@ -815,7 +815,7 @@ pub fn assert_has_insert_history(events: &[AppEvent]) {
     let found = events.iter().any(|event| {
         matches!(
             event,
-            AppEvent::InsertHistory(_) | AppEvent::InsertHistoryWithKind { .. } | AppEvent::InsertFinalAnswer { .. }
+            AppEvent::InsertHistory { .. } | AppEvent::InsertHistoryWithKind { .. } | AppEvent::InsertFinalAnswer { .. }
         ) || matches!(
             event,
             AppEvent::CodexEventForConversation { event: ev, .. }
