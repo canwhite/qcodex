@@ -287,6 +287,13 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
             {
                 let mut header_lines = Vec::new();
                 if self.emit_header_if_needed(kind, &mut header_lines) {
+                    // A reasoning stream needs a history cell immediately so the
+                    // collapsed projection can show "Thinking…" before a complete
+                    // markdown line is available. The blank line is only a cell
+                    // seed; CollapsibleReasoningCell never renders it as content.
+                    if matches!(kind, StreamKind::Reasoning) && !self.config.tui.show_reasoning {
+                        header_lines.push(Line::default());
+                    }
                     // Always associate header lines with the active stream id so
                     // the TUI can enforce strict per-stream ordering.
                     sink.insert_history_with_kind(self.current_stream_id.clone(), kind, header_lines);

@@ -118,6 +118,113 @@ fn seed_reasoning_stream_only(harness: &mut ChatWidgetHarness) {
 }
 
 #[test]
+fn collapsed_reasoning_shows_thinking_status_and_expands_on_demand() {
+    const PRIVATE_THOUGHT: &str = "PRIVATE-THINK-CONTENT";
+    let mut harness = ChatWidgetHarness::new();
+    harness.push_user_prompt("Think before answering.");
+
+    harness.handle_event(Event {
+        id: "think-status-stream".into(),
+        event_seq: 1,
+        msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+            delta: format!("{PRIVATE_THOUGHT}\n"),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(0),
+        }),
+    });
+    harness.flush_into_widget();
+
+    let streaming = render_chat_widget_to_vt100(&mut harness, 80, 18);
+    assert!(
+        streaming.contains("Thinking…"),
+        "collapsed live reasoning should show an active Thinking status:\n{streaming}"
+    );
+    assert!(
+        !streaming.contains(PRIVATE_THOUGHT),
+        "collapsed live reasoning must not show raw thought:\n{streaming}"
+    );
+
+    harness.handle_event(Event {
+        id: "think-status-stream".into(),
+        event_seq: 2,
+        msg: EventMsg::AgentReasoning(AgentReasoningEvent {
+            text: PRIVATE_THOUGHT.into(),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(1),
+        }),
+    });
+    harness.flush_into_widget();
+    for _ in 0..=PRIVATE_THOUGHT.len() {
+        harness.drive_commit_tick();
+    }
+
+    let collapsed = render_chat_widget_to_vt100(&mut harness, 80, 18);
+    assert!(
+        collapsed.contains("Thinking"),
+        "completed collapsed reasoning should retain a compact affordance:\n{collapsed}"
+    );
+    assert!(
+        !collapsed.contains("Thinking…"),
+        "completed collapsed reasoning must not remain active:\n{collapsed}"
+    );
+    assert!(
+        !collapsed.contains(PRIVATE_THOUGHT),
+        "completed collapsed reasoning must not show raw thought:\n{collapsed}"
+    );
+
+    harness.toggle_reasoning_visibility();
+    let expanded = render_chat_widget_to_vt100(&mut harness, 80, 18);
+    assert!(
+        expanded.contains(PRIVATE_THOUGHT),
+        "Ctrl+R should reveal the retained reasoning content:\n{expanded}"
+    );
+}
+
+#[test]
+fn empty_reasoning_events_do_not_create_a_thinking_row() {
+    let mut harness = ChatWidgetHarness::new();
+    harness.push_user_prompt("Do not show an empty thought.");
+
+    harness.handle_event(Event {
+        id: "empty-reasoning-delta".into(),
+        event_seq: 1,
+        msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+            delta: String::new(),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(0),
+        }),
+    });
+    harness.handle_event(Event {
+        id: "empty-reasoning-final".into(),
+        event_seq: 2,
+        msg: EventMsg::AgentReasoning(AgentReasoningEvent {
+            text: String::new(),
+        }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(1),
+        }),
+    });
+    harness.flush_into_widget();
+
+    let output = render_chat_widget_to_vt100(&mut harness, 80, 18);
+    assert!(
+        !output.contains("Thinking"),
+        "empty reasoning events must not create a compact row or status:\n{output}"
+    );
+}
+
+#[test]
 fn collapsed_reasoning_before_exec_keeps_last_line() {
     let mut harness = ChatWidgetHarness::new();
 

@@ -294,6 +294,11 @@ impl ChatWidgetHarness {
         self.flush_into_widget();
     }
 
+    pub fn toggle_reasoning_visibility(&mut self) {
+        self.chat.toggle_reasoning_visibility();
+        self.flush_into_widget();
+    }
+
     pub(crate) fn drain_events(&self) -> Vec<AppEvent> {
         let mut out = Vec::new();
         while let Ok(ev) = self.events.try_recv() {

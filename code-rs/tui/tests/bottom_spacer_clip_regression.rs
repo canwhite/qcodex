@@ -1,7 +1,6 @@
 #![cfg(test)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use regex_lite::Regex;
 use std::sync::OnceLock;
 use code_core::protocol::{
@@ -35,13 +34,17 @@ fn bottom_spacer_overflow_wrapped_content_100x30() {
 fn bottom_spacer_collapsed_vs_expanded_reasoning_120x40() {
     let mut harness = ChatWidgetHarness::new();
     seed_reasoning_transcript(&mut harness);
+    harness.flush_into_widget();
+    for _ in 0..64 {
+        harness.drive_commit_tick();
+    }
 
+    harness.toggle_reasoning_visibility();
     let expanded_raw = render_chat_widget_to_vt100(&mut harness, 120, 40);
     assert_viewport_invariants(&expanded_raw, 40);
     let expanded = normalize_output(expanded_raw);
 
-    // Toggle reasoning visibility (Ctrl+R)
-    harness.send_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    harness.toggle_reasoning_visibility();
     let collapsed_raw = render_chat_widget_to_vt100(&mut harness, 120, 40);
     assert_viewport_invariants(&collapsed_raw, 40);
     let collapsed = normalize_output(collapsed_raw);

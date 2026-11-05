@@ -889,6 +889,8 @@ Setting `hide_agent_reasoning` to `true` suppresses these events in **both** the
 hide_agent_reasoning = true   # defaults to false
 ```
 
+When reasoning is visible, the TUI keeps it in a single collapsed `Thinking` row by default. The row shows `Thinking…` while content is streaming; press Ctrl+R to expand or collapse the retained reasoning content.
+
 ## show_raw_agent_reasoning
 
 Surfaces the model’s raw chain-of-thought ("raw reasoning content") when available.

@@ -3978,17 +3978,27 @@ impl ChatWidget<'_> {
         }
     }
 
-    // After inserting a non‑reasoning cell during streaming, restore the
-    // in‑progress indicator on the latest reasoning cell so the ellipsis
-    // remains visible while the model continues.
+    // After inserting a non-reasoning cell during an active reasoning stream,
+    // restore the indicator for that exact stream only. A final event may have
+    // closed the id while its animation is still draining, so never reopen it.
     fn restore_reasoning_in_progress_if_streaming(&mut self) {
-        if !self.stream.is_write_cycle_active() {
+        if self.stream.current_stream() != Some(StreamKind::Reasoning) {
+            return;
+        }
+        let Some(stream_id) = self.stream.current_stream_id().cloned() else {
+            return;
+        };
+        if self
+            .stream_state
+            .closed_reasoning_ids
+            .contains(&StreamId(stream_id.clone()))
+        {
             return;
         }
         if let Some(idx) = self.history_cells.iter().rposition(|c| {
             c.as_any()
                 .downcast_ref::<crate::history_cell::CollapsibleReasoningCell>()
-                .is_some()
+                .is_some_and(|reasoning| reasoning.matches_id(&stream_id))
         })
             && let Some(rc) = self.history_cells[idx]
                 .as_any()
@@ -5114,33 +5124,13 @@ impl ChatWidget<'_> {
     }
 
     fn clear_reasoning_in_progress(&mut self) {
-        let last_reasoning_index = self
-            .history_cells
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(idx, cell)| {
-                cell.as_any()
-                    .downcast_ref::<history_cell::CollapsibleReasoningCell>()
-                    .map(|_| idx)
-            });
-
         let mut changed = false;
-        for (idx, cell) in self.history_cells.iter().enumerate() {
+        for cell in &self.history_cells {
             if let Some(reasoning_cell) = cell
                 .as_any()
                 .downcast_ref::<history_cell::CollapsibleReasoningCell>()
             {
                 if !reasoning_cell.is_in_progress() {
-                    continue;
-                }
-
-                let keep_in_progress = !self.config.tui.show_reasoning
-                    && Some(idx) == last_reasoning_index
-                    && reasoning_cell.is_collapsed()
-                    && !reasoning_cell.collapsed_has_summary();
-
-                if keep_in_progress {
                     continue;
                 }
 
@@ -5179,30 +5169,16 @@ impl ChatWidget<'_> {
     }
 
     fn refresh_reasoning_collapsed_visibility(&mut self) {
-        let show = self.config.tui.show_reasoning;
+        let collapsed = !self.config.tui.show_reasoning;
         let mut needs_invalidate = false;
-        if show {
-            for cell in &self.history_cells {
-                if let Some(reasoning_cell) = cell
-                    .as_any()
-                    .downcast_ref::<history_cell::CollapsibleReasoningCell>()
-                    && reasoning_cell.set_hide_when_collapsed(false) {
-                        needs_invalidate = true;
-                }
-            }
-        } else {
-            // Completed reasoning remains available through the explicit reasoning
-            // view and persisted history, but compact scrollback mirrors Codex by
-            // omitting it entirely instead of retaining one summary per run.
-            for cell in &self.history_cells {
-                if let Some(reasoning_cell) = cell
-                    .as_any()
-                    .downcast_ref::<history_cell::CollapsibleReasoningCell>()
-                {
-                    if reasoning_cell.set_hide_when_collapsed(true) {
-                        needs_invalidate = true;
-                    }
-                }
+        for cell in &self.history_cells {
+            if let Some(reasoning_cell) = cell
+                .as_any()
+                .downcast_ref::<history_cell::CollapsibleReasoningCell>()
+                && reasoning_cell.is_collapsed() != collapsed
+            {
+                reasoning_cell.set_collapsed(collapsed);
+                needs_invalidate = true;
             }
         }
 
@@ -14263,6 +14239,12 @@ impl ChatWidget<'_> {
                     self.stop_spinner();
                     return;
                 }
+                if text.is_empty()
+                    && self.stream.current_stream() != Some(StreamKind::Reasoning)
+                {
+                    tracing::debug!("Ignoring empty AgentReasoning without an active reasoning stream");
+                    return;
+                }
                 tracing::debug!(
                     "AgentReasoning event with text: {:?}...",
                     text.chars().take(100).collect::<String>()
@@ -14324,6 +14306,10 @@ impl ChatWidget<'_> {
                 if self.stream_state.drop_streaming {
                     tracing::debug!("Ignoring Reasoning delta after interrupt");
                     self.stop_spinner();
+                    return;
+                }
+                if delta.is_empty() {
+                    tracing::debug!("Ignoring empty AgentReasoningDelta");
                     return;
                 }
                 if self.strict_stream_ids_enabled() && id.trim().is_empty() {
@@ -26552,6 +26538,11 @@ Have we met every part of this goal and is there no further work to do?"#
                 // Update footer label to reflect current visibility state
                 self.bottom_pane
                     .set_reasoning_state(self.is_reasoning_shown());
+                let reasoning_is_complete = id.as_ref().is_some_and(|rid| {
+                    self.stream_state
+                        .closed_reasoning_ids
+                        .contains(&StreamId(rid.clone()))
+                });
                 // Route by id when provided to avoid splitting reasoning across cells.
                 // Be defensive: the cached index may be stale after inserts/removals; validate it.
                 if let Some(ref rid) = id
@@ -26567,7 +26558,7 @@ Have we met every part of this goal and is there no further work to do?"#
                                     rid
                                 );
                                 reasoning_cell.append_lines_dedup(lines);
-                                reasoning_cell.set_in_progress(true);
+                                reasoning_cell.set_in_progress(!reasoning_is_complete);
                                 self.invalidate_height_cache();
                                 self.autoscroll_if_near_bottom();
                                 self.request_redraw();
@@ -26593,7 +26584,7 @@ Have we met every part of this goal and is there no further work to do?"#
                                     rid
                                 );
                                 reasoning_cell.append_lines_dedup(lines);
-                                reasoning_cell.set_in_progress(true);
+                                reasoning_cell.set_in_progress(!reasoning_is_complete);
                                 self.invalidate_height_cache();
                                 self.autoscroll_if_near_bottom();
                                 self.request_redraw();
@@ -26613,7 +26604,7 @@ Have we met every part of this goal and is there no further work to do?"#
                 } else {
                     cell.set_collapsed(true);
                 }
-                cell.set_in_progress(true);
+                cell.set_in_progress(!reasoning_is_complete);
 
                 // Use pre-seeded key for this stream id when present; otherwise synthesize.
                 let key = match id.as_deref() {
@@ -34907,7 +34898,7 @@ use code_core::protocol::OrderMeta;
     }
 
     #[test]
-    fn reasoning_collapse_hides_completed_titles_in_consecutive_runs() {
+    fn reasoning_collapse_keeps_completed_entries_visible_in_consecutive_runs() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
 
@@ -34941,18 +34932,23 @@ use code_core::protocol::OrderMeta;
 
         assert_eq!(reasoning_cells.len(), 2, "expected exactly two reasoning cells");
 
-        assert!(
-            reasoning_cells[0].display_lines().is_empty(),
-            "intermediate reasoning should hide when collapsed after agent anchor",
-        );
-        assert!(
-            reasoning_cells[1].display_lines().is_empty(),
-            "completed reasoning should not remain in compact history",
-        );
+        for reasoning_cell in reasoning_cells {
+            let compact_lines = reasoning_cell.display_lines();
+            assert_eq!(compact_lines.len(), 1, "collapsed reasoning needs one compact row");
+            assert_eq!(
+                compact_lines[0]
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+                "Thinking",
+                "collapsed reasoning must not expose its raw content",
+            );
+        }
     }
 
     #[test]
-    fn reasoning_collapse_hides_completed_titles_without_anchor_cells() {
+    fn reasoning_collapse_keeps_completed_entries_visible_without_anchor_cells() {
         let mut harness = ChatWidgetHarness::new();
         let chat = harness.chat();
 
@@ -34983,13 +34979,38 @@ use code_core::protocol::OrderMeta;
 
         assert_eq!(reasoning_cells.len(), 2, "expected exactly two reasoning cells");
 
-        assert!(
-            reasoning_cells[0].display_lines().is_empty(),
-            "intermediate reasoning should hide when collapsed without an anchor",
+        for reasoning_cell in reasoning_cells {
+            let compact_lines = reasoning_cell.display_lines();
+            assert_eq!(compact_lines.len(), 1, "collapsed reasoning needs one compact row");
+            assert_eq!(
+                compact_lines[0]
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+                "Thinking",
+            );
+        }
+    }
+
+    #[test]
+    fn collapsed_reasoning_uses_thinking_status_while_streaming() {
+        let cell = history_cell::CollapsibleReasoningCell::new_with_id(
+            vec![Line::from("private stream content".to_string())],
+            Some("reasoning-stream".to_string()),
         );
-        assert!(
-            reasoning_cells[1].display_lines().is_empty(),
-            "completed reasoning should not remain in compact history",
+        cell.set_in_progress(true);
+
+        let compact_lines = cell.display_lines();
+        assert_eq!(compact_lines.len(), 1);
+        assert_eq!(
+            compact_lines[0]
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            "Thinking…",
+            "active collapsed reasoning must expose status, not private content",
         );
     }
 
@@ -35010,10 +35031,16 @@ use code_core::protocol::OrderMeta;
             .iter()
             .find_map(|cell| cell.as_any().downcast_ref::<history_cell::CollapsibleReasoningCell>())
             .expect("reasoning cell should be present");
-        assert!(collapsed.display_lines().is_empty());
+        assert_eq!(
+            collapsed.display_lines()[0]
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            "Thinking",
+        );
 
-        chat.config.tui.show_reasoning = true;
-        chat.refresh_reasoning_collapsed_visibility();
+        chat.toggle_reasoning_visibility();
 
         let expanded = chat
             .history_cells
@@ -35026,6 +35053,34 @@ use code_core::protocol::OrderMeta;
                 .iter()
                 .any(|line| line.spans.iter().any(|span| span.content.contains("Saved reasoning"))),
             "explicit reasoning mode should reveal the retained content",
+        );
+    }
+
+    #[test]
+    fn restore_reasoning_indicator_does_not_reopen_closed_stream() {
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        let stream_id = "closed-reasoning".to_string();
+
+        chat.history_push(history_cell::CollapsibleReasoningCell::new_with_id(
+            vec![Line::from("completed reasoning".to_string())],
+            Some(stream_id.clone()),
+        ));
+        chat.stream_state
+            .closed_reasoning_ids
+            .insert(StreamId(stream_id.clone()));
+        streaming::begin(chat, StreamKind::Reasoning, Some(stream_id));
+
+        chat.restore_reasoning_in_progress_if_streaming();
+
+        let reasoning = chat
+            .history_cells
+            .iter()
+            .find_map(|cell| cell.as_any().downcast_ref::<history_cell::CollapsibleReasoningCell>())
+            .expect("reasoning cell should be present");
+        assert!(
+            !reasoning.is_in_progress(),
+            "a closed reasoning stream must remain completed while animation drains",
         );
     }
 

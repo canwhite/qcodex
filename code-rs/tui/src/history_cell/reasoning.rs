@@ -23,7 +23,6 @@ pub(crate) struct CollapsibleReasoningState {
     lines: Vec<ReasoningLineEntry>,
     pub sections: Vec<ReasoningSection>,
     pub in_progress: bool,
-    pub hide_when_collapsed: bool,
     pub id: Option<String>,
     pub history_id: HistoryId,
 }
@@ -49,7 +48,6 @@ impl CollapsibleReasoningState {
             lines: entries,
             sections,
             in_progress: false,
-            hide_when_collapsed: false,
             id,
             history_id: HistoryId::ZERO,
         }
@@ -91,7 +89,6 @@ impl CollapsibleReasoningCell {
             lines: entries,
             sections,
             in_progress,
-            hide_when_collapsed: false,
             id: None,
             history_id: id,
         };
@@ -119,33 +116,6 @@ impl CollapsibleReasoningCell {
         self.state.borrow().in_progress
     }
 
-    pub(crate) fn collapsed_has_summary(&self) -> bool {
-        let state = self.state.borrow();
-        if state.sections.is_empty() {
-            return false;
-        }
-
-        let theme = crate::theme::current_theme();
-        let stored_lines = sections_to_ratatui_lines(&state.sections, &theme);
-        let normalized = normalized_lines(&stored_lines);
-
-        let mut titles = collect_section_summaries(&state.sections, &theme);
-        if titles.is_empty() {
-            titles = normalized
-                .into_iter()
-                .filter(|line| {
-                    line.spans
-                        .iter()
-                        .any(|span| !span.content.trim().is_empty())
-                })
-                .collect();
-        }
-
-        titles
-            .iter()
-            .any(|line| line.spans.iter().any(|span| !span.content.trim().is_empty()))
-    }
-
     pub(crate) fn toggle_collapsed(&self) {
         let current = self.collapsed.get();
         self.collapsed.set(!current);
@@ -157,15 +127,6 @@ impl CollapsibleReasoningCell {
 
     pub(crate) fn is_collapsed(&self) -> bool {
         self.collapsed.get()
-    }
-
-    pub(crate) fn set_hide_when_collapsed(&self, hide: bool) -> bool {
-        let mut state = self.state.borrow_mut();
-        if state.hide_when_collapsed == hide {
-            return false;
-        }
-        state.hide_when_collapsed = hide;
-        true
     }
 
     pub(crate) fn append_lines_dedup(&self, new_lines: Vec<Line<'static>>) {
@@ -224,31 +185,21 @@ impl HistoryCell for CollapsibleReasoningCell {
 
     fn display_lines(&self) -> Vec<Line<'static>> {
         let state = self.state.borrow();
-        if state.sections.is_empty() {
-            return Vec::new();
-        }
-
-        let theme = crate::theme::current_theme();
-        let stored_lines = sections_to_ratatui_lines(&state.sections, &theme);
-        let normalized = normalized_lines(&stored_lines);
-
         if self.collapsed.get() {
-            if state.hide_when_collapsed {
+            let label = if state.in_progress {
+                "Thinking…"
+            } else {
+                "Thinking"
+            };
+            vec![Line::from(label.dim())]
+        } else {
+            if state.sections.is_empty() {
                 return Vec::new();
             }
-            let mut titles = extract_section_titles_locked(&state, &normalized, &theme);
-            if state.in_progress {
-                if let Some(mut last) = titles.pop() {
-                    last.spans.push(Span::styled(
-                        "…",
-                        Style::default().fg(crate::colors::text_dim()),
-                    ));
-                    return vec![last];
-                }
-                return vec![Line::from("…".dim())];
-            }
-            titles.pop().into_iter().collect()
-        } else {
+
+            let theme = crate::theme::current_theme();
+            let stored_lines = sections_to_ratatui_lines(&state.sections, &theme);
+            let normalized = normalized_lines(&stored_lines);
             let mut out = normalized;
             if state.in_progress {
                 out.push(Line::from("…".dim()));
@@ -268,9 +219,6 @@ impl HistoryCell for CollapsibleReasoningCell {
     fn custom_render_with_skip(&self, area: Rect, buf: &mut Buffer, skip_rows: u16) {
         let state = self.state.borrow();
         if self.collapsed.get() {
-            if state.hide_when_collapsed {
-                return;
-            }
             let bg_style = Style::default()
                 .bg(crate::colors::background())
                 .fg(crate::colors::text());
@@ -835,30 +783,6 @@ fn sections_to_ratatui_lines(
     out
 }
 
-fn collect_section_summaries(
-    sections: &[ReasoningSection],
-    theme: &crate::theme::Theme,
-) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    for section in sections {
-        if let Some(summary) = section.summary.as_ref().filter(|spans| !spans_are_blank(spans)) {
-            let spans = summary
-                .iter()
-                .map(|span| text::inline_span_to_span(span, theme))
-                .collect::<Vec<_>>();
-            out.push(Line::from(spans));
-        } else if let Some(heading) = &section.heading {
-            out.push(Line::from(vec![Span::styled(
-                heading.clone(),
-                Style::default()
-                    .fg(crate::colors::text())
-                    .add_modifier(Modifier::BOLD),
-            )]));
-        }
-    }
-    out
-}
-
 fn normalized_lines(lines: &[Line<'static>]) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     for line in lines {
@@ -904,34 +828,6 @@ fn normalized_lines(lines: &[Line<'static>]) -> Vec<Line<'static>> {
         }
     }
     out
-}
-
-fn extract_section_titles_locked(
-    state: &CollapsibleReasoningState,
-    normalized: &[Line<'static>],
-    theme: &crate::theme::Theme,
-) -> Vec<Line<'static>> {
-    let mut titles = collect_section_summaries(&state.sections, theme);
-    if titles.is_empty() && !state.in_progress {
-        titles = normalized
-            .iter()
-            .filter(|line| line.spans.iter().any(|s| !s.content.trim().is_empty()))
-            .cloned()
-            .collect();
-    }
-
-    let color = crate::colors::text_dim();
-    titles
-        .into_iter()
-        .map(|line| {
-            let spans: Vec<Span<'static>> = line
-                .spans
-                .into_iter()
-                .map(|s| s.style(Style::default().fg(color)))
-                .collect();
-            Line::from(spans)
-        })
-        .collect()
 }
 
 fn debug_title_overlay(lines: &[Line<'static>]) -> String {
