@@ -312,6 +312,7 @@ async fn run_code_tool_session_inner(
                     }
                     EventMsg::AgentReasoningRawContent(_)
                     | EventMsg::AgentReasoningRawContentDelta(_)
+                    | EventMsg::AgentReasoningStatus(_)
                     | EventMsg::Warning(_)
                     | EventMsg::TaskLifecycle(_)
                     | EventMsg::TaskStarted

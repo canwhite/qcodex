@@ -6,6 +6,7 @@ use code_core::protocol::{
     AgentMessageEvent,
     AgentReasoningDeltaEvent,
     AgentReasoningEvent,
+    AgentReasoningStatusEvent,
     BrowserSnapshotEvent,
     Event,
     EventMsg,
@@ -183,6 +184,61 @@ fn collapsed_reasoning_shows_thinking_status_and_expands_on_demand() {
     assert!(
         expanded.contains(PRIVATE_THOUGHT),
         "Ctrl+R should reveal the retained reasoning content:\n{expanded}"
+    );
+}
+
+#[test]
+fn raw_only_reasoning_status_is_visible_without_private_content() {
+    const PRIVATE_THOUGHT: &str = "PRIVATE-RAW-THINK-CONTENT";
+    let mut harness = ChatWidgetHarness::new();
+    harness.push_user_prompt("Think before answering.");
+
+    harness.handle_event(Event {
+        id: "raw-only-status".into(),
+        event_seq: 1,
+        msg: EventMsg::AgentReasoningStatus(AgentReasoningStatusEvent { in_progress: true }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(0),
+        }),
+    });
+    harness.flush_into_widget();
+
+    let active = render_chat_widget_to_vt100(&mut harness, 80, 18);
+    assert!(
+        active.contains("Thinking…"),
+        "raw-only active reasoning should expose status:\n{active}"
+    );
+    assert!(
+        !active.contains(PRIVATE_THOUGHT),
+        "status-only reasoning must not contain private thought:\n{active}"
+    );
+
+    harness.handle_event(Event {
+        id: "raw-only-status".into(),
+        event_seq: 2,
+        msg: EventMsg::AgentReasoningStatus(AgentReasoningStatusEvent { in_progress: false }),
+        order: Some(OrderMeta {
+            request_ordinal: 1,
+            output_index: Some(0),
+            sequence_number: Some(1),
+        }),
+    });
+    harness.flush_into_widget();
+
+    let completed = render_chat_widget_to_vt100(&mut harness, 80, 18);
+    assert!(
+        completed.contains("Thinking"),
+        "completed raw-only reasoning should retain a status:\n{completed}"
+    );
+    assert!(
+        !completed.contains("Thinking…"),
+        "completed raw-only reasoning must stop animating:\n{completed}"
+    );
+    assert!(
+        !completed.contains(PRIVATE_THOUGHT),
+        "completed status-only reasoning must not contain private thought:\n{completed}"
     );
 }
 

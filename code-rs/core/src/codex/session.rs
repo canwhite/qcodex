@@ -532,6 +532,7 @@ pub(crate) struct Session {
     pub(super) state: Mutex<State>,
     pub(super) code_linux_sandbox_exe: Option<PathBuf>,
     pub(super) user_shell: shell::Shell,
+    pub(super) hide_agent_reasoning: bool,
     pub(super) show_raw_agent_reasoning: bool,
     /// Pending browser screenshots to include in the next model request
     #[allow(dead_code)]

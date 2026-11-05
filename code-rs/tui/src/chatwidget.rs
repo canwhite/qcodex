@@ -168,6 +168,7 @@ use code_core::protocol::AgentReasoningDeltaEvent;
 use code_core::protocol::AgentReasoningEvent;
 use code_core::protocol::AgentReasoningRawContentDeltaEvent;
 use code_core::protocol::AgentReasoningRawContentEvent;
+use code_core::protocol::AgentReasoningStatusEvent;
 use code_core::protocol::AgentReasoningSectionBreakEvent;
 use code_core::protocol::AgentStatusUpdateEvent;
 use code_core::protocol::ApplyPatchApprovalRequestEvent;
@@ -4938,53 +4939,20 @@ impl ChatWidget<'_> {
                 }
             }
             ResponseItem::FunctionCallOutput { output, call_id, .. } => {
-                let mut content = output.body.to_text().unwrap_or_default();
-                let mut metadata_summary = String::new();
-                if let Ok(v) = serde_json::from_str::<JsonValue>(&content) {
-                    if let Some(s) = v.get("output").and_then(|x| x.as_str()) {
-                        content = s.to_string();
-                    }
-                    if let Some(meta) = v.get("metadata").and_then(|m| m.as_object()) {
-                        let mut parts = Vec::new();
-                        if let Some(code) = meta.get("exit_code").and_then(serde_json::Value::as_i64) {
-                            parts.push(format!("exit_code={code}"));
-                        }
-                        if let Some(duration) =
-                            meta.get("duration_seconds").and_then(serde_json::Value::as_f64)
-                        {
-                            parts.push(format!("duration={duration:.2}s"));
-                        }
-                        if !parts.is_empty() {
-                            metadata_summary = parts.join(", ");
-                        }
-                    }
-                }
-                let mut message = String::new();
-                if !content.trim().is_empty() {
-                    message.push_str(content.trim_end());
-                }
-                if !metadata_summary.is_empty() {
-                    if !message.is_empty() {
-                        message.push_str("\n\n");
-                    }
-                    message.push_str(&format!("({metadata_summary})"));
-                }
-                if !call_id.is_empty() {
-                    if !message.is_empty() {
-                        message.push('\n');
-                    }
-                    message.push_str(&format!("call_id: {call_id}"));
-                }
-                if message.trim().is_empty() {
-                    return;
-                }
-                let key = self.next_internal_key();
-                let _ = self.history_insert_with_key_global_tagged(
-                    Box::new(crate::history_cell::new_background_event(message)),
-                    key,
-                    "background",
-                    None,
+                // Historical direct outputs used to be replayed as anonymous
+                // background text. Preserve their body inside a structured card
+                // so a resumed transcript still explains what produced it.
+                let content = output.body.to_text().unwrap_or_default();
+                let mut completed = history_cell::new_completed_custom_tool_call(
+                    "tool".to_string(),
+                    (!call_id.is_empty()).then(|| format!("{{\"call_id\":\"{call_id}\"}}")),
+                    Duration::ZERO,
+                    output.success != Some(false),
+                    content,
                 );
+                completed.state_mut().call_id = Some(call_id);
+                let key = self.next_internal_key();
+                let _ = self.history_insert_with_key_global(Box::new(completed), key);
             }
             ResponseItem::ImageGenerationCall { id, status, result, .. } => {
                 let key = self.next_internal_key();
@@ -14614,6 +14582,58 @@ impl ChatWidget<'_> {
                     {
                         reason.set_in_progress(false);
                     }
+                self.mark_needs_redraw();
+            }
+            EventMsg::AgentReasoningStatus(AgentReasoningStatusEvent { in_progress }) => {
+                if self.current_task_output_is_hidden() {
+                    tracing::debug!("Suppressing hidden AgentReasoningStatus for current task");
+                    return;
+                }
+                if self.stream_state.drop_streaming {
+                    tracing::debug!("Ignoring AgentReasoningStatus after interrupt");
+                    self.stop_spinner();
+                    return;
+                }
+                if self.strict_stream_ids_enabled() && id.trim().is_empty() {
+                    self.warn_missing_stream_id("assistant reasoning status");
+                    return;
+                }
+
+                let stream_id = StreamId(id.clone());
+                if in_progress && self.stream_state.closed_reasoning_ids.contains(&stream_id) {
+                    tracing::debug!("Ignoring AgentReasoningStatus start for closed id={id}");
+                    return;
+                }
+
+                let order = match event.order.as_ref() {
+                    Some(order) => self.provider_order_key_from_order_meta(order),
+                    None => {
+                        tracing::warn!("missing OrderMeta on AgentReasoningStatus; using synthetic key");
+                        self.next_internal_key()
+                    }
+                };
+                self.seed_stream_order_key(StreamKind::Reasoning, &id, order);
+
+                if in_progress {
+                    streaming::begin(self, StreamKind::Reasoning, Some(id.clone()));
+                    self.ensure_spinner_for_activity("reasoning-status");
+                    self.bottom_pane.update_status_text("thinking".to_string());
+                } else {
+                    self.stream_state.closed_reasoning_ids.insert(stream_id);
+                    if self.stream.current_stream() == Some(StreamKind::Reasoning)
+                        && self.stream.current_stream_id().is_some_and(|current| current == &id)
+                    {
+                        streaming::finalize(self, StreamKind::Reasoning, true);
+                    }
+                    if let Some(cell) = self.history_cells.iter().rev().find_map(|cell| {
+                        cell.as_any()
+                            .downcast_ref::<history_cell::CollapsibleReasoningCell>()
+                            .filter(|reasoning| reasoning.matches_id(&id))
+                    }) {
+                        cell.set_in_progress(false);
+                    }
+                    self.maybe_hide_spinner();
+                }
                 self.mark_needs_redraw();
             }
             EventMsg::TokenCount(event) => {

@@ -1,6 +1,7 @@
 use crate::protocol::AgentMessageEvent;
 use crate::protocol::AgentReasoningEvent;
 use crate::protocol::AgentReasoningRawContentEvent;
+use crate::protocol::AgentReasoningStatusEvent;
 use crate::protocol::BrowserSnapshotEvent;
 use crate::protocol::EnvironmentContextDeltaEvent;
 use crate::protocol::EnvironmentContextFullEvent;
@@ -116,20 +117,36 @@ pub(crate) fn map_response_item_to_event_messages(
             summary, content, ..
         } => {
             let mut events = Vec::new();
+            let has_summary = !summary.is_empty();
             for ReasoningItemReasoningSummary::SummaryText { text } in summary {
                 events.push(EventMsg::AgentReasoning(AgentReasoningEvent {
                     text: text.clone(),
                 }));
             }
-            if let Some(items) = content.as_ref().filter(|_| show_raw_agent_reasoning) {
+            if let Some(items) = content {
                 for c in items {
                     let text = match c {
                         ReasoningItemContent::ReasoningText { text }
                         | ReasoningItemContent::Text { text } => text,
                     };
-                    events.push(EventMsg::AgentReasoningRawContent(
-                        AgentReasoningRawContentEvent { text: text.clone() },
-                    ));
+                    if text.is_empty() {
+                        continue;
+                    }
+                    if !has_summary {
+                        events.push(EventMsg::AgentReasoningStatus(AgentReasoningStatusEvent {
+                            in_progress: true,
+                        }));
+                    }
+                    if show_raw_agent_reasoning {
+                        events.push(EventMsg::AgentReasoningRawContent(
+                            AgentReasoningRawContentEvent { text: text.clone() },
+                        ));
+                    }
+                    if !has_summary {
+                        events.push(EventMsg::AgentReasoningStatus(AgentReasoningStatusEvent {
+                            in_progress: false,
+                        }));
+                    }
                 }
             }
             events
@@ -201,6 +218,7 @@ mod tests {
     use crate::protocol::EnvironmentContextFullEvent;
     use crate::protocol::EventMsg;
     use code_protocol::models::ContentItem;
+    use code_protocol::models::ReasoningItemContent;
     use code_protocol::models::ResponseItem;
     use code_protocol::protocol::BROWSER_SNAPSHOT_CLOSE_TAG;
     use code_protocol::protocol::BROWSER_SNAPSHOT_OPEN_TAG;
@@ -209,6 +227,27 @@ mod tests {
     use code_protocol::protocol::ENVIRONMENT_CONTEXT_DELTA_OPEN_TAG;
     use code_protocol::protocol::ENVIRONMENT_CONTEXT_OPEN_TAG;
     use serde_json::json;
+
+    #[test]
+    fn maps_raw_only_reasoning_to_status_without_raw_content_by_default() {
+        let item = ResponseItem::Reasoning {
+            id: Some("raw-only".to_string()),
+            summary: Vec::new(),
+            content: Some(vec![ReasoningItemContent::ReasoningText {
+                text: "private raw thought".to_string(),
+            }]),
+            encrypted_content: None,
+        };
+
+        let events = map_response_item_to_event_messages(&item, false);
+        assert!(matches!(
+            events.as_slice(),
+            [
+                EventMsg::AgentReasoningStatus(status),
+                EventMsg::AgentReasoningStatus(completed),
+            ] if status.in_progress && !completed.in_progress
+        ));
+    }
 
     #[test]
     fn maps_user_message_with_text_and_two_images() {

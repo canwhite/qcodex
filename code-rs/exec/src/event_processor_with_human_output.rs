@@ -294,6 +294,10 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 #[expect(clippy::expect_used)]
                 std::io::stdout().flush().expect("could not flush stdout");
             }
+            EventMsg::AgentReasoningStatus(_) => {
+                // This is a body-free lifecycle signal for UIs; nothing needs
+                // to be printed in the human-readable transcript.
+            }
             EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent { text }) => {
                 if !self.show_raw_agent_reasoning {
                     return CodexStatus::Running;

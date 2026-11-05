@@ -819,6 +819,10 @@ pub enum EventMsg {
 
     /// Agent reasoning content delta event from agent.
     AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent),
+
+    /// Privacy-safe lifecycle state for reasoning that has no visible body.
+    AgentReasoningStatus(AgentReasoningStatusEvent),
+
     /// Signaled when the model begins a new reasoning summary section (e.g., a new titled block).
     AgentReasoningSectionBreak(AgentReasoningSectionBreakEvent),
 
@@ -1565,6 +1569,11 @@ pub struct AgentReasoningRawContentEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct AgentReasoningRawContentDeltaEvent {
     pub delta: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct AgentReasoningStatusEvent {
+    pub in_progress: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

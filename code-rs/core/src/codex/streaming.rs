@@ -831,6 +831,7 @@ pub(super) async fn submission_loop(
                     code_linux_sandbox_exe: config.code_linux_sandbox_exe.clone(),
                     disable_response_storage,
                     user_shell: default_shell,
+                    hide_agent_reasoning: config.hide_agent_reasoning,
                     show_raw_agent_reasoning: config.show_raw_agent_reasoning,
                     pending_browser_screenshots: Mutex::new(Vec::new()),
                     last_system_status: Mutex::new(None),
@@ -2745,7 +2746,11 @@ async fn run_agent(
                 let mut items_to_record_in_conversation_history = Vec::<ResponseItem>::new();
                 let mut responses = Vec::<ResponseInputItem>::new();
                 for processed_response_item in turn_output {
-                    let ProcessedResponseItem { item, response } = processed_response_item;
+                    let ProcessedResponseItem {
+                        item,
+                        response,
+                        reflected_output,
+                    } = processed_response_item;
                     match (&item, &response) {
                         (ResponseItem::Message { role, .. }, None) if role == "assistant" => {
                             // If the model returned a message, we need to record it.
@@ -2786,6 +2791,17 @@ async fn run_agent(
                                     output: output.clone(),
                                 },
                             );
+                        }
+                        (ResponseItem::FunctionCall { .. }, None) if reflected_output.is_some() => {
+                            items_to_record_in_conversation_history.push(item.clone());
+                            if let Some(output) = reflected_output.clone() {
+                                items_to_record_in_conversation_history.push(output);
+                            }
+                        }
+                        (ResponseItem::FunctionCallOutput { .. }, None) => {
+                            // An orphan provider result is already complete. Preserve it
+                            // for replay, but never send it back as a new tool response.
+                            items_to_record_in_conversation_history.push(item.clone());
                         }
                         (
                             ResponseItem::CustomToolCall { .. },
@@ -4153,12 +4169,70 @@ fn find_call_item_by_id(items: &[ResponseItem], call_id: &str) -> Option<Respons
 struct ProcessedResponseItem {
     item: ResponseItem,
     response: Option<ResponseInputItem>,
+    /// A provider-executed result paired with a FunctionCall in this response.
+    /// It is history-only: sending it to the provider again would duplicate it.
+    reflected_output: Option<ResponseItem>,
 }
 
 struct PendingResponseItem {
     item: ResponseItem,
     sequence_number: Option<u64>,
     output_index: Option<u32>,
+}
+
+struct ReflectedFunctionOutput {
+    pending: PendingResponseItem,
+    lifecycle_emitted: bool,
+}
+
+/// Render a provider-returned function result as one completed tool card.
+/// The provider has already executed this call, so this function deliberately
+/// performs no tool dispatch and never produces a response to send upstream.
+async fn emit_reflected_function_call_lifecycle(
+    sess: &Session,
+    call_id: &str,
+    tool_name: &str,
+    arguments: &str,
+    output: &FunctionCallOutputPayload,
+    order: crate::protocol::OrderMeta,
+    sequence_number: Option<u64>,
+) {
+    use crate::protocol::CustomToolCallBeginEvent;
+    use crate::protocol::CustomToolCallEndEvent;
+
+    let parameters = serde_json::from_str(arguments).ok();
+    let begin = sess.make_event_with_order(
+        call_id,
+        EventMsg::CustomToolCallBegin(CustomToolCallBeginEvent {
+            call_id: call_id.to_string(),
+            tool_name: tool_name.to_string(),
+            parameters: parameters.clone(),
+        }),
+        order.clone(),
+        sequence_number,
+    );
+    sess.send_event(begin).await;
+
+    let message = custom_tool_event_result_text(output);
+    let result = if output.success == Some(false) {
+        Err(message)
+    } else {
+        Ok(message)
+    };
+    let end = sess.make_event_with_order(
+        call_id,
+        EventMsg::CustomToolCallEnd(CustomToolCallEndEvent {
+            call_id: call_id.to_string(),
+            tool_name: tool_name.to_string(),
+            parameters,
+            duration: Duration::ZERO,
+            result,
+        }),
+        order,
+        sequence_number,
+    );
+    sess.send_event(end).await;
+    tracing::debug!(call_id, tool_name, "rendered provider-reflected function output");
 }
 
 fn should_process_stream_event(is_current_task: bool) -> bool {
@@ -4356,7 +4430,18 @@ async fn try_run_turn(
     };
 
     let mut output = Vec::new();
-    let mut pending_turn_validated_items = Vec::new();
+    let mut pending_turn_validated_items: Vec<PendingResponseItem> = Vec::new();
+    // Function calls are intentionally delayed until `response.completed` so
+    // malformed turns can be rejected. A provider can nevertheless include an
+    // already-executed output in that same response. Keep it keyed by call id
+    // so it claims the call before any local executor is considered.
+    let mut reflected_function_outputs: HashMap<String, ReflectedFunctionOutput> = HashMap::new();
+    // A raw reasoning stream may have many deltas. Status is a lifecycle, not
+    // content, so the first non-empty delta is the only one that starts a row.
+    let mut raw_reasoning_status_started: HashMap<
+        String,
+        (crate::protocol::OrderMeta, Option<u64>),
+    > = HashMap::new();
     loop {
         ensure_turn_still_current(sess, sub_id)?;
         // Poll the next item from the model stream. We must inspect *both* Ok and Err
@@ -4446,7 +4531,106 @@ async fn try_run_turn(
                         crate::memories::note_memory_usage(&code_home, &rollout_ids).await;
                     });
                 }
+                let reflected_output = match &item {
+                    ResponseItem::FunctionCallOutput { call_id, output } => {
+                        Some((call_id.clone(), output.clone()))
+                    }
+                    _ => None,
+                };
+                if let Some((call_id, output)) = reflected_output {
+                    let matching_call = pending_turn_validated_items.iter().find_map(|pending| {
+                        match &pending.item {
+                            ResponseItem::FunctionCall {
+                                call_id: pending_call_id,
+                                name,
+                                arguments,
+                                ..
+                            } if pending_call_id == &call_id => {
+                                Some((name.clone(), arguments.clone()))
+                            }
+                            _ => None,
+                        }
+                    });
+                    let lifecycle_emitted = if let Some((name, arguments)) = matching_call {
+                        emit_reflected_function_call_lifecycle(
+                            sess,
+                            &call_id,
+                            &name,
+                            &arguments,
+                            &output,
+                            crate::protocol::OrderMeta {
+                                request_ordinal: attempt_req,
+                                output_index,
+                                sequence_number,
+                            },
+                            sequence_number,
+                        )
+                        .await;
+                        true
+                    } else {
+                        false
+                    };
+                    if reflected_function_outputs
+                        .insert(
+                            call_id.clone(),
+                            ReflectedFunctionOutput {
+                                pending: PendingResponseItem {
+                                    item,
+                                    sequence_number,
+                                    output_index,
+                                },
+                                lifecycle_emitted,
+                            },
+                        )
+                        .is_some()
+                    {
+                        warn!(call_id, "duplicate reflected function output; keeping latest");
+                    }
+                    continue;
+                }
                 if should_handle_response_item_after_turn_validation(&item) {
+                    if let ResponseItem::FunctionCall {
+                        call_id,
+                        name,
+                        arguments,
+                        ..
+                    } = &item
+                    {
+                        let reflected = reflected_function_outputs.get(call_id).and_then(|reflected| {
+                            if reflected.lifecycle_emitted {
+                                return None;
+                            }
+                            match &reflected.pending.item {
+                                ResponseItem::FunctionCallOutput { output, .. } => Some((
+                                    output.clone(),
+                                    reflected.pending.output_index,
+                                    reflected.pending.sequence_number,
+                                )),
+                                _ => None,
+                            }
+                        });
+                        if let Some((output, reflected_output_index, reflected_sequence_number)) =
+                            reflected
+                        {
+                            emit_reflected_function_call_lifecycle(
+                                sess,
+                                call_id,
+                                name,
+                                arguments,
+                                &output,
+                                crate::protocol::OrderMeta {
+                                    request_ordinal: attempt_req,
+                                    output_index: reflected_output_index,
+                                    sequence_number: reflected_sequence_number,
+                                },
+                                reflected_sequence_number,
+                            )
+                            .await;
+                            if let Some(reflected) = reflected_function_outputs.get_mut(call_id) {
+                                reflected.lifecycle_emitted = true;
+                            }
+                        }
+                    }
                     pending_turn_validated_items.push(PendingResponseItem {
                         item,
                         sequence_number,
@@ -4481,7 +4665,11 @@ async fn try_run_turn(
                     sess.scratchpad_clear_partial_message();
                 }
 
-                output.push(ProcessedResponseItem { item, response });
+                output.push(ProcessedResponseItem {
+                    item,
+                    response,
+                    reflected_output: None,
+                });
             }
             ResponseEvent::WebSearchCallBegin { call_id } => {
                 // Stamp OrderMeta so the TUI can place the search block within
@@ -4511,15 +4699,101 @@ async fn try_run_turn(
                 response_id: _,
                 token_usage,
             } => {
+                for (event_id, (order, sequence_number)) in raw_reasoning_status_started.drain() {
+                    let completed = sess.make_event_with_order(
+                        &event_id,
+                        EventMsg::AgentReasoningStatus(AgentReasoningStatusEvent {
+                            in_progress: false,
+                        }),
+                        order,
+                        sequence_number,
+                    );
+                    sess.tx_event.send(completed).await.ok();
+                }
                 for pending in pending_turn_validated_items.drain(..) {
                     ensure_turn_still_current(sess, sub_id)?;
+                    let reflected_output = match &pending.item {
+                        ResponseItem::FunctionCall {
+                            call_id,
+                            name,
+                            arguments,
+                            ..
+                        } => {
+                            let reflected = reflected_function_outputs.remove(call_id);
+                            if let Some(ReflectedFunctionOutput {
+                                pending:
+                                    PendingResponseItem {
+                                        item: ResponseItem::FunctionCallOutput { output, .. },
+                                        sequence_number,
+                                        output_index,
+                                    },
+                                lifecycle_emitted: false,
+                            }) = reflected.as_ref()
+                            {
+                                // This output was produced by the provider, not
+                                // our executor. Project it as a tool card and
+                                // skip local execution entirely.
+                                emit_reflected_function_call_lifecycle(
+                                    sess,
+                                    call_id,
+                                    name,
+                                    arguments,
+                                    output,
+                                    crate::protocol::OrderMeta {
+                                        request_ordinal: attempt_req,
+                                        output_index: *output_index,
+                                        sequence_number: *sequence_number,
+                                    },
+                                    *sequence_number,
+                                )
+                                .await;
+                            }
+                            reflected.map(|reflected| reflected.pending.item)
+                        }
+                        _ => None,
+                    };
+                    let response = if reflected_output.is_some() {
+                        None
+                    } else {
+                        handle_response_item(
+                            sess,
+                            turn_diff_tracker,
+                            sub_id,
+                            pending.item.clone(),
+                            pending.sequence_number,
+                            pending.output_index,
+                            attempt_req,
+                            &ImageGenerationTurnMetadata {
+                                requested_model: requested_model.clone(),
+                                latest_response_model: latest_response_model.clone(),
+                                response_headers: latest_response_headers.clone(),
+                            },
+                        )
+                        .await?
+                    };
+
+                    ensure_turn_still_current(sess, sub_id)?;
+                    sess.scratchpad_push(&pending.item, &response, sub_id);
+                    output.push(ProcessedResponseItem {
+                        item: pending.item,
+                        response,
+                        reflected_output,
+                    });
+                }
+
+                // Outputs with no matching FunctionCall are still completed
+                // provider work. Render a generic card and retain them for
+                // replay, but never treat them as instructions to execute.
+                for (_, reflected) in reflected_function_outputs.drain() {
+                    ensure_turn_still_current(sess, sub_id)?;
+                    let item = reflected.pending.item;
                     let response = handle_response_item(
                         sess,
                         turn_diff_tracker,
                         sub_id,
-                        pending.item.clone(),
-                        pending.sequence_number,
-                        pending.output_index,
+                        item.clone(),
+                        reflected.pending.sequence_number,
+                        reflected.pending.output_index,
                         attempt_req,
                         &ImageGenerationTurnMetadata {
                             requested_model: requested_model.clone(),
@@ -4528,12 +4802,11 @@ async fn try_run_turn(
                         },
                     )
                     .await?;
-
-                    ensure_turn_still_current(sess, sub_id)?;
-                    sess.scratchpad_push(&pending.item, &response, sub_id);
+                    sess.scratchpad_push(&item, &response, sub_id);
                     output.push(ProcessedResponseItem {
-                        item: pending.item,
+                        item,
                         response,
+                        reflected_output: None,
                     });
                 }
 
@@ -4619,6 +4892,9 @@ async fn try_run_turn(
                 sess.scratchpad_add_text_delta(&delta);
             }
             ResponseEvent::ReasoningSummaryDelta { delta, item_id, sequence_number, output_index, summary_index } => {
+                if sess.hide_agent_reasoning {
+                    continue;
+                }
                 // Use the item_id if present, otherwise fall back to sub_id
                 let mut event_id = item_id.unwrap_or_else(|| sub_id.to_string());
                 if let Some(si) = summary_index { event_id = format!("{event_id}#s{si}"); }
@@ -4630,15 +4906,34 @@ async fn try_run_turn(
                 sess.scratchpad_add_reasoning_delta(&delta);
             }
             ResponseEvent::ReasoningSummaryPartAdded => {
+                if sess.hide_agent_reasoning {
+                    continue;
+                }
                 let stamped = sess.make_event(sub_id, EventMsg::AgentReasoningSectionBreak(AgentReasoningSectionBreakEvent {}));
                 sess.tx_event.send(stamped).await.ok();
             }
             ResponseEvent::ReasoningContentDelta { delta, item_id, sequence_number, output_index, content_index } => {
-                if sess.show_raw_agent_reasoning {
-                    // Use the item_id if present, otherwise fall back to sub_id
-                    let mut event_id = item_id.unwrap_or_else(|| sub_id.to_string());
-                    if let Some(ci) = content_index { event_id = format!("{event_id}#c{ci}"); }
-                    let order = crate::protocol::OrderMeta { request_ordinal: attempt_req, output_index, sequence_number };
+                // Use the item_id if present, otherwise fall back to sub_id.
+                let mut event_id = item_id.unwrap_or_else(|| sub_id.to_string());
+                if let Some(ci) = content_index {
+                    event_id = format!("{event_id}#c{ci}");
+                }
+                let order = crate::protocol::OrderMeta { request_ordinal: attempt_req, output_index, sequence_number };
+                if !sess.hide_agent_reasoning
+                    && !delta.is_empty()
+                    && !raw_reasoning_status_started.contains_key(&event_id)
+                {
+                    raw_reasoning_status_started
+                        .insert(event_id.clone(), (order.clone(), sequence_number));
+                    let stamped = sess.make_event_with_order(
+                        &event_id,
+                        EventMsg::AgentReasoningStatus(AgentReasoningStatusEvent { in_progress: true }),
+                        order.clone(),
+                        sequence_number,
+                    );
+                    sess.tx_event.send(stamped).await.ok();
+                }
+                if !sess.hide_agent_reasoning && sess.show_raw_agent_reasoning {
                     let stamped = sess.make_event_with_order(&event_id, EventMsg::AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent { delta }), order, sequence_number);
                     sess.tx_event.send(stamped).await.ok();
                 }
@@ -4713,12 +5008,16 @@ async fn handle_response_item(
             content,
             encrypted_content: _,
         } => {
+            if sess.hide_agent_reasoning {
+                return Ok(None);
+            }
             // Use the item_id if present and not empty, otherwise fall back to sub_id
             let event_id = id
                 .as_deref()
                 .filter(|id| !id.is_empty())
                 .unwrap_or(sub_id)
                 .to_string();
+            let has_summary = !summary.is_empty();
             for (i, item) in summary.into_iter().enumerate() {
                 let text = match item {
                     ReasoningItemReasoningSummary::SummaryText { text } => text,
@@ -4728,17 +5027,47 @@ async fn handle_response_item(
                 let stamped = sess.make_event_with_order(&eid, EventMsg::AgentReasoning(AgentReasoningEvent { text }), order, seq_hint);
                 sess.tx_event.send(stamped).await.ok();
             }
-            if sess.show_raw_agent_reasoning
-                && let Some(content) = content
-            {
-                for item in content.into_iter() {
+            if let Some(content) = content {
+                for (i, item) in content.into_iter().enumerate() {
                     let text = match item {
                         ReasoningItemContent::ReasoningText { text } => text,
                         ReasoningItemContent::Text { text } => text,
                     };
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let eid = format!("{event_id}#c{i}");
                     let order = crate::protocol::OrderMeta { request_ordinal: attempt_req, output_index, sequence_number: seq_hint };
-                    let stamped = sess.make_event_with_order(&event_id, EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent { text }), order, seq_hint);
-                    sess.tx_event.send(stamped).await.ok();
+                    // Summary-bearing items already have a visible reasoning cell.
+                    // Raw-only providers need lifecycle status even when the raw
+                    // content itself remains opt-in.
+                    if !has_summary {
+                        let started = sess.make_event_with_order(
+                            &eid,
+                            EventMsg::AgentReasoningStatus(AgentReasoningStatusEvent { in_progress: true }),
+                            order.clone(),
+                            seq_hint,
+                        );
+                        sess.tx_event.send(started).await.ok();
+                    }
+                    if sess.show_raw_agent_reasoning {
+                        let stamped = sess.make_event_with_order(
+                            &eid,
+                            EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent { text }),
+                            order.clone(),
+                            seq_hint,
+                        );
+                        sess.tx_event.send(stamped).await.ok();
+                    }
+                    if !has_summary {
+                        let completed = sess.make_event_with_order(
+                            &eid,
+                            EventMsg::AgentReasoningStatus(AgentReasoningStatusEvent { in_progress: false }),
+                            order,
+                            seq_hint,
+                        );
+                        sess.tx_event.send(completed).await.ok();
+                    }
                 }
             }
             None
@@ -4850,8 +5179,25 @@ async fn handle_response_item(
                     success: Some(false)},
             })
         }
-        ResponseItem::FunctionCallOutput { .. } => {
-            debug!("unexpected FunctionCallOutput from stream");
+        ResponseItem::FunctionCallOutput { call_id, output } => {
+            // This may be an orphaned provider result (the matching call was
+            // absent or outside this response). It is still a completed tool
+            // operation, never assistant text and never an instruction to run
+            // a local tool.
+            emit_reflected_function_call_lifecycle(
+                sess,
+                &call_id,
+                "tool",
+                "",
+                &output,
+                crate::protocol::OrderMeta {
+                    request_ordinal: attempt_req,
+                    output_index,
+                    sequence_number: seq_hint,
+                },
+                seq_hint,
+            )
+            .await;
             None
         }
         ResponseItem::ToolSearchOutput { .. } => {

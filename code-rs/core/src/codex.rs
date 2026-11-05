@@ -916,6 +916,7 @@ use crate::protocol::AgentReasoningEvent;
 use crate::protocol::AgentSourceKind;
 use crate::protocol::AgentReasoningRawContentDeltaEvent;
 use crate::protocol::AgentReasoningRawContentEvent;
+use crate::protocol::AgentReasoningStatusEvent;
 use crate::protocol::AgentReasoningSectionBreakEvent;
 use crate::protocol::AgentStatusUpdateEvent;
 use crate::protocol::ApplyPatchApprovalRequestEvent;

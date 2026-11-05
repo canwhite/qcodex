@@ -194,7 +194,15 @@ impl HistoryCell for CollapsibleReasoningCell {
             vec![Line::from(label.dim())]
         } else {
             if state.sections.is_empty() {
-                return Vec::new();
+                // A status-only reasoning lifecycle deliberately has no body.
+                // Keep its activity affordance visible even for users who opt
+                // into expanded reasoning; otherwise it would disappear.
+                let label = if state.in_progress {
+                    "Thinking…"
+                } else {
+                    "Thinking"
+                };
+                return vec![Line::from(label.dim())];
             }
 
             let theme = crate::theme::current_theme();
@@ -866,4 +874,27 @@ fn debug_title_overlay(lines: &[Line<'static>]) -> String {
     format!(
         "rtitles={titles} idx={title_idxs:?} total_lines={total} lastw={lastw} prevs={title_previews:?}"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CollapsibleReasoningCell;
+    use crate::history_cell::HistoryCell;
+    use ratatui::text::Line;
+
+    #[test]
+    fn expanded_status_only_reasoning_remains_visible() {
+        let cell = CollapsibleReasoningCell::new_with_id(vec![Line::default()], Some("raw".into()));
+        cell.set_collapsed(false);
+        cell.set_in_progress(true);
+
+        let visible = cell
+            .display_lines()
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter())
+            .map(|span| span.content.into_owned())
+            .collect::<String>();
+
+        assert_eq!(visible, "Thinking…");
+    }
 }

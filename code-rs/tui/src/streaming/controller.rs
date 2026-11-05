@@ -291,7 +291,7 @@ pub(crate) fn set_last_sequence_number(&mut self, kind: StreamKind, seq: Option<
                     // collapsed projection can show "Thinking…" before a complete
                     // markdown line is available. The blank line is only a cell
                     // seed; CollapsibleReasoningCell never renders it as content.
-                    if matches!(kind, StreamKind::Reasoning) && !self.config.tui.show_reasoning {
+                    if matches!(kind, StreamKind::Reasoning) {
                         header_lines.push(Line::default());
                     }
                     // Always associate header lines with the active stream id so
