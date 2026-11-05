@@ -14,7 +14,7 @@ use crate::history::state::{
 };
 use crate::history_cell::assistant::detect_bullet_prefix;
 use crate::render::line_utils;
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier};
 use ratatui::text::Line;
 use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
@@ -186,14 +186,22 @@ impl CollapsibleReasoningCell {
     fn thinking_status_line(&self, in_progress: bool) -> Line<'static> {
         let label = if in_progress { "Thinking…" } else { "Thinking" };
         let style = if in_progress {
-            Style::default().fg(self.thinking_pulse_color())
+            let brightness = self.thinking_pulse_brightness();
+            let style = Style::default().fg(self.thinking_pulse_color(brightness));
+            if brightness >= 0.65 {
+                style.add_modifier(Modifier::BOLD)
+            } else if brightness <= 0.35 {
+                style.add_modifier(Modifier::DIM)
+            } else {
+                style
+            }
         } else {
             Style::default().fg(crate::colors::text_dim())
         };
         Line::from(Span::styled(label, style))
     }
 
-    fn thinking_pulse_color(&self) -> Color {
+    fn thinking_pulse_brightness(&self) -> f32 {
         let elapsed = self
             .pulse_started_at
             .get()
@@ -203,7 +211,10 @@ impl CollapsibleReasoningCell {
         let wave = (cycle * std::f32::consts::TAU).sin() * 0.5 + 0.5;
         // Keep the resting state muted and make the peak perceptible without
         // competing with the assistant's response.
-        let brightness = 0.20 + wave * 0.60;
+        0.20 + wave * 0.60
+    }
+
+    fn thinking_pulse_color(&self, brightness: f32) -> Color {
         crate::colors::mix_toward(
             crate::colors::text_dim(),
             crate::colors::text(),
@@ -921,7 +932,9 @@ fn debug_title_overlay(lines: &[Line<'static>]) -> String {
 mod tests {
     use super::CollapsibleReasoningCell;
     use crate::history_cell::HistoryCell;
+    use ratatui::style::Modifier;
     use ratatui::text::Line;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn expanded_status_only_reasoning_remains_visible() {
@@ -949,5 +962,17 @@ mod tests {
 
         cell.set_in_progress(false);
         assert!(!cell.is_animating());
+    }
+
+    #[test]
+    fn active_reasoning_uses_an_obvious_peak_style() {
+        let cell = CollapsibleReasoningCell::new_with_id(vec![Line::default()], Some("raw".into()));
+        cell.set_in_progress(true);
+        cell.pulse_started_at
+            .set(Some(Instant::now() - Duration::from_millis(400)));
+
+        let line = cell.display_lines().remove(0);
+        let style = line.spans[0].style;
+        assert!(style.add_modifier.contains(Modifier::BOLD));
     }
 }

@@ -214,6 +214,10 @@ fn raw_only_reasoning_status_is_visible_without_private_content() {
         !active.contains(PRIVATE_THOUGHT),
         "status-only reasoning must not contain private thought:\n{active}"
     );
+    assert!(
+        harness.take_scheduled_frame_events() > 0,
+        "visible active reasoning must schedule a follow-up animation frame"
+    );
 
     harness.handle_event(Event {
         id: "raw-only-status".into(),
