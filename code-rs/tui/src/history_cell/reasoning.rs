@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr as _;
 
 const THINKING_PULSE_PERIOD: Duration = Duration::from_millis(1_600);
+const MIN_THINKING_DISPLAY_DURATION: Duration = Duration::from_millis(1_200);
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CollapsibleReasoningState {
@@ -62,6 +63,7 @@ pub(crate) struct CollapsibleReasoningCell {
     state: RefCell<CollapsibleReasoningState>,
     collapsed: Cell<bool>,
     pulse_started_at: Cell<Option<Instant>>,
+    visual_completion_at: Cell<Option<Instant>>,
 }
 
 impl CollapsibleReasoningCell {
@@ -70,6 +72,7 @@ impl CollapsibleReasoningCell {
             state: RefCell::new(CollapsibleReasoningState::new(lines, id)),
             collapsed: Cell::new(true),
             pulse_started_at: Cell::new(None),
+            visual_completion_at: Cell::new(None),
         }
     }
 
@@ -103,6 +106,7 @@ impl CollapsibleReasoningCell {
             state: RefCell::new(cell_state),
             collapsed: Cell::new(true),
             pulse_started_at: Cell::new(in_progress.then(Instant::now)),
+            visual_completion_at: Cell::new(None),
         }
     }
 
@@ -118,11 +122,20 @@ impl CollapsibleReasoningCell {
     pub(crate) fn set_in_progress(&self, in_progress: bool) {
         self.state.borrow_mut().in_progress = in_progress;
         if in_progress {
+            self.visual_completion_at.set(None);
             if self.pulse_started_at.get().is_none() {
                 self.pulse_started_at.set(Some(Instant::now()));
             }
         } else {
-            self.pulse_started_at.set(None);
+            let visual_completion_at = self
+                .pulse_started_at
+                .get()
+                .and_then(|started_at| started_at.checked_add(MIN_THINKING_DISPLAY_DURATION))
+                .filter(|completion_at| *completion_at > Instant::now());
+            self.visual_completion_at.set(visual_completion_at);
+            if visual_completion_at.is_none() {
+                self.pulse_started_at.set(None);
+            }
         }
     }
 
@@ -221,6 +234,22 @@ impl CollapsibleReasoningCell {
             brightness,
         )
     }
+
+    fn is_visually_in_progress(&self) -> bool {
+        if self.state.borrow().in_progress {
+            return true;
+        }
+
+        match self.visual_completion_at.get() {
+            Some(completion_at) if completion_at > Instant::now() => true,
+            Some(_) => {
+                self.visual_completion_at.set(None);
+                self.pulse_started_at.set(None);
+                false
+            }
+            None => false,
+        }
+    }
 }
 
 impl HistoryCell for CollapsibleReasoningCell {
@@ -238,14 +267,15 @@ impl HistoryCell for CollapsibleReasoningCell {
 
     fn display_lines(&self) -> Vec<Line<'static>> {
         let state = self.state.borrow();
+        let visually_in_progress = self.is_visually_in_progress();
         if self.collapsed.get() {
-            vec![self.thinking_status_line(state.in_progress)]
+            vec![self.thinking_status_line(visually_in_progress)]
         } else {
             if state.sections.is_empty() {
                 // A status-only reasoning lifecycle deliberately has no body.
                 // Keep its activity affordance visible even for users who opt
                 // into expanded reasoning; otherwise it would disappear.
-                return vec![self.thinking_status_line(state.in_progress)];
+                return vec![self.thinking_status_line(visually_in_progress)];
             }
 
             let theme = crate::theme::current_theme();
@@ -268,17 +298,18 @@ impl HistoryCell for CollapsibleReasoningCell {
     }
 
     fn is_animating(&self) -> bool {
-        self.state.borrow().in_progress
+        self.is_visually_in_progress()
     }
 
     fn custom_render_with_skip(&self, area: Rect, buf: &mut Buffer, skip_rows: u16) {
         let state = self.state.borrow();
+        let visually_in_progress = self.is_visually_in_progress();
         if self.collapsed.get() {
             let bg_style = Style::default()
                 .bg(crate::colors::background())
                 .fg(crate::colors::text());
             fill_rect(buf, area, Some(' '), bg_style);
-            let lines = vec![self.thinking_status_line(state.in_progress)];
+            let lines = vec![self.thinking_status_line(visually_in_progress)];
             Paragraph::new(Text::from(lines))
                 .block(Block::default().style(Style::default().bg(crate::colors::background())))
                 .wrap(Wrap { trim: false })
@@ -292,7 +323,7 @@ impl HistoryCell for CollapsibleReasoningCell {
         let stored_lines = sections_to_ratatui_lines(&state.sections, &crate::theme::current_theme());
         let is_status_only = state.sections.is_empty();
         let mut lines = if is_status_only {
-            vec![self.thinking_status_line(state.in_progress)]
+            vec![self.thinking_status_line(visually_in_progress)]
         } else {
             normalized_lines(&stored_lines)
             .into_iter()
@@ -307,7 +338,7 @@ impl HistoryCell for CollapsibleReasoningCell {
             })
             .collect::<Vec<_>>()
         };
-        if state.in_progress && !is_status_only {
+        if visually_in_progress && !is_status_only {
             lines.push(Line::from("…".dim()));
         }
 
@@ -930,7 +961,7 @@ fn debug_title_overlay(lines: &[Line<'static>]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::CollapsibleReasoningCell;
+    use super::{CollapsibleReasoningCell, MIN_THINKING_DISPLAY_DURATION};
     use crate::history_cell::HistoryCell;
     use ratatui::style::Modifier;
     use ratatui::text::Line;
@@ -953,13 +984,16 @@ mod tests {
     }
 
     #[test]
-    fn active_reasoning_animates_until_completed() {
+    fn reasoning_stops_animating_after_its_display_window() {
         let cell = CollapsibleReasoningCell::new_with_id(vec![Line::default()], Some("raw".into()));
 
         assert!(!cell.is_animating());
         cell.set_in_progress(true);
         assert!(cell.is_animating());
 
+        cell.pulse_started_at.set(Some(
+            Instant::now() - MIN_THINKING_DISPLAY_DURATION,
+        ));
         cell.set_in_progress(false);
         assert!(!cell.is_animating());
     }
@@ -974,5 +1008,23 @@ mod tests {
         let line = cell.display_lines().remove(0);
         let style = line.spans[0].style;
         assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn immediately_completed_reasoning_remains_visible_long_enough_to_animate() {
+        let cell = CollapsibleReasoningCell::new_with_id(vec![Line::default()], Some("raw".into()));
+        cell.set_in_progress(true);
+        cell.set_in_progress(false);
+
+        assert!(!cell.is_in_progress(), "the persisted lifecycle is complete");
+        assert!(cell.is_animating(), "the completed lifecycle remains observable");
+        let active = cell.display_lines().remove(0);
+        assert_eq!(active.spans[0].content, "Thinking…");
+
+        cell.visual_completion_at
+            .set(Some(Instant::now() - Duration::from_millis(1)));
+        assert!(!cell.is_animating(), "the visual window eventually settles");
+        let completed = cell.display_lines().remove(0);
+        assert_eq!(completed.spans[0].content, "Thinking");
     }
 }

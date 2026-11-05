@@ -231,6 +231,13 @@ fn raw_only_reasoning_status_is_visible_without_private_content() {
     });
     harness.flush_into_widget();
 
+    let just_completed = render_chat_widget_to_vt100(&mut harness, 80, 18);
+    assert!(
+        just_completed.contains("Thinking…"),
+        "an immediately completed lifecycle should remain visible long enough to animate:\n{just_completed}"
+    );
+
+    std::thread::sleep(Duration::from_millis(1_250));
     let completed = render_chat_widget_to_vt100(&mut harness, 80, 18);
     assert!(
         completed.contains("Thinking"),
