@@ -4922,7 +4922,43 @@ impl ChatWidget<'_> {
                     None,
                 );
             }
-            ResponseItem::Reasoning { summary, .. } => {
+            ResponseItem::Reasoning {
+                id,
+                summary,
+                content,
+                ..
+            } => {
+                if self.config.hide_agent_reasoning {
+                    return;
+                }
+
+                // A raw-only reasoning item has no safe body to replay unless the
+                // user opted into raw reasoning. Still retain the privacy-safe
+                // completion affordance so a resumed transcript does not make a
+                // reasoning turn disappear altogether.
+                let has_raw_content = content.as_ref().is_some_and(|items| {
+                    items.iter().any(|item| match item {
+                        code_protocol::models::ReasoningItemContent::ReasoningText { text }
+                        | code_protocol::models::ReasoningItemContent::Text { text } => {
+                            !text.is_empty()
+                        }
+                    })
+                });
+                if summary.is_empty() && has_raw_content {
+                    let replay_id = id.filter(|id| !id.is_empty()).unwrap_or_else(|| {
+                        format!("replay-reasoning-{}", uuid::Uuid::new_v4())
+                    });
+                    let cell = history_cell::CollapsibleReasoningCell::new_with_id(
+                        vec![Line::default()],
+                        Some(replay_id),
+                    );
+                    cell.set_collapsed(!self.config.tui.show_reasoning);
+                    cell.set_in_progress(false);
+                    let key = self.next_internal_key();
+                    let _ = self.history_insert_with_key_global(Box::new(cell), key);
+                    return;
+                }
+
                 for s in summary {
                     let code_protocol::models::ReasoningItemReasoningSummary::SummaryText { text } =
                         s;
@@ -35032,6 +35068,48 @@ use code_core::protocol::OrderMeta;
             "Thinking…",
             "active collapsed reasoning must expose status, not private content",
         );
+    }
+
+    #[test]
+    fn replay_raw_only_reasoning_keeps_privacy_safe_indicator() {
+        const PRIVATE_THOUGHT: &str = "PRIVATE-REPLAYED-RAW-THOUGHT";
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+
+        chat.render_replay_item(ResponseItem::Reasoning {
+            id: Some("replay-raw-only".to_string()),
+            summary: Vec::new(),
+            content: Some(vec![
+                code_protocol::models::ReasoningItemContent::ReasoningText {
+                    text: PRIVATE_THOUGHT.to_string(),
+                },
+            ]),
+            encrypted_content: None,
+        });
+
+        let reasoning = chat
+            .history_cells
+            .iter()
+            .find_map(|cell| cell.as_any().downcast_ref::<history_cell::CollapsibleReasoningCell>())
+            .expect("raw-only replay should retain a reasoning status cell");
+        let collapsed = reasoning
+            .display_lines()
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter())
+            .map(|span| span.content.into_owned())
+            .collect::<String>();
+        assert_eq!(collapsed, "Thinking");
+        assert!(!collapsed.contains(PRIVATE_THOUGHT));
+
+        reasoning.set_collapsed(false);
+        let expanded = reasoning
+            .display_lines()
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter())
+            .map(|span| span.content.into_owned())
+            .collect::<String>();
+        assert_eq!(expanded, "Thinking");
+        assert!(!expanded.contains(PRIVATE_THOUGHT));
     }
 
     #[test]
