@@ -163,7 +163,7 @@ impl ProviderProfileWatcher {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.applied_profile_id = resolved_id.clone();
+            state.applied_profile_id = resolved_id;
             state.applied_profile_revision = resolved_revision;
             state.last_revision = Some(current_revision);
         }
@@ -287,7 +287,7 @@ mod tests {
         repository.add(profile("p1", "m1"), None).expect("add");
         repository.activate("p1", None).expect("activate");
 
-        let watcher = ProviderProfileWatcher::with_repository(repository.clone());
+        let watcher = ProviderProfileWatcher::with_repository(repository);
         watcher.mark_applied(None, None);
 
         // An invocation override that disagrees with the profile makes the

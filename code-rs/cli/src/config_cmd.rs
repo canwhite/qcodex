@@ -469,7 +469,7 @@ fn list_profiles(
         return Ok(());
     }
 
-    println!("{:<24} {:<20} {:<12} {}", "ID", "MODEL", "WIRE API", "KEY");
+    println!("{:<24} {:<20} {:<12} KEY", "ID", "MODEL", "WIRE API");
     for profile in &profiles {
         let marker = if active_id.as_deref() == Some(profile.id.as_str()) {
             "*"
@@ -750,7 +750,7 @@ fn show_status(
             resolved.as_ref(),
             profile_count,
             project_provider_override,
-            config_home.clone(),
+            config_home,
         );
         println!(
             "{}",

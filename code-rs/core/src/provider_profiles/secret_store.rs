@@ -297,7 +297,8 @@ impl ProviderSecretStore {
         let plaintext = serde_json::to_vec(secrets)
             .map_err(|err| ProviderSecretStoreError::EncryptedFile(err.to_string()))?;
         let key = self.encryption_key()?;
-        let ciphertext = crate::provider_profiles::crypto::encrypt(&key, &plaintext);
+        let ciphertext = crate::provider_profiles::crypto::encrypt(&key, &plaintext)
+            .map_err(ProviderSecretStoreError::EncryptedFile)?;
         let path = self.encrypted_secrets_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)

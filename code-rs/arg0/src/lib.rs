@@ -116,7 +116,7 @@ fn load_dotenv() {
     // 1) Load from global ~/.code/.env (or ~/.codex/.env) first.
     let code_home = code_core::config::find_code_home().ok();
     if let Some(code_home) = code_home.as_ref() {
-        let global_env_path = resolve_code_path_for_read(&code_home, Path::new(".env"));
+        let global_env_path = resolve_code_path_for_read(code_home, Path::new(".env"));
         if let Ok(iter) = dotenvy::from_path_iter(global_env_path) {
             // Global env may legitimately contain provider keys for Code usage.
             set_filtered(iter);

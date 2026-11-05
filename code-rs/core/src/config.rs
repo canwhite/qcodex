@@ -1168,8 +1168,7 @@ impl Config {
         let config_selected_provider_id = model_provider
             .clone()
             .or(config_profile.model_provider)
-            .or(cfg.model_provider)
-            .map(|id| id.to_string());
+            .or(cfg.model_provider);
 
         // A qcodex provider profile owns the endpoint, model and credential
         // when one is active. Invocation overrides win, and a `config.toml`
@@ -1179,7 +1178,7 @@ impl Config {
             .resolve(&crate::provider_profiles::ProviderResolutionInputs {
                 project_provider_override:
                     crate::provider_profiles::project_provider_override_requested(),
-                override_provider_id: model_provider.clone(),
+                override_provider_id: model_provider,
                 override_model: model.clone(),
                 config_provider_id: config_selected_provider_id.clone(),
                 config_model: None,
@@ -1206,9 +1205,7 @@ impl Config {
                     resolved.profile.as_ref().map(|profile| profile.model.clone()),
                 ),
                 None => {
-                    let id = config_selected_provider_id
-                        .clone()
-                        .unwrap_or_else(|| "openai".to_string());
+                    let id = config_selected_provider_id.unwrap_or_else(|| "openai".to_string());
                     let provider = model_providers
                         .get(&id)
                         .ok_or_else(|| {

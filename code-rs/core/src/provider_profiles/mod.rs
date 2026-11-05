@@ -399,9 +399,11 @@ fn restrict_permissions(path: &std::path::Path) -> std::io::Result<()> {
 /// registered here when a configuration is loaded. Registration is
 /// idempotent and only ever points at the code home the process was started
 /// with.
-static SECRET_STORES: OnceLock<RwLock<Vec<(PathBuf, Arc<ProviderSecretStore>)>>> = OnceLock::new();
+type SecretStoreRegistry = Vec<(PathBuf, Arc<ProviderSecretStore>)>;
 
-fn secret_store_slot() -> &'static RwLock<Vec<(PathBuf, Arc<ProviderSecretStore>)>> {
+static SECRET_STORES: OnceLock<RwLock<SecretStoreRegistry>> = OnceLock::new();
+
+fn secret_store_slot() -> &'static RwLock<SecretStoreRegistry> {
     SECRET_STORES.get_or_init(|| RwLock::new(Vec::new()))
 }
 

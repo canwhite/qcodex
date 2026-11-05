@@ -258,7 +258,7 @@ impl ConfigCenter {
         let path = url.split('?').next().unwrap_or("/").to_string();
 
         let mut request = request;
-        let mut response = match (method.clone(), path.as_str()) {
+        let mut response = match (method, path.as_str()) {
             (Method::Get, "/") => self.handle_page(&request),
             (Method::Get, "/api/state") => self.handle_state(&request),
             (Method::Post, "/api/shutdown") => self.handle_shutdown(&request),
@@ -375,18 +375,18 @@ impl ConfigCenter {
         let mut profile = ProviderProfile::new(id.clone(), display_name, payload.base_url, wire_api, payload.model);
         profile.provider_id = payload.provider_id.clone();
 
-        if let Some(api_key) = payload.api_key.as_ref() {
-            if !api_key.trim().is_empty() {
-                let secret_id = fresh_secret_id(&id);
-                // Remove the previous secret first, so a replaced key does
-                // not linger in the credential store.
-                if let Some(previous) = profile.credential.as_ref() {
-                    let _ = self.secret_store.delete_secret(previous);
-                }
-                match self.secret_store.store_secret(&secret_id, api_key.trim()) {
-                    Ok(secret_ref) => profile.credential = Some(secret_ref),
-                    Err(err) => return error_response(StatusCode(500), &err.to_string()),
-                }
+        if let Some(api_key) = payload.api_key.as_ref()
+            && !api_key.trim().is_empty()
+        {
+            let secret_id = fresh_secret_id(&id);
+            // Remove the previous secret first, so a replaced key does
+            // not linger in the credential store.
+            if let Some(previous) = profile.credential.as_ref() {
+                let _ = self.secret_store.delete_secret(previous);
+            }
+            match self.secret_store.store_secret(&secret_id, api_key.trim()) {
+                Ok(secret_ref) => profile.credential = Some(secret_ref),
+                Err(err) => return error_response(StatusCode(500), &err.to_string()),
             }
         }
 
@@ -470,16 +470,16 @@ impl ConfigCenter {
         if payload.clear_api_key == Some(true) {
             profile.credential = None;
         }
-        if let Some(api_key) = payload.api_key.as_ref() {
-            if !api_key.trim().is_empty() {
-                let secret_id = fresh_secret_id(&id);
-                match self.secret_store.store_secret(&secret_id, api_key.trim()) {
-                    Ok(secret_ref) => {
-                        replacement_secret = Some(secret_ref.clone());
-                        profile.credential = Some(secret_ref);
-                    }
-                    Err(err) => return error_response(StatusCode(500), &err.to_string()),
+        if let Some(api_key) = payload.api_key.as_ref()
+            && !api_key.trim().is_empty()
+        {
+            let secret_id = fresh_secret_id(&id);
+            match self.secret_store.store_secret(&secret_id, api_key.trim()) {
+                Ok(secret_ref) => {
+                    replacement_secret = Some(secret_ref.clone());
+                    profile.credential = Some(secret_ref);
                 }
+                Err(err) => return error_response(StatusCode(500), &err.to_string()),
             }
         }
 
@@ -602,12 +602,10 @@ impl ConfigCenter {
             .iter()
             .find(|header| header.field.equiv("Authorization"))
             .map(|header| header.value.as_str().to_string())
+            && let Some(token) = auth.strip_prefix("Bearer ")
+            && constant_time_eq(token.as_bytes(), self.bearer_token.as_bytes())
         {
-            if let Some(token) = auth.strip_prefix("Bearer ")
-                && constant_time_eq(token.as_bytes(), self.bearer_token.as_bytes())
-            {
-                return true;
-            }
+            return true;
         }
         if let Some(cookie) = request
             .headers()
