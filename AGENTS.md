@@ -1,152 +1,183 @@
-# Rust/codex-rs
+# AGENTS.md
 
-In the codex-rs folder where the rust code lives:
+All experience summaries in this file are general principles. Future summaries should follow general patterns, avoiding case-by-case specifics.
 
-- Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
-- When using format! and you can inline variables into {}, always do that.
-- Treat `codex-rs` as a read-only mirror of `openai/codex:main`; edit Rust sources under `code-rs` instead.
+> Aside from the `PRE` global prerequisites below, all content must be categorized under `Plan` / `Think` / `Do` / `Adjust`. New content goes to the end of the corresponding section.
 
-Completion/build step
+## PRE: Global Prerequisites
 
-- Always validate using `./build-fast.sh` from the repo root. This is the single required check and must pass cleanly.
-- `./build-fast.sh` can take 20+min to run from a cold cache!!! Please use long timeout when running `./build-fast.sh` or waiting for it to complete.
-- Policy: All errors AND all warnings must be fixed before you’re done. Treat any compiler warning as a failure and address it (rename unused vars with `_`, remove `mut`, delete dead code, etc.).
-- Do not run additional format/lint/test commands on completion (e.g., `just fmt`, `just fix`, `cargo test`) unless explicitly requested for a specific task.
-- ***NEVER run rustfmt***
-- Before pushing to `main`, run `./pre-release.sh` to mirror the release preflight (dev-fast build, CLI smokes, workspace nextest).
+- All operations default to running the `caveman` skill first.
+  - **Session-start protocol (must, not optional):**
+    1. Invoke the `caveman` skill as the first action of a new session, **before replying to any user message**.
+    2. Do NOT wait for the skill-list system-reminder or an explicit user prompt to trigger it.
+    3. Every reply in the session begins with the `🥷` prefix (skill-defined; drop caveman only for the exceptions it lists, then resume).
+    4. Failure mode to avoid: invoking caveman only after the user asks "did you start caveman?" is itself a rule violation — the rule fires at session start, not at user request.
+- If a skill is missing or unavailable, record the reason and continue — never block the task.
+- Conflict priority: explicit user instruction > safety/build rules > this file > default habits.
+- At task start: if the user asks you to execute, show and maintain a TODO list; completed items are marked `done`, unfinished items `todo`.
+- Git commit messages must be written in English.
 
-Optional regression checks (recommended when touching the Rust workspace):
+## Plan
 
-- `cargo nextest run --no-fail-fast` — runs all workspace tests with the TUI helpers automatically enabled. The suite is green after the resume fixtures/git-init fallback updates; older Git builds may print a warning when falling back from `--initial-branch`, but tests still pass.
-- Focused sweeps stay quick and green: `cargo test -p code-tui --features test-helpers`, `cargo test -p code-cloud-tasks --tests`, and `cargo test -p mcp-types --tests`.
+### File Organization
+- **Plans**: All implementation plans MUST be written to the `docs/` directory. Once a plan is written, run a pre-mortem and update the solutions in the plan markdown until no high-risk items remain.
+- **Test Notes**: All test-related text, test cases, and test data MUST be written to the `test/` directory.
+- **CLAUDE.md**: Contains general principles and constraints only, no plan content.
 
-When debugging regressions or bugs, write a failing test (or targeted reproduction script) first and confirm it captures the issue before touching code—if it can’t fail, you can’t be confident the fix works.
+### Plan Content
+- A plan should contain: goal, scope, steps, acceptance criteria, risks, rollback plan.
+- Maintain a TODO list during execution: completed items marked `done`, unfinished items `todo`.
+- After verification, update the plan, the TODO list, and the docs; if verification fails, return to `Think` / `Do` and keep debugging.
 
-## Documentation hygiene
+### Compact Instructions
+When compressing, preserve in priority order:
+1. Architecture decisions (NEVER summarize)
+2. Modified files and their key changes
+3. Current verification status (pass/fail)
+4. Open TODOs and rollback notes
+5. Tool outputs (can delete, keep pass/fail only)
 
-- Keep docs clean, clear, and current; prune stale instructions instead of piling on caveats.
-- Avoid excessive verbosity; prioritize concise guidance over long narratives.
-- Do not document minor or non-core features; focus on system-critical flows and expectations.
-- Never commit temporary "working" docs, plans, or scratch notes.
+## Think
 
-## Strict Ordering In The TUI History
+### Debug Principle 1: Log Immediately at Framework Boundaries
+When data crosses a framework boundary (router → handler, middleware → handler, etc.), **log immediately on the receiving side** — don't trust that the framework passed it correctly.
+- Framework primitives (params, context, etc.) may return unexpected values
+- Use curl to bypass the client and verify server behavior directly
 
-The TUI enforces strict, per‑turn ordering for all streamed content. Every
-stream insert (Answer or Reasoning) must be associated with a stable
-`(request_ordinal, output_index, sequence_number)` key provided by the model.
+### Debug Principle 2: Check Logs First, Don't Guess
+When encountering issues, the first response should be to check logs, not to try things repeatedly.
+- The beginning of a log often contains the root cause clue
+- Use `docker inspect` to check `ExitCode`, not just `docker logs`
 
-- A stream insert MUST carry a non‑empty stream id. The UI seeds an order key
-  for `(kind, id)` from the event's `OrderMeta` before any insert.
-- The TUI WILL NOT insert streaming content without a stream id. Any attempt to
-  insert without an id is dropped with an error log to make the issue visible
-  during development.
+### Debug Principle 3: Read Framework Source, Don't Guess Behavior
+When in doubt about a framework's behavior, read the source before hypothesizing. Documentation ≠ source; the source is ground truth.
 
-## Commit Messages
+### Debug Output Methodology
+**Core principle: Add output upstream of the assumed problem location, not downstream**
 
-- Review staged changes before every commit: `git --no-pager diff --staged --stat` (and skim `git --no-pager diff --staged` if needed).
-- Write a descriptive subject that explains what changed and why. Avoid placeholders like "chore: commit local work".
-- Prefer Conventional Commits with an optional scope: `feat(tui/history): …`, `fix(core/exec): …`, `docs(agents): …`.
-- Keep the subject ≤ 72 chars; add a short body if rationale or context helps future readers.
-- Use imperative, present tense: "add", "fix", "update" (not "added", "fixes").
-- For merge commits, skip custom prefixes like `merge(main<-origin/main):`. Use a clear subject such as `Merge origin/main: <what changed and how conflicts were resolved>`.
+#### Output Levels
+```typescript
+// Level 1: Confirm execution flow — log at function entry/exit
+console.log("[DEBUG] Entering functionName", { relatedVars });
 
-Examples:
+// Level 2: Confirm key variables — output actual values
+console.log("[DEBUG] variableName:", actualValue);
 
-- `feat(tui/history): show exit code and duration for Exec cells`
-- `fix(core/codex): handle SIGINT in on_exec_command_begin to avoid orphaned child`
-- `docs(agents): clarify commit-message expectations`
+// Level 3: Structured output
+console.log("[DEBUG] result:", { field1, field2 });
+```
 
-## How to Git Push
+#### Log Prefix Convention
+- `grep -r "\[DEBUG-" src/` to clear all debug logs at once
+- Use a consistent prefix within the same session
 
-### Merge-and-Push Policy (Do Not Rebase)
+#### General Problem Localization Order
+1. Assume "A" is the root cause
+2. Add logs at A's upstream (the caller) to confirm "does execution reach A?"
+3. If not reached, the problem is further upstream
+4. If reached, add logs at A's output/return to confirm "is the output correct?"
+5. Repeat until the root cause is found
 
-When the user asks you to "push" local work:
+### React Rendering Optimization
+For React rendering issues (especially `useEffect` infinite loops, stale closures, and dependency array problems), invoke the `no-useeffect` skill instead of applying case-by-case fixes. If the skill is unavailable, follow the official rules on dependencies and closures.
 
-- Never rebase in this flow. Do not use `git pull --rebase` or attempt to replay local commits.
-- Prefer a simple merge of `origin/main` into the current branch, keeping our local history intact.
-- If the remote only has trivial release metadata changes (e.g., `codex-cli/package.json` version bumps), adopt the remote version for those files and keep ours for everything else unless the user specifies otherwise.
-- If in doubt or if conflicts touch non-trivial areas, pause and ask before resolving.
+### Read Tool Mode Preference (when `QCODE_FEATURE_READ_MODES=1`)
+The Read tool supports a `mode` parameter. **The default is `mode: "summary"`** (imports + exports only, ≤8 KiB). Measured on 1470 real source files, a summary costs ~7% of the full body; on real traffic 74% of turns fire 2+ parallel Reads, so most reads are orientation rather than "I need this body".
+- **Omit `mode`** for orientation — "what does X export?", "list symbols", "API surface". This is the cheap path.
+- **Pass `mode: "full"`** before editing a file, quoting its contents, or reasoning about its implementation. Edit requires the full body to accept a write, so you will be sent back here if you skip it.
+- An explicit `offset`/`limit` is treated as a body read (`slice`) even without a mode — "give me lines 480-491" is never a request for an outline.
+- Use `mode: "slice"` when you already know the line range.
 
-Quick procedure (merge-only):
+With the flag off, every read returns the full body and this section does not apply.
 
-- Commit your local work first:
-  - Review: `git --no-pager diff --stat` and `git --no-pager diff`
-  - Stage + commit: `git add -A && git commit -m "<descriptive message of local changes>"`
-- Fetch remote: `git fetch origin`
-- Merge without auto-commit: `git merge --no-ff --no-commit origin/main` (stops before committing so you can choose sides)
-- Resolve policy:
-  - Default to ours: `git checkout --ours .`
-  - Take remote for trivial package/version files as needed, e.g.: `git checkout --theirs codex-cli/package.json`
-- Stage and commit the merge with a descriptive message, e.g.:
-  - `git add -A && git commit -m "Merge origin/main: adopt remote version bumps; keep ours elsewhere (<areas>)"`
-- Run `./build-fast.sh` and then `git push`
+**Why this entry survives even though prose here has ~0 compliance:** 13 consecutive real Read calls passed no `mode` while the tool description already said "PREFER mode: summary" in bold with worked examples. The default was moved into the handler's branch precisely because asking does not work — the recovery path is carried by Edit's rejection message, not by documentation.
 
-## Command Execution Architecture
+## Do
 
-The command execution flow in Codex follows an event-driven pattern:
+### New Dependencies / SDK Migration: Always Read Source First
+**Before introducing a new library or migrating versions:**
+1. Read the key source implementation (e.g. `node_modules/{package}/dist/`, or follow `package.json` `main` / `module` / `exports` to find the entry point)
+2. Verify exports, function signatures, calling conventions, and data formats
+3. Documentation ≠ source code — docs may be wrong or outdated
 
-1. **Core Layer** (`codex-core/src/codex.rs`):
-   - `on_exec_command_begin()` initiates command execution
-   - Creates `EventMsg::ExecCommandBegin` events with command details
+### Verification (Required After Any Change, Tiered by Change Type)
+- **Documentation changes**: check spelling, links, and formatting.
+- **Code changes**:
+  1. Run the project's **build command** — must pass (e.g. `bun run build`, `go build`, `cargo build`, `gradle build`)
+  2. Run the project's **static analysis / type check** — zero errors (e.g. `bunx tsc --noEmit`, `golangci-lint run`, `cargo check`, `mypy`)
+  3. Runtime verification: the service starts + API responses are correct
+- **API changes**: test the normal, unauthenticated, unauthorized, and empty-data paths with `curl`
+- **Frontend changes**: must be verified in a browser, not with `curl` alone. Steps: build → restart the service → walk through the affected user flows in a browser → check the DevTools Console for errors
 
-2. **TUI Layer** (`codex-tui/src/chatwidget.rs`):
-   - `handle_codex_event()` processes execution events
-   - Manages `RunningCommand` state for active commands
-   - Creates `HistoryCell::Exec` for UI rendering
+**Definition of done:**
+- Build passes
+- Static analysis / type check zero errors across the entire project
+- Runtime verification passed
+- Logic correctness check passed
+- Fix Protocol followed (if this change is a bug fix): regression test red-then-green, blast radius checked, adversarial re-review done
+- Prevention step taken, if this bug class is likely to recur
+- Frontend changes verified in a browser
+- No untracked TODO left behind; if any remain, they must be explicitly recorded
+- TODO list shown and kept updated with `done` / `todo`
 
-3. **History Cell** (`codex-tui/src/history_cell.rs`):
-   - `new_active_exec_command()` - Creates cell for running command
-   - `new_completed_exec_command()` - Updates with final output
-   - Handles syntax highlighting via `ParsedCommand`
+### Logic Correctness Check
+**Any code change must verify logic correctness in addition to static analysis / type checking.**
 
-This architecture separates concerns between execution logic (core), UI state management (chatwidget), and rendering (history_cell).
+#### Verification Method
+1. List all execution paths affected by the change (normal + edge cases)
+2. Confirm each path's return value matches expectations
+3. Manually test critical paths with curl (unauthenticated / unauthorized / empty data)
+4. Find a logic issue → fix it → re-verify all paths until complete
 
-### Auto Drive Escape Handling
+#### Self-Check Checklist
+- [ ] What execution paths does this change have?
+- [ ] What is the return value of each path?
+- [ ] Are edge cases (empty data, unauthenticated, unauthorized) handled correctly?
+- [ ] Does anything else depend on this logic that needs updating?
 
-- All Auto Drive escape routing lives in `code-rs/tui/src/chatwidget.rs`. The
-  `ChatWidget::auto_should_handle_global_esc` helper decides whether the global
-  Esc handler in `app.rs` should defer to Auto Drive, and
-  `ChatWidget::handle_key_event` owns the actual stop / pause behaviour. When
-  you need to tweak Esc semantics, update those two locations together.
-- The approval pane must *never* swallow Esc. `code-rs/tui/src/bottom_pane/auto_coordinator_view.rs`
-  intentionally lets Esc (and the other approval shortcuts) bubble back to the
-  chat widget; keep this contract intact when editing the view layer.
-- Avoid adding additional Esc handlers elsewhere for Auto Drive flows. Doing
-  so breaks the modal-first ordering in `app.rs` and prevents users from
-  reliably stopping a run.
+### Frontend Change Verification
+**Must use browser verification, not just curl.** curl doesn't trigger CORS and may miss cross-origin issues.
 
-### Auto Drive Crash Diagnostics
+#### Verification Steps
+1. `bun run build`
+2. Restart the server
+3. Open a browser and walk through the affected user flows
+4. Check the DevTools Console for errors
 
-- `code-dev` in `/home/azureuser/.bashrc` now auto-enables local crash capture for dev runs. It sets `CODEX_TUI_RECORD_SESSION=1`, chooses a per-run `CODEX_TUI_SESSION_LOG_PATH` under `~/.code/debug_logs/code-dev/`, and forces `RUST_BACKTRACE=full` unless you already overrode it.
-- Existing terminal sessions do **not** pick up the updated `code-dev` alias automatically. In every already-open shell that you want to use for debugging, run `source ~/.bashrc` (or restart the shell with `exec bash`). In tmux, do this once per pane/window before launching `code-dev`.
-- On startup, `code-dev` prints the exact session log path. Keep that path after a crash; it now contains Auto Drive coordinator decisions, countdown ticks, token metrics, and structured panic records with backtraces.
-- TUI panics are logged in both places: the per-run session JSONL log and the regular `critical.log` under Code's log directory. Check both when debugging long-running Auto Drive crashes.
-- If you want telemetry to leave the machine as well, configure `[otel]` in `~/.code/config.toml`. The TUI and `code exec --auto ...` now attach the OTEL logger layer, so exported `code_otel` events and error-level crash logs are emitted when an exporter is configured.
+### Integration / Acceptance Test (Effects Test)
+Main test: Has the modified new entry been integrated into the system? Are the new capabilities available and ready for integration? Is the result in line with expectations? It needs evidence.
 
-## Writing New UI Regression Tests
+### Fix Protocol
+**Need:** bug fixes are themselves a frequent source of new bugs. Being careful does not prevent this — make the error visible and let the visible thing fail loudly.
 
-- Start with `make_chatwidget_manual()` (or `make_chatwidget_manual_with_sender()`) to build a `ChatWidget` in isolation with in-memory channels.
-- Simulate user input by defining a small enum (`ScriptStep`) and feeding key events via `chat.handle_key_event()`; see `run_script()` in `tests.rs` for a ready-to-use helper that also pumps `AppEvent`s.
-- After the scripted interaction, render with a `ratatui::Terminal`/`TestBackend`, then use `buffer_to_string()` (wraps `strip_ansi_escapes`) to normalize ANSI output before asserting.
-- Prefer snapshot assertions (`assert_snapshot!`) or rich string comparisons so UI regressions are obvious. Keep snapshots deterministic by trimming trailing space and driving commit ticks just like the existing tests do.
-- When adding fixtures or updating snapshots, gate rewrites behind an opt-in env var (e.g., `UPDATE_IDEAL=1`) so baseline refreshes remain explicit.
+1. **Test first.** Before changing code, pin the old behavior with a test/assertion that fails because of the bug (red first, then green). If the bug cannot be reproduced automatically, record the manual repro steps and walk through them again after the fix.
+2. **Never edit expectations to pass.** Fixing a test by changing its expected value, or deleting/weakening the test, is a self-granted amnesty — treat it as a new bug. The one exception: the assertion itself was wrong. Then prove it (it never held, or it encoded an unintended behavior) and say so out loud in the report. "The test was wrong" is a claim requiring the same evidence as any other.
+3. **Blast radius check.** Before adding any new rejection / interception / validation, list the normal paths it would also block, and get the user's ruling first. Never decide the scope of a block yourself. Exception: the scope was already decided in a plan, ADRs, or a prior ruling in this session — then follow it and record that you did. A block of this kind is never an AFK decision; it is always HITL.
+4. **Adversarial re-review after the fix.** Review once from the fixer's view ("is the change right?") and once from the caller's view ("did the external behavior change?"). Only pass when both agree — the same eyes cannot see their own blind spot.
 
-## VT100 Snapshot Harness
+**Why:** "changed wrong but stayed green" is the only dangerous failure; a wrong change that turns the suite red is not fatal.
 
-- The VT100 harness lives under `code-rs/tui/tests/vt100_chatwidget_snapshot.rs`. It renders the live `ChatWidget` UI into a `Terminal<VT100Backend>` so snapshots capture the exact PTY output the user sees (including frame chrome, composer rows, and streaming inserts).
-- Use `ChatWidgetHarness` helpers from `code_tui::test_helpers` to seed history events and drain `AppEvent`s. Call `render_chat_widget_to_vt100(width, height)` for a single frame, or `render_chat_widget_frames_to_vt100(&[(w,h), ...])` to simulate successive draws while streaming.
-- The harness now exports `layout_metrics()` so tests can assert scroll offsets and viewport heights without spelunking through private fields.
-- Snapshots are deterministic: tests set `CODEX_TUI_FAKE_HOUR=12` automatically so greeting text (“What can I code for you today?”) doesn’t oscillate. If you need a different hour in a test, override the env var before constructing the harness.
-- To add a new scenario, push history/events onto the harness, call `render_*_to_vt100`, and either `insta::assert_snapshot!` the frame(s) or manually assert string contents. For multi-frame streaming, push deltas/events first, then capture frames in the order the UI would display them.
-- Run all VT100 snapshots via:
-  - `cargo test -p code-tui --test vt100_chatwidget_snapshot --features test-helpers -- --nocapture`
-- When you intentionally change rendering, review the `.snap.new` files that appear in `code-rs/tui/tests/snapshots/` and accept them with `cargo insta review` / `cargo insta accept` (limit to this test where possible).
+### Untrusted Claims
+- Claims in comments or docs — including your own — are never evidence; see `Think` Principle 3. Only a reproducible input plus observed output counts.
+- When a comment contradicts behavior, behavior wins — fix the comment.
+- Self-assessment ("done", "works") is the most common false positive: hold it to the same evidence you would demand of anyone else.
 
-### Monitor Release Workflows After Pushing
+### Prevention for Recurring Bugs
+A bug class likely to recur needs a prevention machine, not just a fix — a probe that fails on purpose, a contract test, an invariant checker. Run `post-mortem`; it requires the prevention step and classifies it AFK / HITL.
 
-- Use `scripts/wait-for-gh-run.sh` to follow GitHub Actions releases without spamming manual `gh` commands.
-- Typical release check right after a push: `scripts/wait-for-gh-run.sh --workflow Release --branch main`.
-- If you already know the run ID (e.g., from webhook output), run `scripts/wait-for-gh-run.sh --run <run-id>`.
-- Adjust the poll cadence via `--interval <seconds>` (defaults to 8). The script exits 0 on success and 1 on failure, so it can gate local automation.
-- Pass `--failure-logs` to automatically dump logs for any job that does not finish successfully.
-- Dependencies: GitHub CLI (`gh`) and `jq` must be available in `PATH`.
+## Adjust
+
+### Global Scan After Fix
+After a fix, do not apply single-case patches. Zoom out and scan globally:
+1. Does this root cause exist elsewhere?
+2. Do similar patterns also have latent defects?
+3. Does the fix introduce consistency risk (A changed, but the analogous B did not)?
+4. If the problem is hard to localize, use the `diagnose` skill on its own. If the skill is unavailable, continue with a systematic investigation.
+
+**Why:** Local fixes accumulate technical debt; similar issues recur.
+**How to apply:** After every fix, ask "where else does this problem exist?" — stop only when you can confidently answer "this one place only".
+
+### Closed-Loop Update
+- Update the plan, TODO list, and verification status in `docs/`.
+- If verification fails, return to `Think` / `Do` and keep debugging.
+- If new risks are found, update the pre-mortem and the plan.
