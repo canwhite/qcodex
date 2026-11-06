@@ -161,6 +161,25 @@ fn item_id_or_fallback(item_id: &Option<String>, fallback_item_id: &str) -> Opti
     )
 }
 
+/// A few compatible streaming endpoints repeat the complete reasoning in the
+/// terminal `message` after having already sent it in `delta`. Keep the final
+/// message as a fallback without recording that same private content twice.
+fn append_terminal_reasoning_content(reasoning_text: &mut String, terminal_text: &str) -> Option<String> {
+    if terminal_text.is_empty() || reasoning_text.ends_with(terminal_text) {
+        return None;
+    }
+
+    let new_text = terminal_text
+        .strip_prefix(reasoning_text.as_str())
+        .unwrap_or(terminal_text);
+    if new_text.is_empty() {
+        return None;
+    }
+
+    reasoning_text.push_str(new_text);
+    Some(new_text.to_string())
+}
+
 /// Implementation for the classic Chat Completions API.
 #[expect(
     clippy::too_many_arguments,
@@ -808,20 +827,19 @@ async fn process_chat_sse<S>(
 {
     let mut stream = stream.eventsource();
 
-    // State to accumulate a function call across streaming chunks.
+    // State to accumulate function calls across streaming chunks.
     // OpenAI may split the `arguments` string over multiple `delta` events
     // until the chunk whose `finish_reason` is `tool_calls` is emitted. We
-    // keep collecting the pieces here and forward a single
-    // `ResponseItem::FunctionCall` once the call is complete.
+    // keep the calls keyed by their provider index and forward every
+    // `ResponseItem::FunctionCall` once the turn is complete.
     #[derive(Default)]
     struct FunctionCallState {
         name: Option<String>,
         arguments: String,
         call_id: Option<String>,
-        active: bool,
     }
 
-    let mut fn_call_state = FunctionCallState::default();
+    let mut fn_call_states = BTreeMap::<usize, FunctionCallState>::new();
     let mut assistant_text = String::new();
     let mut reasoning_text = String::new();
     let mut think_tag_router = ThinkTagRouter::default();
@@ -1094,7 +1112,11 @@ async fn process_chat_sse<S>(
                                 item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
                                 sequence_number: None,
                                 output_index: None,
-                                content_index: None,
+                                // The terminal Reasoning item represents this as its
+                                // first content part (#c0). Keep the live stream on
+                                // the same identity so its status is finalized in
+                                // place instead of creating a second Thinking row.
+                                content_index: Some(0),
                             }))
                             .await;
                     }
@@ -1138,7 +1160,7 @@ async fn process_chat_sse<S>(
                             item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
                             sequence_number: None,
                             output_index: None,
-                            content_index: None,
+                            content_index: Some(0),
                         }))
                         .await;
                 }
@@ -1153,15 +1175,14 @@ async fn process_chat_sse<S>(
             {
                 // Accept either a plain string or an object with { text | content }
                 if let Some(s) = message_reasoning.as_str() {
-                    if !s.is_empty() {
-                        reasoning_text.push_str(s);
+                    if let Some(delta) = append_terminal_reasoning_content(&mut reasoning_text, s) {
                         let _ = tx_event
                             .send(Ok(ResponseEvent::ReasoningContentDelta {
-                                delta: s.to_string(),
+                                delta,
                                 item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
                                 sequence_number: None,
                                 output_index: None,
-                                content_index: None,
+                                content_index: Some(0),
                             }))
                             .await;
                     }
@@ -1170,15 +1191,14 @@ async fn process_chat_sse<S>(
                         .get("text")
                         .and_then(|v| v.as_str())
                         .or_else(|| obj.get("content").and_then(|v| v.as_str()))
-                        && !s.is_empty() {
-                            reasoning_text.push_str(s);
+                        && let Some(delta) = append_terminal_reasoning_content(&mut reasoning_text, s) {
                             let _ = tx_event
                                 .send(Ok(ResponseEvent::ReasoningContentDelta {
-                                    delta: s.to_string(),
+                                    delta,
                                     item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
                                     sequence_number: None,
                                     output_index: None,
-                                    content_index: None,
+                                    content_index: Some(0),
                                 }))
                                 .await;
                         }
@@ -1189,33 +1209,39 @@ async fn process_chat_sse<S>(
                 .get("delta")
                 .and_then(|d| d.get("tool_calls"))
                 .and_then(|tc| tc.as_array())
-                && let Some(tool_call) = tool_calls.first() {
-                    // Mark that we have an active function call in progress.
-                    fn_call_state.active = true;
+            {
+                for (position, tool_call) in tool_calls.iter().enumerate() {
+                    let tool_index = tool_call
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .and_then(|index| usize::try_from(index).ok())
+                        .unwrap_or(position);
+                    let state = fn_call_states.entry(tool_index).or_default();
 
                     // Extract call_id if present.
                     if let Some(id) = tool_call.get("id").and_then(|v| v.as_str()) {
-                        fn_call_state.call_id.get_or_insert_with(|| id.to_string());
+                        state.call_id.get_or_insert_with(|| id.to_string());
                     }
 
                     // Extract function details if present.
                     if let Some(function) = tool_call.get("function") {
                         if let Some(name) = function.get("name").and_then(|n| n.as_str()) {
-                            fn_call_state.name.get_or_insert_with(|| name.to_string());
+                            state.name.get_or_insert_with(|| name.to_string());
                         }
 
                         if let Some(args_fragment) =
                             function.get("arguments").and_then(|a| a.as_str())
                         {
-                            fn_call_state.arguments.push_str(args_fragment);
+                            state.arguments.push_str(args_fragment);
                         }
                     }
                 }
+            }
 
             // Emit end-of-turn when finish_reason signals completion.
             if let Some(finish_reason) = choice.get("finish_reason").and_then(|v| v.as_str()) {
                 match finish_reason {
-                    "tool_calls" if fn_call_state.active => {
+                    "tool_calls" if !fn_call_states.is_empty() => {
                         flush_think_tag_router(
                             &mut think_tag_router,
                             &mut assistant_text,
@@ -1235,16 +1261,26 @@ async fn process_chat_sse<S>(
                             let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
                         }
 
-                        // Then emit the FunctionCall response item.
-                        let item = ResponseItem::FunctionCall {
-                            id: current_item_id.clone(),
-                            name: fn_call_state.name.clone().unwrap_or_else(|| "".to_string()),
-                            namespace: None,
-                            arguments: fn_call_state.arguments.clone(),
-                            call_id: fn_call_state.call_id.clone().unwrap_or_else(String::new),
-                        };
+                        // Then emit every completed FunctionCall response item
+                        // in provider index order, which lets the core/TUI create
+                        // one labelled lifecycle card for each call.
+                        for state in fn_call_states.values() {
+                            let item = ResponseItem::FunctionCall {
+                                id: current_item_id.clone(),
+                                name: state.name.clone().unwrap_or_default(),
+                                namespace: None,
+                                arguments: state.arguments.clone(),
+                                call_id: state.call_id.clone().unwrap_or_default(),
+                            };
 
-                        let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
+                            let _ = tx_event
+                                .send(Ok(ResponseEvent::OutputItemDone {
+                                    item,
+                                    sequence_number: None,
+                                    output_index: None,
+                                }))
+                                .await;
+                        }
                     }
                     "stop" => {
                         flush_think_tag_router(
@@ -1288,7 +1324,7 @@ async fn process_chat_sse<S>(
                     .await;
 
                 // Prepare for potential next turn (should not happen in same stream).
-                // fn_call_state = FunctionCallState::default();
+                // fn_call_states.clear();
 
                 // Mark the request log as complete
                 if let Ok(logger) = debug_logger.lock() {
@@ -1542,7 +1578,13 @@ where
                         continue;
                     }
                 }
-                Poll::Ready(Some(Ok(ResponseEvent::ReasoningContentDelta { delta, item_id, sequence_number, .. }))) => {
+                Poll::Ready(Some(Ok(ResponseEvent::ReasoningContentDelta {
+                    delta,
+                    item_id,
+                    sequence_number,
+                    content_index,
+                    ..
+                }))) => {
                     // Always accumulate reasoning deltas so we can emit a final Reasoning item at Completed.
                     this.cumulative_reasoning.push_str(&delta);
                     // Capture the item_id if we haven't already
@@ -1556,7 +1598,7 @@ where
                             item_id,
                             sequence_number,
                             output_index: None,
-                            content_index: None,
+                            content_index,
                         })));
                     } else {
                         continue;
@@ -1706,6 +1748,7 @@ mod tests {
     use super::attach_reasoning_to_assistant_message;
     use super::process_chat_sse;
     use super::provider_uses_deepseek_reasoning_content;
+    use super::push_tool_call_message;
     use super::create_chat_completions_payload;
     use super::rewrite_assistant_reasoning_for_deepseek;
     use super::sanitize_message_roles_for_strict_chat_providers;
@@ -1789,11 +1832,17 @@ mod tests {
 
         let mut answer_deltas = String::new();
         let mut reasoning_deltas = String::new();
+        let mut reasoning_content_indices = Vec::new();
         while let Some(event) = rx.recv().await {
             match event.unwrap() {
                 ResponseEvent::OutputTextDelta { delta, .. } => answer_deltas.push_str(&delta),
-                ResponseEvent::ReasoningContentDelta { delta, .. } => {
-                    reasoning_deltas.push_str(&delta)
+                ResponseEvent::ReasoningContentDelta {
+                    delta,
+                    content_index,
+                    ..
+                } => {
+                    reasoning_deltas.push_str(&delta);
+                    reasoning_content_indices.push(content_index);
                 }
                 _ => {}
             }
@@ -1801,6 +1850,11 @@ mod tests {
 
         assert_eq!(answer_deltas, "visible answer");
         assert_eq!(reasoning_deltas, "private thought");
+        assert_eq!(
+            reasoning_content_indices,
+            vec![Some(0)],
+            "live reasoning must use the same #c0 stream id as its terminal item"
+        );
     }
 
     #[tokio::test]
@@ -1810,7 +1864,7 @@ mod tests {
                 b"data: {\"id\":\"response-1\",\"choices\":[{\"item_id\":\"item-1\",\"delta\":{\"reasoning_content\":\"private thought\"}}]}\n\n",
             )),
             Ok(Bytes::from_static(
-                b"data: {\"choices\":[{\"item_id\":\"item-1\",\"delta\":{\"content\":\"visible answer\"},\"finish_reason\":\"stop\"}]}\n\n",
+                b"data: {\"choices\":[{\"item_id\":\"item-1\",\"delta\":{\"content\":\"visible answer\"},\"message\":{\"reasoning_content\":\"private thought\"},\"finish_reason\":\"stop\"}]}\n\n",
             )),
         ];
         let (tx, mut rx) = mpsc::channel(16);
@@ -1828,11 +1882,17 @@ mod tests {
 
         let mut answer_deltas = String::new();
         let mut reasoning_deltas = String::new();
+        let mut reasoning_content_indices = Vec::new();
         while let Some(event) = rx.recv().await {
             match event.unwrap() {
                 ResponseEvent::OutputTextDelta { delta, .. } => answer_deltas.push_str(&delta),
-                ResponseEvent::ReasoningContentDelta { delta, .. } => {
-                    reasoning_deltas.push_str(&delta)
+                ResponseEvent::ReasoningContentDelta {
+                    delta,
+                    content_index,
+                    ..
+                } => {
+                    reasoning_deltas.push_str(&delta);
+                    reasoning_content_indices.push(content_index);
                 }
                 _ => {}
             }
@@ -1840,6 +1900,59 @@ mod tests {
 
         assert_eq!(answer_deltas, "visible answer");
         assert_eq!(reasoning_deltas, "private thought");
+        assert_eq!(
+            reasoning_content_indices,
+            vec![Some(0)],
+            "live DeepSeek reasoning must use the same #c0 stream id as its terminal item"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_sse_emits_every_parallel_tool_call() {
+        let events = vec![Ok(Bytes::from_static(
+            b"data: {\"id\":\"response-1\",\"choices\":[{\"item_id\":\"item-1\",\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"cmd\\\":\\\"pwd\\\"}\"}},{\"index\":1,\"id\":\"call-2\",\"type\":\"function\",\"function\":{\"name\":\"web_search\",\"arguments\":\"{\\\"q\\\":\\\"docs\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        ))];
+        let (tx, mut rx) = mpsc::channel(16);
+        let logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+
+        process_chat_sse(
+            futures::stream::iter(events),
+            tx,
+            Duration::from_secs(1),
+            logger,
+            "test-request".to_string(),
+            None,
+        )
+        .await;
+
+        let mut calls = Vec::new();
+        while let Some(event) = rx.recv().await {
+            if let ResponseEvent::OutputItemDone {
+                item:
+                    ResponseItem::FunctionCall {
+                        name,
+                        call_id,
+                        arguments,
+                        ..
+                    },
+                ..
+            } = event.unwrap()
+            {
+                calls.push((name, call_id, arguments));
+            }
+        }
+
+        assert_eq!(
+            calls,
+            vec![
+                ("shell".to_string(), "call-1".to_string(), r#"{"cmd":"pwd"}"#.to_string()),
+                (
+                    "web_search".to_string(),
+                    "call-2".to_string(),
+                    r#"{"q":"docs"}"#.to_string(),
+                ),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -2207,7 +2320,7 @@ mod tests {
                 item_id: Some("reasoning-1".to_string()),
                 sequence_number: None,
                 output_index: None,
-                content_index: None,
+                content_index: Some(0),
             }),
             Ok(ResponseEvent::OutputItemDone {
                 item: ResponseItem::Reasoning {
@@ -2237,7 +2350,10 @@ mod tests {
         assert!(matches!(
             &events[..],
             [
-                Ok(ResponseEvent::ReasoningContentDelta { .. }),
+                Ok(ResponseEvent::ReasoningContentDelta {
+                    content_index: Some(0),
+                    ..
+                }),
                 Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Reasoning { .. }, .. }),
                 Ok(ResponseEvent::Completed { .. }),
             ]
@@ -2363,6 +2479,29 @@ mod tests {
         let assistant = &payload["messages"][0];
         assert_eq!(assistant["reasoning_content"], "private thought");
         assert!(assistant.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn deepseek_serialization_returns_reasoning_content_with_tool_calls() {
+        let mut messages = Vec::new();
+        push_tool_call_message(
+            &mut messages,
+            json!({
+                "id": "call-1",
+                "type": "function",
+                "function": { "name": "shell", "arguments": "{}" },
+            }),
+            Some("private tool rationale"),
+        );
+        let mut payload =
+            create_chat_completions_payload("deepseek-reasoner", messages, Vec::new(), None);
+
+        rewrite_assistant_reasoning_for_deepseek(&mut payload);
+
+        let assistant = &payload["messages"][0];
+        assert_eq!(assistant["reasoning_content"], "private tool rationale");
+        assert!(assistant.get("reasoning").is_none());
+        assert_eq!(assistant["tool_calls"][0]["id"], "call-1");
     }
 
     #[test]
