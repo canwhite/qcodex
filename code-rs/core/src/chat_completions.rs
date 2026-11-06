@@ -215,28 +215,36 @@ fn reasoning_by_anchor_index(input: &[ResponseItem]) -> std::collections::HashMa
             continue;
         }
 
-        // A tool-call assistant message has to carry its own rationale for
-        // DeepSeek-compatible APIs. Prefer the immediately following call over
-        // a preceding commentary message from the same response.
-        let anchor = match input.get(idx + 1) {
+        // A raw reasoning item and its visible assistant text/tool calls are
+        // all fields of one Chat Completions assistant message. Preserve both
+        // adjacent anchors so the serializer can rebuild that complete turn.
+        let mut anchors = Vec::new();
+        if idx > 0
+            && matches!(
+                input[idx - 1],
+                ResponseItem::Message { ref role, .. } if role == "assistant"
+            )
+        {
+            anchors.push(idx - 1);
+        }
+        let next_is_anchor = match input.get(idx + 1) {
             Some(
                 ResponseItem::FunctionCall { .. }
                 | ResponseItem::ToolSearchCall { .. }
-                | ResponseItem::LocalShellCall { .. },
-            ) => Some(idx + 1),
-            _ if idx > 0
-                && matches!(
-                    input[idx - 1],
-                    ResponseItem::Message { ref role, .. } if role == "assistant"
-                ) => Some(idx - 1),
-            Some(ResponseItem::Message { role, .. }) if role == "assistant" => Some(idx + 1),
-            _ => None,
+                | ResponseItem::LocalShellCall { .. }
+                | ResponseItem::CustomToolCall { .. },
+            ) => true,
+            Some(ResponseItem::Message { role, .. }) => role == "assistant",
+            _ => false,
         };
-        if let Some(anchor) = anchor {
+        if next_is_anchor {
+            anchors.push(idx + 1);
+        }
+        for anchor in anchors {
             reasoning_by_anchor_index
                 .entry(anchor)
                 .and_modify(|existing: &mut String| existing.push_str(&text))
-                .or_insert(text);
+                .or_insert_with(|| text.clone());
         }
     }
 
@@ -674,15 +682,22 @@ pub(crate) async fn stream_chat_completions(
 
 fn push_tool_call_message(messages: &mut Vec<Value>, tool_call: Value, reasoning: Option<&str>) {
     // Chat Completions requires that tool calls are grouped into a single assistant message
-    // (with `tool_calls: [...]`) followed by tool role responses.
+    // (with `tool_calls: [...]`) followed by tool role responses. When a compatible
+    // provider emitted visible text before its reasoning and calls, all three belong
+    // to the same assistant message on replay.
     if let Some(Value::Object(obj)) = messages.last_mut()
         && obj.get("role").and_then(Value::as_str) == Some("assistant")
-        && obj.get("content").is_some_and(Value::is_null)
-        && let Some(tool_calls) = obj.get_mut("tool_calls").and_then(Value::as_array_mut)
     {
-        tool_calls.push(tool_call);
+        obj.entry("tool_calls".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .expect("tool_calls is created as an array")
+            .push(tool_call);
         if let Some(reasoning) = reasoning {
             if let Some(Value::String(existing)) = obj.get_mut("reasoning") {
+                if existing == reasoning {
+                    return;
+                }
                 if !existing.is_empty() {
                     existing.push('\n');
                 }
@@ -2553,6 +2568,83 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_replays_visible_text_reasoning_and_tool_calls_as_one_turn() {
+        let input = vec![
+            ResponseItem::Message {
+                id: Some("assistant-1".to_string()),
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "I will search several sources.".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ResponseItem::Reasoning {
+                id: Some("reasoning-1".to_string()),
+                summary: Vec::new(),
+                content: Some(vec![ReasoningItemContent::ReasoningText {
+                    text: "I need current information before answering.".to_string(),
+                }]),
+                encrypted_content: None,
+            },
+            ResponseItem::FunctionCall {
+                id: Some("call-item-1".to_string()),
+                name: "browser".to_string(),
+                namespace: None,
+                arguments: r#"{"action":"fetch"}"#.to_string(),
+                call_id: "call-1".to_string(),
+            },
+            ResponseItem::FunctionCall {
+                id: Some("call-item-2".to_string()),
+                name: "shell".to_string(),
+                namespace: None,
+                arguments: r#"{"command":"date"}"#.to_string(),
+                call_id: "call-2".to_string(),
+            },
+        ];
+
+        let reasoning = reasoning_by_anchor_index(&input);
+        let mut assistant = json!({"role": "assistant", "content": "I will search several sources."});
+        attach_reasoning_to_assistant_message(
+            &mut assistant,
+            "assistant",
+            reasoning.get(&0).map(String::as_str),
+        );
+        let mut messages = vec![assistant];
+        push_tool_call_message(
+            &mut messages,
+            json!({
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "browser", "arguments": r#"{"action":"fetch"}"#},
+            }),
+            reasoning.get(&2).map(String::as_str),
+        );
+        push_tool_call_message(
+            &mut messages,
+            json!({
+                "id": "call-2",
+                "type": "function",
+                "function": {"name": "shell", "arguments": r#"{"command":"date"}"#},
+            }),
+            None,
+        );
+        let mut payload =
+            create_chat_completions_payload("deepseek-flash", messages, Vec::new(), None);
+        rewrite_assistant_reasoning_for_deepseek(&mut payload);
+
+        let assistant = &payload["messages"][0];
+        assert_eq!(payload["messages"].as_array().map(Vec::len), Some(1));
+        assert_eq!(assistant["content"], "I will search several sources.");
+        assert_eq!(
+            assistant["reasoning_content"],
+            "I need current information before answering."
+        );
+        assert_eq!(assistant["tool_calls"][0]["id"], "call-1");
+        assert_eq!(assistant["tool_calls"][1]["id"], "call-2");
+    }
+
+    #[test]
     fn reasoning_before_tool_call_survives_later_system_status_message() {
         let input = vec![
             ResponseItem::Message {
@@ -2599,6 +2691,11 @@ mod tests {
             },
         ];
 
+        assert_eq!(
+            reasoning_by_anchor_index(&input).get(&1),
+            Some(&"I need to search several sources.".to_string()),
+            "the visible assistant text and following calls originate from the same reasoning turn"
+        );
         assert_eq!(
             reasoning_by_anchor_index(&input).get(&3),
             Some(&"I need to search several sources.".to_string()),
