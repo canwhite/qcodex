@@ -2,6 +2,7 @@ use crossterm::event::KeyEvent;
 use std::time::{Duration, Instant};
 
 use super::{ChatWidget, AUTO_ESC_EXIT_HINT, AUTO_ESC_EXIT_HINT_DOUBLE, DOUBLE_ESC_HINT};
+use super::auto_drive_runtime::{EscapeDecision, decide_escape};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EscIntent {
@@ -129,19 +130,20 @@ impl ChatWidget<'_> {
                     .map(|prompt| !prompt.trim().is_empty())
                     .unwrap_or(false);
 
-            if prompt_visible {
-                return EscRoute::new(EscIntent::AutoPauseForEdit, true, false);
-            }
-
-            if self.has_cancelable_task_activity() {
-                return EscRoute::new(EscIntent::CancelTask, true, false);
-            }
-
-            if self.auto_state.awaiting_coordinator_submit() {
-                return EscRoute::new(EscIntent::AutoStopDuringApproval, true, false);
-            }
-
-            return EscRoute::new(EscIntent::AutoStopActive, true, false);
+            return EscRoute::new(
+                match decide_escape(
+                    prompt_visible,
+                    self.has_cancelable_task_activity(),
+                    self.auto_state.awaiting_coordinator_submit(),
+                ) {
+                    EscapeDecision::PauseForEdit => EscIntent::AutoPauseForEdit,
+                    EscapeDecision::CancelTask => EscIntent::CancelTask,
+                    EscapeDecision::StopDuringApproval => EscIntent::AutoStopDuringApproval,
+                    EscapeDecision::StopActive => EscIntent::AutoStopActive,
+                },
+                true,
+                false,
+            );
         }
 
         if self.has_cancelable_task_activity() {

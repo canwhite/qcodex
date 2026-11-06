@@ -94,6 +94,7 @@ pub(crate) mod message;
 mod perf;
 mod rate_limit_refresh;
 mod streaming;
+mod turn_presentation;
 mod terminal_handlers;
 mod terminal;
 mod tools;
@@ -101,6 +102,7 @@ mod browser_sessions;
 mod agent_runs;
 mod web_search_sessions;
 mod auto_drive_cards;
+mod auto_drive_runtime;
 mod auto_transcript;
 pub(crate) mod tool_cards;
 mod running_tools;
@@ -13857,20 +13859,9 @@ impl ChatWidget<'_> {
             serde_json::to_string_pretty(&event).unwrap_or_default()
         );
 
-        if self.session_id.is_none()
-            && !self.test_mode
-            && !matches!(&event.msg, EventMsg::SessionConfigured(_))
-        {
-            tracing::debug!(
-                "Ignoring stale event {:?} (seq={}) while waiting for SessionConfigured",
-                &event.msg,
-                event.event_seq
-            );
+        let Some(event) = turn_presentation::accept_event(self, event) else {
             return;
-        }
-        // Strict ordering: all LLM/tool events must carry OrderMeta; internal events use synthetic keys.
-        // Track provider order to anchor internal inserts at the bottom of the active request.
-        self.note_order(event.order.as_ref());
+        };
 
         let Event { id, msg, .. } = event.clone();
         match msg {

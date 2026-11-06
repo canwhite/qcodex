@@ -1062,6 +1062,29 @@ pub struct ConfigOverrides {
     pub compact_prompt_override_file: Option<PathBuf>,
 }
 
+/// Identifies the adapter that is asking core to resolve an invocation.
+///
+/// Adapters should start from this boundary instead of repeating the complete
+/// optional-field matrix. Adapter-specific values can then be assigned before
+/// calling the existing config loading APIs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvocationKind {
+    Cli,
+    Tui,
+    AppServer,
+    McpServer,
+}
+
+impl ConfigOverrides {
+    pub fn for_invocation(kind: InvocationKind) -> Self {
+        let mut overrides = Self::default();
+        if matches!(kind, InvocationKind::Tui) {
+            overrides.include_plan_tool = Some(true);
+        }
+        overrides
+    }
+}
+
 impl Config {
     /// Meant to be used exclusively for tests: `load_with_overrides()` should
     /// be used in all other cases.
@@ -1986,6 +2009,22 @@ mod tests {
     use std::ffi::OsString;
     use tempfile::NamedTempFile;
     use tempfile::TempDir;
+
+    #[test]
+    fn invocation_defaults_are_scoped_to_the_adapter() {
+        assert_eq!(
+            ConfigOverrides::for_invocation(InvocationKind::Tui).include_plan_tool,
+            Some(true)
+        );
+        assert_eq!(
+            ConfigOverrides::for_invocation(InvocationKind::AppServer).include_plan_tool,
+            None
+        );
+        assert_eq!(
+            ConfigOverrides::for_invocation(InvocationKind::McpServer).include_plan_tool,
+            None
+        );
+    }
 
     struct EnvVarGuard {
         key: &'static str,

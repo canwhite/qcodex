@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicBool;
 
 use code_common::CliConfigOverrides;
 use code_core::config::Config;
-use code_core::config::ConfigOverrides;
+use code_core::config::{ConfigOverrides, InvocationKind};
 use mcp_types::JSONRPCMessage;
 use mcp_types::RequestId;
 use tokio::sync::mpsc;
@@ -39,6 +39,7 @@ use crate::transport::start_stdio_connection;
 use crate::transport::start_websocket_acceptor;
 
 pub mod code_message_processor;
+mod conversation_bridge;
 mod error_code;
 mod external_agent_config_api;
 mod fuzzy_file_search;
@@ -119,10 +120,8 @@ pub async fn run_main_with_transport(
             format!("error parsing -c overrides: {e}"),
         )
     })?;
-    let config_overrides = ConfigOverrides {
-        code_linux_sandbox_exe: code_linux_sandbox_exe.clone(),
-        ..Default::default()
-    };
+    let mut config_overrides = ConfigOverrides::for_invocation(InvocationKind::AppServer);
+    config_overrides.code_linux_sandbox_exe = code_linux_sandbox_exe.clone();
     let mut config_warnings = Vec::<serde_json::Value>::new();
 
     let config = match Config::load_with_cli_overrides(cli_kv_overrides.clone(), config_overrides.clone()) {

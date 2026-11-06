@@ -56,7 +56,7 @@ use code_core::config_types::ReasoningEffort;
 use code_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
 use code_core::config::set_cached_terminal_background;
 use code_core::config::Config;
-use code_core::config::ConfigOverrides;
+use code_core::config::{ConfigOverrides, InvocationKind};
 use code_core::config::ConfigToml;
 use code_core::config::find_code_home;
 use code_core::config::load_config_as_toml;
@@ -485,29 +485,20 @@ pub async fn run_main(
     // canonicalize the cwd
     let cwd = cli.cwd.clone().map(|p| p.canonicalize().unwrap_or(p));
 
-    let overrides = ConfigOverrides {
-        model,
-        review_model: None,
-        approval_policy,
-        sandbox_mode,
-        cwd,
-        model_provider: model_provider_override,
-        config_profile: cli.config_profile.clone(),
-        code_linux_sandbox_exe,
-        base_instructions: None,
-        include_plan_tool: Some(true),
-        include_apply_patch_tool: None,
-        include_view_image_tool: None,
-        disable_response_storage: cli.oss.then_some(true),
-        show_raw_agent_reasoning: cli.oss.then_some(true),
-        debug: Some(cli.debug),
-        tools_web_search_request: Some(cli.web_search),
-        mcp_servers: None,
-        experimental_client_tools: None,
-        dynamic_tools: None,
-        compact_prompt_override: cli.compact_prompt_override.clone(),
-        compact_prompt_override_file: cli.compact_prompt_file.clone(),
-    };
+    let mut overrides = ConfigOverrides::for_invocation(InvocationKind::Tui);
+    overrides.model = model;
+    overrides.approval_policy = approval_policy;
+    overrides.sandbox_mode = sandbox_mode;
+    overrides.cwd = cwd;
+    overrides.model_provider = model_provider_override;
+    overrides.config_profile = cli.config_profile.clone();
+    overrides.code_linux_sandbox_exe = code_linux_sandbox_exe;
+    overrides.disable_response_storage = cli.oss.then_some(true);
+    overrides.show_raw_agent_reasoning = cli.oss.then_some(true);
+    overrides.debug = Some(cli.debug);
+    overrides.tools_web_search_request = Some(cli.web_search);
+    overrides.compact_prompt_override = cli.compact_prompt_override.clone();
+    overrides.compact_prompt_override_file = cli.compact_prompt_file.clone();
 
     // Parse `-c` overrides from the CLI.
     let cli_kv_overrides = match cli.config_overrides.parse_overrides() {

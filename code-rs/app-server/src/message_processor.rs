@@ -39,7 +39,7 @@ use code_protocol::config_types::WebSearchMode;
 use code_protocol::config_types::WebSearchToolConfig;
 use code_core::AuthManager;
 use code_core::ConversationManager;
-use code_core::config::Config;
+use code_core::config::{Config, ConfigOverrides, InvocationKind};
 use code_core::default_client::get_code_user_agent_with_suffix;
 use code_protocol::mcp_protocol::ClientRequest;
 use code_protocol::mcp_protocol::ClientRequest::Initialize;
@@ -565,11 +565,9 @@ impl MessageProcessor {
     }
 
     fn load_effective_config(&self, cwd: Option<&str>) -> Result<Config, JSONRPCErrorError> {
-        let overrides = code_core::config::ConfigOverrides {
-            code_linux_sandbox_exe: self.base_config.code_linux_sandbox_exe.clone(),
-            cwd: cwd.map(PathBuf::from),
-            ..Default::default()
-        };
+        let mut overrides = ConfigOverrides::for_invocation(InvocationKind::AppServer);
+        overrides.code_linux_sandbox_exe = self.base_config.code_linux_sandbox_exe.clone();
+        overrides.cwd = cwd.map(PathBuf::from);
 
         Config::load_with_cli_overrides(self.cli_overrides.clone(), overrides).map_err(|err| {
             JSONRPCErrorError {

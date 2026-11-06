@@ -256,30 +256,18 @@ impl CodexToolCallParam {
             dynamic_tools,
         } = self;
 
-        // Build the `ConfigOverrides` recognized by codex-core.
-        let overrides = code_core::config::ConfigOverrides {
-            model,
-            review_model: None,
-            config_profile: profile,
-            cwd: cwd.map(PathBuf::from),
-            approval_policy: approval_policy.map(Into::into),
-            sandbox_mode: sandbox.map(Into::into),
-            model_provider: None,
-            code_linux_sandbox_exe,
-            base_instructions,
-            include_plan_tool,
-            include_apply_patch_tool: None,
-            include_view_image_tool: None,
-            disable_response_storage: None,
-            show_raw_agent_reasoning: None,
-            debug: None,
-            tools_web_search_request: None,
-            mcp_servers: None,
-            experimental_client_tools: None,
-            dynamic_tools,
-            compact_prompt_override: None,
-            compact_prompt_override_file: None,
-        };
+        let mut overrides = code_core::config::ConfigOverrides::for_invocation(
+            code_core::config::InvocationKind::McpServer,
+        );
+        overrides.model = model;
+        overrides.config_profile = profile;
+        overrides.cwd = cwd.map(PathBuf::from);
+        overrides.approval_policy = approval_policy.map(Into::into);
+        overrides.sandbox_mode = sandbox.map(Into::into);
+        overrides.code_linux_sandbox_exe = code_linux_sandbox_exe;
+        overrides.base_instructions = base_instructions;
+        overrides.include_plan_tool = include_plan_tool;
+        overrides.dynamic_tools = dynamic_tools;
 
         let cli_overrides = cli_overrides
             .unwrap_or_default()

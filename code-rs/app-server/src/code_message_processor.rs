@@ -23,7 +23,7 @@ use code_core::NewConversation;
 use code_core::RolloutRecorder;
 use code_core::Cursor;
 use code_core::config::Config;
-use code_core::config::ConfigOverrides;
+use code_core::config::{ConfigOverrides, InvocationKind};
 use code_core::config::ConfigToml;
 use code_core::config_edit::{CONFIG_KEY_EFFORT, CONFIG_KEY_MODEL};
 use code_core::exec;
@@ -52,6 +52,7 @@ use uuid::Uuid;
 
 use crate::error_code::INTERNAL_ERROR_CODE;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
+use crate::conversation_bridge::{ListenerRegistration, ListenerRegistry, submit_user_input};
 use code_utils_json_to_toml::json_to_toml;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
@@ -59,7 +60,6 @@ use crate::outgoing_message::OutgoingNotification;
 use crate::fuzzy_file_search::run_fuzzy_file_search;
 use code_protocol::protocol::TurnAbortReason;
 use code_protocol::dynamic_tools::DynamicToolResponse as CoreDynamicToolResponse;
-use code_core::protocol::InputItem as CoreInputItem;
 use code_core::protocol::Op;
 use code_core::protocol as core_protocol;
 use code_protocol::mcp_protocol::APPLY_PATCH_APPROVAL_METHOD;
@@ -77,7 +77,6 @@ use code_protocol::request_user_input::RequestUserInputAnswer;
 use code_protocol::request_user_input::RequestUserInputResponse;
 use code_protocol::mcp_protocol::ExecCommandApprovalParams;
 use code_protocol::mcp_protocol::ExecCommandApprovalResponse;
-use code_protocol::mcp_protocol::InputItem as WireInputItem;
 use code_protocol::mcp_protocol::InterruptConversationParams;
 use code_protocol::mcp_protocol::InterruptConversationResponse;
 // Unused login-related and diff param imports removed
@@ -124,11 +123,6 @@ use code_protocol::protocol::RateLimitWindow as CoreRateLimitWindow;
 
 const TOOL_REQUEST_USER_INPUT_METHOD: &str = "item/tool/requestUserInput";
 
-struct ConversationListenerRegistration {
-    owner_connection_id: ConnectionId,
-    cancel_tx: oneshot::Sender<()>,
-}
-
 struct ActiveLogin {
     login_id: Uuid,
     shutdown_handle: ShutdownHandle,
@@ -141,7 +135,7 @@ pub struct CodexMessageProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     code_linux_sandbox_exe: Option<PathBuf>,
     config: Arc<Config>,
-    conversation_listeners: HashMap<Uuid, ConversationListenerRegistration>,
+    conversation_listeners: ListenerRegistry,
     active_login: Arc<Mutex<Option<ActiveLogin>>>,
     // Queue of pending interrupt requests per conversation. We reply when TurnAborted arrives.
     pending_interrupts: Arc<Mutex<HashMap<Uuid, Vec<RequestId>>>>,
@@ -163,7 +157,7 @@ impl CodexMessageProcessor {
             outgoing,
             code_linux_sandbox_exe,
             config,
-            conversation_listeners: HashMap::new(),
+            conversation_listeners: ListenerRegistry::new(),
             active_login: Arc::new(Mutex::new(None)),
             pending_interrupts: Arc::new(Mutex::new(HashMap::new())),
             pending_fuzzy_searches: Arc::new(Mutex::new(HashMap::new())),
@@ -261,22 +255,8 @@ impl CodexMessageProcessor {
     }
 
     pub(crate) async fn on_connection_closed(&mut self, connection_id: ConnectionId) {
-        let subscription_ids: Vec<Uuid> = self
-            .conversation_listeners
-            .iter()
-            .filter_map(|(subscription_id, registration)| {
-                if registration.owner_connection_id == connection_id {
-                    Some(*subscription_id)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        for subscription_id in subscription_ids {
-            if let Some(registration) = self.conversation_listeners.remove(&subscription_id) {
-                let _ = registration.cancel_tx.send(());
-            }
+        for registration in self.conversation_listeners.take_owned(connection_id) {
+            let _ = registration.cancel_tx.send(());
         }
     }
 
@@ -595,76 +575,23 @@ impl CodexMessageProcessor {
             return;
         };
 
-        let mapped_items: Vec<CoreInputItem> = items
-            .into_iter()
-            .map(|item| match item {
-                WireInputItem::Text { text } => CoreInputItem::Text { text },
-                WireInputItem::Image { image_url } => CoreInputItem::Image { image_url },
-                WireInputItem::LocalImage { path } => CoreInputItem::LocalImage { path },
-            })
-            .collect();
-
-        // Submit user input to the conversation.
-        let _ = conversation
-            .submit(Op::UserInput {
-                items: mapped_items,
-                final_output_json_schema: None,
-            })
-            .await;
+        if let Err(err) = submit_user_input(&conversation, items).await {
+            self.outgoing
+                .send_error(
+                    request_id,
+                    JSONRPCErrorError {
+                        code: INTERNAL_ERROR_CODE,
+                        message: format!("failed to submit user message: {err}"),
+                        data: None,
+                    },
+                )
+                .await;
+            return;
+        }
 
         // Acknowledge with an empty result.
         self.outgoing
             .send_response(request_id, SendUserMessageResponse {})
-            .await;
-    }
-
-    #[allow(dead_code)]
-    async fn send_user_turn(&self, request_id: RequestId, params: SendUserTurnParams) {
-        let SendUserTurnParams {
-            conversation_id,
-            items,
-            cwd: _,
-            approval_policy: _,
-            sandbox_policy: _,
-            model: _,
-            effort: _,
-            summary: _,
-        } = params;
-
-        let Ok(conversation) = self
-            .conversation_manager
-            .get_conversation(conversation_id)
-            .await
-        else {
-            let error = JSONRPCErrorError {
-                code: INVALID_REQUEST_ERROR_CODE,
-                message: format!("conversation not found: {conversation_id}"),
-                data: None,
-            };
-            self.outgoing.send_error(request_id, error).await;
-            return;
-        };
-
-        let mapped_items: Vec<CoreInputItem> = items
-            .into_iter()
-            .map(|item| match item {
-                WireInputItem::Text { text } => CoreInputItem::Text { text },
-                WireInputItem::Image { image_url } => CoreInputItem::Image { image_url },
-                WireInputItem::LocalImage { path } => CoreInputItem::LocalImage { path },
-            })
-            .collect();
-
-        // Core protocol compatibility: older cores do not support per-turn overrides.
-        // Submit only the user input items.
-        let _ = conversation
-            .submit(Op::UserInput {
-                items: mapped_items,
-                final_output_json_schema: None,
-            })
-            .await;
-
-        self.outgoing
-            .send_response(request_id, SendUserTurnResponse {})
             .await;
     }
 
@@ -689,7 +616,19 @@ impl CodexMessageProcessor {
         };
 
         // Submit the interrupt and respond immediately (core does not emit a dedicated event).
-        let _ = conversation.submit(Op::Interrupt).await;
+        if let Err(err) = conversation.submit(Op::Interrupt).await {
+            self.outgoing
+                .send_error(
+                    request_id,
+                    JSONRPCErrorError {
+                        code: INTERNAL_ERROR_CODE,
+                        message: format!("failed to interrupt conversation: {err}"),
+                        data: None,
+                    },
+                )
+                .await;
+            return;
+        }
         let response = InterruptConversationResponse { abort_reason: TurnAbortReason::Interrupted };
         self.outgoing.send_response(request_id, response).await;
     }
@@ -719,7 +658,7 @@ impl CodexMessageProcessor {
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
         self.conversation_listeners.insert(
             subscription_id,
-            ConversationListenerRegistration {
+            ListenerRegistration {
                 owner_connection_id,
                 cancel_tx,
             },
@@ -1434,23 +1373,19 @@ impl CodexMessageProcessor {
             return;
         };
 
-        // Map wire input items into core protocol items.
-        let mapped_items: Vec<CoreInputItem> = items
-            .into_iter()
-            .map(|item| match item {
-                WireInputItem::Text { text } => CoreInputItem::Text { text },
-                WireInputItem::Image { image_url } => CoreInputItem::Image { image_url },
-                WireInputItem::LocalImage { path } => CoreInputItem::LocalImage { path },
-            })
-            .collect();
-
-        // Submit user input to the conversation.
-        let _ = conversation
-            .submit(Op::UserInput {
-                items: mapped_items,
-                final_output_json_schema: None,
-            })
-            .await;
+        if let Err(err) = submit_user_input(&conversation, items).await {
+            self.outgoing
+                .send_error(
+                    request_id,
+                    JSONRPCErrorError {
+                        code: INTERNAL_ERROR_CODE,
+                        message: format!("failed to submit user turn: {err}"),
+                        data: None,
+                    },
+                )
+                .await;
+            return;
+        }
 
         // Acknowledge.
         self.outgoing.send_response(request_id, SendUserTurnResponse {}).await;
@@ -1632,29 +1567,16 @@ fn derive_config_from_params(
         dynamic_tools,
         ..
     } = params;
-    let overrides = ConfigOverrides {
-        model,
-        review_model: None,
-        config_profile: profile,
-        cwd: cwd.map(PathBuf::from),
-        approval_policy: approval_policy.map(map_ask_for_approval_from_wire),
-        sandbox_mode,
-        model_provider: None,
-        code_linux_sandbox_exe,
-        base_instructions,
-        include_plan_tool,
-        include_apply_patch_tool: None,
-        include_view_image_tool: None,
-        disable_response_storage: None,
-        show_raw_agent_reasoning: None,
-        debug: None,
-        tools_web_search_request: None,
-        mcp_servers: None,
-        experimental_client_tools: None,
-        dynamic_tools,
-        compact_prompt_override: None,
-        compact_prompt_override_file: None,
-    };
+    let mut overrides = ConfigOverrides::for_invocation(InvocationKind::AppServer);
+    overrides.model = model;
+    overrides.config_profile = profile;
+    overrides.cwd = cwd.map(PathBuf::from);
+    overrides.approval_policy = approval_policy.map(map_ask_for_approval_from_wire);
+    overrides.sandbox_mode = sandbox_mode;
+    overrides.code_linux_sandbox_exe = code_linux_sandbox_exe;
+    overrides.base_instructions = base_instructions;
+    overrides.include_plan_tool = include_plan_tool;
+    overrides.dynamic_tools = dynamic_tools;
 
     let cli_overrides = cli_overrides
         .unwrap_or_default()
@@ -2194,7 +2116,7 @@ mod tests {
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
         processor.conversation_listeners.insert(
             subscription_id,
-            ConversationListenerRegistration {
+            ListenerRegistration {
                 owner_connection_id: ConnectionId(1),
                 cancel_tx,
             },
