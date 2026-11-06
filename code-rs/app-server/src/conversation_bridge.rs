@@ -40,17 +40,16 @@ impl ListenerRegistry {
         &mut self,
         connection_id: ConnectionId,
     ) -> Vec<ListenerRegistration> {
-        let owned_ids: Vec<Uuid> = self
-            .registrations
-            .iter()
-            .filter_map(|(id, registration)| {
-                (registration.owner_connection_id == connection_id).then_some(*id)
-            })
-            .collect();
-        owned_ids
-            .into_iter()
-            .filter_map(|id| self.registrations.remove(&id))
-            .collect()
+        let registrations = std::mem::take(&mut self.registrations);
+        let mut owned = Vec::new();
+        for (id, registration) in registrations {
+            if registration.owner_connection_id == connection_id {
+                owned.push(registration);
+            } else {
+                self.registrations.insert(id, registration);
+            }
+        }
+        owned
     }
 }
 
