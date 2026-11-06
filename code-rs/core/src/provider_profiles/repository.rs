@@ -210,6 +210,27 @@ impl ProviderProfileRepository {
         Ok(stored)
     }
 
+    /// Updates an existing profile and makes it active in one atomic write.
+    pub fn update_and_activate(
+        &self,
+        profile: ProviderProfile,
+        expected_document_revision: Option<u64>,
+    ) -> Result<ProviderProfile, ProviderProfileStoreError> {
+        profile
+            .validate()
+            .map_err(ProviderProfileStoreError::Invalid)?;
+        let mut document = self.read()?;
+        self.check_revision(&document, expected_document_revision)?;
+        if !document.profiles.contains_key(&profile.id) {
+            return Err(ProviderProfileStoreError::NotFound(profile.id));
+        }
+        let stored = profile.clone();
+        document.profiles.insert(profile.id.clone(), profile);
+        document.active_profile_id = Some(stored.id.clone());
+        self.write(&document)?;
+        Ok(stored)
+    }
+
     /// Removes a profile.
     ///
     /// Removing the active profile clears the active selection unless
@@ -443,6 +464,36 @@ mod tests {
         assert_eq!(stored.id, "a");
         assert_eq!(repo.active_profile_id().expect("active"), Some("a".to_string()));
         assert_eq!(repo.list().expect("list").len(), 1);
+    }
+
+    #[test]
+    fn update_and_activate_replaces_the_active_profile() {
+        let home = TempHome::new("update-and-activate");
+        let repo = ProviderProfileRepository::new(&home.0);
+        repo.add_and_activate(profile("openai"), None)
+            .expect("add openai profile");
+        repo.add(profile("deepseek"), None)
+            .expect("add deepseek profile");
+
+        let mut deepseek = repo
+            .get("deepseek")
+            .expect("load deepseek profile")
+            .expect("deepseek profile exists");
+        deepseek.model = "deepseek-chat".to_string();
+
+        repo.update_and_activate(deepseek, None)
+            .expect("update and activate deepseek profile");
+
+        assert_eq!(
+            repo.active_profile_id().expect("active provider"),
+            Some("deepseek".to_string())
+        );
+        assert_eq!(
+            repo.get("deepseek")
+                .expect("load updated profile")
+                .map(|profile| profile.model),
+            Some("deepseek-chat".to_string())
+        );
     }
 
     #[test]

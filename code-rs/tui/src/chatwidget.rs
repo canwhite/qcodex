@@ -40,6 +40,8 @@ use code_core::agent_defaults::{
 };
 use code_core::smoke_test_agent_blocking;
 use code_core::config::Config;
+use code_core::config::ConfigOverrides;
+use code_core::config::load_config_as_toml_with_cli_overrides;
 use code_core::git_info::CommitLogEntry;
 use code_core::config_types::AgentConfig;
 use code_core::config_types::AutoDriveContinueMode;
@@ -6673,8 +6675,13 @@ impl ChatWidget<'_> {
         let change = match self.resolve_provider_profile_change(profile_id, model) {
             Ok(Some(change)) => change,
             Ok(None) => {
-                self.push_background_tail(message);
-                return;
+                match self.resolve_config_file_provider_change() {
+                    Ok(change) => change,
+                    Err(err) => {
+                        self.push_background_tail(format!("{message} ({err})"));
+                        return;
+                    }
+                }
             }
             Err(err) => {
                 self.push_background_tail(format!("{message} ({err})"));
@@ -6722,6 +6729,29 @@ impl ChatWidget<'_> {
             provider,
             provider_id,
         }))
+    }
+
+    /// Resolves the normal config.toml provider after a managed profile is
+    /// deactivated. The active profile must not remain in the session config.
+    fn resolve_config_file_provider_change(&self) -> Result<PendingProviderProfileChange, String> {
+        let base_config = load_config_as_toml_with_cli_overrides(&self.config.code_home, Vec::new())
+            .map_err(|err| err.to_string())?;
+        let fallback = Config::load_from_base_config_with_overrides(
+            base_config,
+            ConfigOverrides {
+                cwd: Some(self.config.cwd.clone()),
+                ..Default::default()
+            },
+            self.config.code_home.clone(),
+        )
+        .map_err(|err| err.to_string())?;
+        Ok(PendingProviderProfileChange {
+            profile_id: None,
+            model: Some(fallback.model),
+            message: String::new(),
+            provider: fallback.model_provider,
+            provider_id: fallback.model_provider_id,
+        })
     }
 
     /// Applies a provider profile change to the session.
@@ -7690,6 +7720,12 @@ impl ChatWidget<'_> {
             }
         });
         w.conversation_event_forwarder = Some(event_forwarder);
+        if let Some(watcher) = w.provider_profile_watcher.clone() {
+            w.provider_profile_poll = Some(spawn_provider_profile_poll(
+                watcher,
+                w.app_event_tx.clone(),
+            ));
+        }
         w.maybe_start_auto_upgrade_task();
         w
     }
@@ -23489,6 +23525,23 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     fn submit_configure_session_op(&mut self) {
+        // A managed provider profile owns its endpoint and model as one
+        // snapshot. Re-read the model at the submission boundary so a stale
+        // model selection cannot be sent to the newly selected provider.
+        if self.config.active_provider_profile_id.is_some()
+            && let Ok(Some(profile)) = code_core::provider_profiles::ProviderProfileResolver::new(
+                &self.config.code_home,
+            )
+            .active_profile()
+        {
+            self.config.model_provider = profile.to_model_provider_info();
+            self.config.model_provider_id = profile
+                .provider_id
+                .clone()
+                .unwrap_or_else(|| format!("qcodex-profile-{}", profile.id));
+            self.config.model = profile.model;
+            self.config.model_explicit = true;
+        }
         let op = Op::ConfigureSession {
             provider: self.config.model_provider.clone(),
             model: self.config.model.clone(),
@@ -31884,6 +31937,43 @@ use code_core::protocol::OrderMeta;
 
         assert_eq!(chat.config.model, "gpt-5.6-luna");
         assert_eq!(chat.config.model_reasoning_effort, ReasoningEffort::Medium);
+    }
+
+    #[test]
+    fn configure_session_reloads_model_from_active_provider_profile() {
+        let _runtime_guard = enter_test_runtime_guard();
+        let code_home = tempdir().expect("temp code home");
+        let repository = code_core::provider_profiles::ProviderProfileRepository::new(
+            code_home.path(),
+        );
+        let profile = code_core::provider_profiles::ProviderProfile::new(
+            "deepseek",
+            "DeepSeek",
+            "https://api.deepseek.com/v1",
+            code_core::WireApi::Chat,
+            "deepseek-flash",
+        );
+        repository
+            .add_and_activate(profile, None)
+            .expect("activate deepseek profile");
+
+        let mut harness = ChatWidgetHarness::new();
+        let chat = harness.chat();
+        chat.config.code_home = code_home.path().to_path_buf();
+        chat.config.active_provider_profile_id = Some("deepseek".to_string());
+        chat.config.model = "MiniMax-M3".to_string();
+        chat.config.model_provider.base_url = Some("https://api.minimax.cn/v1".to_string());
+        let mut code_op_rx = replace_code_op_channel(chat);
+
+        chat.submit_configure_session_op();
+
+        let op = code_op_rx.try_recv().expect("configure session op");
+        assert!(matches!(
+            op,
+            Op::ConfigureSession { model, provider, .. }
+                if model == "deepseek-flash"
+                    && provider.base_url.as_deref() == Some("https://api.deepseek.com/v1")
+        ));
     }
 
     #[test]

@@ -490,7 +490,13 @@ impl ConfigCenter {
             Ok(revision) => revision,
             Err(err) => return error_response(StatusCode(500), &err.to_string()),
         };
-        match self.repository.update(profile, Some(revision)) {
+        let activate = payload.activate.unwrap_or(false);
+        let store_result = if activate {
+            self.repository.update_and_activate(profile, Some(revision))
+        } else {
+            self.repository.update(profile, Some(revision))
+        };
+        match store_result {
             Ok(stored) => {
                 if credential_changed
                     && let Some(previous_secret) = previous_secret.as_ref()
@@ -688,6 +694,7 @@ struct UpdateProfileRequest {
     provider_id: Option<String>,
     api_key: Option<String>,
     clear_api_key: Option<bool>,
+    activate: Option<bool>,
 }
 
 /// Reads a request body, rejecting anything oversized.
@@ -908,6 +915,7 @@ mod tests {
             "wire_api": "responses",
             "model": "MiniMax-M3",
             "clear_api_key": true,
+            "activate": true,
         });
 
         let request: UpdateProfileRequest =
@@ -918,6 +926,7 @@ mod tests {
         assert_eq!(request.wire_api.as_deref(), Some("responses"));
         assert_eq!(request.model.as_deref(), Some("MiniMax-M3"));
         assert_eq!(request.clear_api_key, Some(true));
+        assert_eq!(request.activate, Some(true));
     }
 
     #[test]
