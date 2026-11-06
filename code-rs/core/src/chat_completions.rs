@@ -180,6 +180,14 @@ fn append_terminal_reasoning_content(reasoning_text: &mut String, terminal_text:
     Some(new_text.to_string())
 }
 
+fn reasoning_text_from_value(value: &Value) -> Option<&str> {
+    value
+        .as_str()
+        .or_else(|| value.get("text").and_then(Value::as_str))
+        .or_else(|| value.get("content").and_then(Value::as_str))
+        .filter(|text| !text.is_empty())
+}
+
 /// Implementation for the classic Chat Completions API.
 #[expect(
     clippy::too_many_arguments,
@@ -837,9 +845,11 @@ async fn process_chat_sse<S>(
         name: Option<String>,
         arguments: String,
         call_id: Option<String>,
+        provider_index: Option<usize>,
+        fallback_position: usize,
     }
 
-    let mut fn_call_states = BTreeMap::<usize, FunctionCallState>::new();
+    let mut fn_call_states = Vec::<FunctionCallState>::new();
     let mut assistant_text = String::new();
     let mut reasoning_text = String::new();
     let mut think_tag_router = ThinkTagRouter::default();
@@ -1125,83 +1135,59 @@ async fn process_chat_sse<S>(
             // Forward any reasoning/thinking deltas if present. DeepSeek's
             // OpenAI-compatible endpoint calls this `reasoning_content`, while
             // other providers use `reasoning` (either as a string or an object).
-            if let Some(reasoning_val) = choice.get("delta").and_then(|delta| {
-                delta
-                    .get("reasoning")
-                    .or_else(|| delta.get("reasoning_content"))
-            }) {
-                let mut maybe_text = reasoning_val
-                    .as_str()
-                    .map(str::to_string)
-                    .filter(|s| !s.is_empty());
-
-                if maybe_text.is_none() && reasoning_val.is_object() {
-                    if let Some(s) = reasoning_val
-                        .get("text")
-                        .and_then(|t| t.as_str())
-                        .filter(|s| !s.is_empty())
-                    {
-                        maybe_text = Some(s.to_string());
-                    } else if let Some(s) = reasoning_val
-                        .get("content")
-                        .and_then(|t| t.as_str())
-                        .filter(|s| !s.is_empty())
-                    {
-                        maybe_text = Some(s.to_string());
-                    }
-                }
-
-                if let Some(reasoning) = maybe_text {
-                    // Accumulate so we can emit a terminal Reasoning item at the end.
-                    reasoning_text.push_str(&reasoning);
-                    let _ = tx_event
-                        .send(Ok(ResponseEvent::ReasoningContentDelta {
-                            delta: reasoning,
-                            item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
-                            sequence_number: None,
-                            output_index: None,
-                            content_index: Some(0),
-                        }))
-                        .await;
-                }
+            if let Some(reasoning) = choice
+                .get("delta")
+                .and_then(|delta| delta.get("reasoning").or_else(|| delta.get("reasoning_content")))
+                .and_then(reasoning_text_from_value)
+            {
+                // Accumulate so we can emit a terminal Reasoning item at the end.
+                reasoning_text.push_str(reasoning);
+                let _ = tx_event
+                    .send(Ok(ResponseEvent::ReasoningContentDelta {
+                        delta: reasoning.to_string(),
+                        item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
+                        sequence_number: None,
+                        output_index: None,
+                        content_index: Some(0),
+                    }))
+                    .await;
             }
 
             // Some providers only include reasoning on the final message object.
-            if let Some(message_reasoning) = choice.get("message").and_then(|message| {
-                message
-                    .get("reasoning")
-                    .or_else(|| message.get("reasoning_content"))
-            })
+            if let Some(delta) = choice
+                .get("message")
+                .and_then(|message| message.get("reasoning").or_else(|| message.get("reasoning_content")))
+                .and_then(reasoning_text_from_value)
+                .and_then(|text| append_terminal_reasoning_content(&mut reasoning_text, text))
             {
-                // Accept either a plain string or an object with { text | content }
-                if let Some(s) = message_reasoning.as_str() {
-                    if let Some(delta) = append_terminal_reasoning_content(&mut reasoning_text, s) {
-                        let _ = tx_event
-                            .send(Ok(ResponseEvent::ReasoningContentDelta {
-                                delta,
-                                item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
-                                sequence_number: None,
-                                output_index: None,
-                                content_index: Some(0),
-                            }))
-                            .await;
-                    }
-                } else if let Some(obj) = message_reasoning.as_object()
-                    && let Some(s) = obj
-                        .get("text")
-                        .and_then(|v| v.as_str())
-                        .or_else(|| obj.get("content").and_then(|v| v.as_str()))
-                        && let Some(delta) = append_terminal_reasoning_content(&mut reasoning_text, s) {
-                            let _ = tx_event
-                                .send(Ok(ResponseEvent::ReasoningContentDelta {
-                                    delta,
-                                    item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
-                                    sequence_number: None,
-                                    output_index: None,
-                                    content_index: Some(0),
-                                }))
-                                .await;
-                        }
+                let _ = tx_event
+                    .send(Ok(ResponseEvent::ReasoningContentDelta {
+                        delta,
+                        item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
+                        sequence_number: None,
+                        output_index: None,
+                        content_index: Some(0),
+                    }))
+                    .await;
+            }
+
+            // Some OpenAI-compatible gateways place the terminal reasoning
+            // alongside `delta` and `message`, directly on the choice object.
+            if let Some(delta) = choice
+                .get("reasoning")
+                .or_else(|| choice.get("reasoning_content"))
+                .and_then(reasoning_text_from_value)
+                .and_then(|text| append_terminal_reasoning_content(&mut reasoning_text, text))
+            {
+                let _ = tx_event
+                    .send(Ok(ResponseEvent::ReasoningContentDelta {
+                        delta,
+                        item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
+                        sequence_number: None,
+                        output_index: None,
+                        content_index: Some(0),
+                    }))
+                    .await;
             }
 
             // Handle streaming function / tool calls.
@@ -1211,15 +1197,49 @@ async fn process_chat_sse<S>(
                 .and_then(|tc| tc.as_array())
             {
                 for (position, tool_call) in tool_calls.iter().enumerate() {
-                    let tool_index = tool_call
+                    let provider_index = tool_call
                         .get("index")
                         .and_then(Value::as_u64)
-                        .and_then(|index| usize::try_from(index).ok())
-                        .unwrap_or(position);
-                    let state = fn_call_states.entry(tool_index).or_default();
+                        .and_then(|index| usize::try_from(index).ok());
+                    let call_id = tool_call.get("id").and_then(Value::as_str);
+                    let state_index = provider_index
+                        .and_then(|index| {
+                            fn_call_states
+                                .iter()
+                                .position(|state| state.provider_index == Some(index))
+                        })
+                        .or_else(|| {
+                            call_id.and_then(|id| {
+                                fn_call_states
+                                    .iter()
+                                    .position(|state| state.call_id.as_deref() == Some(id))
+                            })
+                        })
+                        .or_else(|| {
+                            fn_call_states.iter().position(|state| {
+                                state.provider_index.is_none()
+                                    && state.call_id.is_none()
+                                    && state.fallback_position == position
+                            })
+                        });
+                    let state = match state_index {
+                        Some(index) => &mut fn_call_states[index],
+                        None => {
+                            let index = fn_call_states.len();
+                            fn_call_states.push(FunctionCallState {
+                                provider_index,
+                                fallback_position: position,
+                                ..FunctionCallState::default()
+                            });
+                            &mut fn_call_states[index]
+                        }
+                    };
+                    if provider_index.is_some() {
+                        state.provider_index = provider_index;
+                    }
 
                     // Extract call_id if present.
-                    if let Some(id) = tool_call.get("id").and_then(|v| v.as_str()) {
+                    if let Some(id) = call_id {
                         state.call_id.get_or_insert_with(|| id.to_string());
                     }
 
@@ -1264,7 +1284,11 @@ async fn process_chat_sse<S>(
                         // Then emit every completed FunctionCall response item
                         // in provider index order, which lets the core/TUI create
                         // one labelled lifecycle card for each call.
-                        for state in fn_call_states.values() {
+                        let mut ordered_states = fn_call_states.iter().enumerate().collect::<Vec<_>>();
+                        ordered_states.sort_by_key(|(position, state)| {
+                            state.provider_index.unwrap_or(*position)
+                        });
+                        for (_, state) in ordered_states {
                             let item = ResponseItem::FunctionCall {
                                 id: current_item_id.clone(),
                                 name: state.name.clone().unwrap_or_default(),
@@ -1908,6 +1932,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chat_sse_routes_choice_level_reasoning_content() {
+        let events = vec![Ok(Bytes::from_static(
+            b"data: {\"id\":\"response-1\",\"choices\":[{\"item_id\":\"item-1\",\"reasoning_content\":\"private thought\",\"delta\":{\"content\":\"visible answer\"},\"finish_reason\":\"stop\"}]}\n\n",
+        ))];
+        let (tx, mut rx) = mpsc::channel(16);
+        let logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+
+        process_chat_sse(
+            futures::stream::iter(events),
+            tx,
+            Duration::from_secs(1),
+            logger,
+            "test-request".to_string(),
+            None,
+        )
+        .await;
+
+        let mut reasoning_deltas = String::new();
+        while let Some(event) = rx.recv().await {
+            if let ResponseEvent::ReasoningContentDelta { delta, .. } = event.unwrap() {
+                reasoning_deltas.push_str(&delta);
+            }
+        }
+
+        assert_eq!(reasoning_deltas, "private thought");
+    }
+
+    #[tokio::test]
     async fn chat_sse_emits_every_parallel_tool_call() {
         let events = vec![Ok(Bytes::from_static(
             b"data: {\"id\":\"response-1\",\"choices\":[{\"item_id\":\"item-1\",\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"cmd\\\":\\\"pwd\\\"}\"}},{\"index\":1,\"id\":\"call-2\",\"type\":\"function\",\"function\":{\"name\":\"web_search\",\"arguments\":\"{\\\"q\\\":\\\"docs\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
@@ -1951,6 +2003,52 @@ mod tests {
                     "call-2".to_string(),
                     r#"{"q":"docs"}"#.to_string(),
                 ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_sse_keeps_indexless_tool_calls_separate_by_call_id() {
+        let events = vec![
+            Ok(Bytes::from_static(
+                b"data: {\"id\":\"response-1\",\"choices\":[{\"item_id\":\"item-1\",\"delta\":{\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"browser\",\"arguments\":\"{\\\"url\\\":\\\"one\\\"}\"}}]}}]}\n\n",
+            )),
+            Ok(Bytes::from_static(
+                b"data: {\"choices\":[{\"item_id\":\"item-1\",\"delta\":{\"tool_calls\":[{\"id\":\"call-2\",\"type\":\"function\",\"function\":{\"name\":\"browser\",\"arguments\":\"{\\\"url\\\":\\\"two\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            )),
+        ];
+        let (tx, mut rx) = mpsc::channel(16);
+        let logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+
+        process_chat_sse(
+            futures::stream::iter(events),
+            tx,
+            Duration::from_secs(1),
+            logger,
+            "test-request".to_string(),
+            None,
+        )
+        .await;
+
+        let mut calls = Vec::new();
+        while let Some(event) = rx.recv().await {
+            if let ResponseEvent::OutputItemDone {
+                item:
+                    ResponseItem::FunctionCall {
+                        call_id, arguments, ..
+                    },
+                ..
+            } = event.unwrap()
+            {
+                calls.push((call_id, arguments));
+            }
+        }
+
+        assert_eq!(
+            calls,
+            vec![
+                ("call-1".to_string(), r#"{"url":"one"}"#.to_string()),
+                ("call-2".to_string(), r#"{"url":"two"}"#.to_string()),
             ]
         );
     }
