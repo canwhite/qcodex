@@ -194,6 +194,7 @@ pub(crate) async fn stream_chat_completions(
     let mut input = prompt.get_formatted_input();
     rewrite_image_generation_calls_for_input(&mut input);
     replace_image_payloads_for_model(&mut input, model_slug);
+    let use_deepseek_reasoning_content = provider_uses_deepseek_reasoning_content(provider, model_slug);
 
     // Pre-scan: map Reasoning blocks to the adjacent assistant anchor after the last user.
     // - If the last emitted message is a user message, drop all reasoning.
@@ -315,6 +316,11 @@ pub(crate) async fn stream_chat_completions(
                     .iter()
                     .any(|c| matches!(c, ContentItem::InputImage { .. }));
 
+                let reasoning = if use_deepseek_reasoning_content {
+                    reasoning_by_anchor_index.get(&idx).map(String::as_str)
+                } else {
+                    None
+                };
                 if contains_image {
                     let mut parts = Vec::<serde_json::Value>::new();
                     for c in content {
@@ -330,7 +336,9 @@ pub(crate) async fn stream_chat_completions(
                             }
                         }
                     }
-                    messages.push(json!({"role": role, "content": parts}));
+                    let mut message = json!({"role": role, "content": parts});
+                    attach_reasoning_to_assistant_message(&mut message, role, reasoning);
+                    messages.push(message);
                 } else {
                     // Text-only messages can be sent as a single string for
                     // maximal compatibility with providers that only accept
@@ -345,7 +353,9 @@ pub(crate) async fn stream_chat_completions(
                             _ => {}
                         }
                     }
-                    messages.push(json!({"role": role, "content": text}));
+                    let mut message = json!({"role": role, "content": text});
+                    attach_reasoning_to_assistant_message(&mut message, role, reasoning);
+                    messages.push(message);
                 }
             }
             ResponseItem::CompactionSummary { .. } | ResponseItem::ContextCompaction { .. } => {
@@ -477,6 +487,10 @@ pub(crate) async fn stream_chat_completions(
         tools_json,
         request_max_output_tokens,
     );
+
+    if use_deepseek_reasoning_content {
+        rewrite_assistant_reasoning_for_deepseek(&mut payload);
+    }
 
     if let Some(openrouter_cfg) = provider.openrouter_config()
         && let Some(obj) = payload.as_object_mut() {
@@ -712,6 +726,48 @@ fn push_tool_call_message(messages: &mut Vec<Value>, tool_call: Value, reasoning
         obj.insert("reasoning".to_string(), json!(reasoning));
     }
     messages.push(msg);
+}
+
+fn attach_reasoning_to_assistant_message(
+    message: &mut Value,
+    role: &str,
+    reasoning: Option<&str>,
+) {
+    if role != "assistant" {
+        return;
+    }
+    if let Some(reasoning) = reasoning.filter(|reasoning| !reasoning.trim().is_empty())
+        && let Some(message) = message.as_object_mut()
+    {
+        message.insert("reasoning".to_string(), json!(reasoning));
+    }
+}
+
+fn provider_uses_deepseek_reasoning_content(provider: &ModelProviderInfo, model_slug: &str) -> bool {
+    let name_mentions_deepseek = provider.name.to_ascii_lowercase().contains("deepseek");
+    let url_mentions_deepseek = provider
+        .base_url
+        .as_deref()
+        .is_some_and(|url| url.to_ascii_lowercase().contains("deepseek"));
+    let model_mentions_deepseek = model_slug.to_ascii_lowercase().contains("deepseek");
+    name_mentions_deepseek || url_mentions_deepseek || model_mentions_deepseek
+}
+
+fn rewrite_assistant_reasoning_for_deepseek(payload: &mut Value) {
+    let Some(messages) = payload.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for message in messages {
+        let Some(message) = message.as_object_mut() else {
+            continue;
+        };
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        if let Some(reasoning) = message.remove("reasoning") {
+            message.insert("reasoning_content".to_string(), reasoning);
+        }
+    }
 }
 
 fn create_chat_completions_payload(
@@ -1044,10 +1100,14 @@ async fn process_chat_sse<S>(
                     }
                 }
 
-            // Forward any reasoning/thinking deltas if present.
-            // Some providers stream `reasoning` as a plain string while others
-            // nest the text under an object (e.g. `{ "reasoning": { "text": "…" } }`).
-            if let Some(reasoning_val) = choice.get("delta").and_then(|d| d.get("reasoning")) {
+            // Forward any reasoning/thinking deltas if present. DeepSeek's
+            // OpenAI-compatible endpoint calls this `reasoning_content`, while
+            // other providers use `reasoning` (either as a string or an object).
+            if let Some(reasoning_val) = choice.get("delta").and_then(|delta| {
+                delta
+                    .get("reasoning")
+                    .or_else(|| delta.get("reasoning_content"))
+            }) {
                 let mut maybe_text = reasoning_val
                     .as_str()
                     .map(str::to_string)
@@ -1085,7 +1145,11 @@ async fn process_chat_sse<S>(
             }
 
             // Some providers only include reasoning on the final message object.
-            if let Some(message_reasoning) = choice.get("message").and_then(|m| m.get("reasoning"))
+            if let Some(message_reasoning) = choice.get("message").and_then(|message| {
+                message
+                    .get("reasoning")
+                    .or_else(|| message.get("reasoning_content"))
+            })
             {
                 // Accept either a plain string or an object with { text | content }
                 if let Some(s) = message_reasoning.as_str() {
@@ -1639,12 +1703,16 @@ fn sanitize_message_roles_for_strict_chat_providers(payload: &mut serde_json::Va
 mod tests {
     use super::AggregateMode;
     use super::AggregatedChatStream;
+    use super::attach_reasoning_to_assistant_message;
     use super::process_chat_sse;
+    use super::provider_uses_deepseek_reasoning_content;
     use super::create_chat_completions_payload;
+    use super::rewrite_assistant_reasoning_for_deepseek;
     use super::sanitize_message_roles_for_strict_chat_providers;
     use super::ThinkTagRouter;
     use crate::client_common::ResponseEvent;
     use crate::debug_logger::DebugLogger;
+    use crate::model_provider_info::ModelProviderInfo;
     use bytes::Bytes;
     use code_protocol::models::ContentItem;
     use code_protocol::models::ReasoningItemContent;
@@ -1704,6 +1772,45 @@ mod tests {
             )),
             Ok(Bytes::from_static(
                 b"data: {\"choices\":[{\"item_id\":\"item-1\",\"delta\":{\"content\":\"nk>visible answer\"},\"finish_reason\":\"stop\"}]}\n\n",
+            )),
+        ];
+        let (tx, mut rx) = mpsc::channel(16);
+        let logger = Arc::new(Mutex::new(DebugLogger::new(false).unwrap()));
+
+        process_chat_sse(
+            futures::stream::iter(events),
+            tx,
+            Duration::from_secs(1),
+            logger,
+            "test-request".to_string(),
+            None,
+        )
+        .await;
+
+        let mut answer_deltas = String::new();
+        let mut reasoning_deltas = String::new();
+        while let Some(event) = rx.recv().await {
+            match event.unwrap() {
+                ResponseEvent::OutputTextDelta { delta, .. } => answer_deltas.push_str(&delta),
+                ResponseEvent::ReasoningContentDelta { delta, .. } => {
+                    reasoning_deltas.push_str(&delta)
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(answer_deltas, "visible answer");
+        assert_eq!(reasoning_deltas, "private thought");
+    }
+
+    #[tokio::test]
+    async fn chat_sse_routes_deepseek_reasoning_content_away_from_answer_deltas() {
+        let events = vec![
+            Ok(Bytes::from_static(
+                b"data: {\"id\":\"response-1\",\"choices\":[{\"item_id\":\"item-1\",\"delta\":{\"reasoning_content\":\"private thought\"}}]}\n\n",
+            )),
+            Ok(Bytes::from_static(
+                b"data: {\"choices\":[{\"item_id\":\"item-1\",\"delta\":{\"content\":\"visible answer\"},\"finish_reason\":\"stop\"}]}\n\n",
             )),
         ];
         let (tx, mut rx) = mpsc::channel(16);
@@ -2243,6 +2350,31 @@ mod tests {
 
         assert_eq!(payload["max_tokens"], 512);
         assert!(payload.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn deepseek_serialization_returns_assistant_reasoning_content() {
+        let mut message = json!({"role": "assistant", "content": "visible answer"});
+        attach_reasoning_to_assistant_message(&mut message, "assistant", Some("private thought"));
+        let mut payload = create_chat_completions_payload("deepseek-reasoner", vec![message], Vec::new(), None);
+
+        rewrite_assistant_reasoning_for_deepseek(&mut payload);
+
+        let assistant = &payload["messages"][0];
+        assert_eq!(assistant["reasoning_content"], "private thought");
+        assert!(assistant.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn only_deepseek_profiles_request_reasoning_content() {
+        let generic: ModelProviderInfo = serde_json::from_value(json!({"name": "Compatible API"}))
+            .expect("minimal provider should deserialize");
+        let deepseek: ModelProviderInfo = serde_json::from_value(json!({"name": "DeepSeek"}))
+            .expect("minimal provider should deserialize");
+
+        assert!(!provider_uses_deepseek_reasoning_content(&generic, "qwen3"));
+        assert!(provider_uses_deepseek_reasoning_content(&deepseek, "qwen3"));
+        assert!(provider_uses_deepseek_reasoning_content(&generic, "deepseek-reasoner"));
     }
 
     #[test]
