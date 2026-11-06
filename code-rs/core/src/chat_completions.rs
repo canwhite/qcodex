@@ -188,6 +188,61 @@ fn reasoning_text_from_value(value: &Value) -> Option<&str> {
         .filter(|text| !text.is_empty())
 }
 
+fn reasoning_by_anchor_index(input: &[ResponseItem]) -> std::collections::HashMap<usize, String> {
+    let mut reasoning_by_anchor_index = std::collections::HashMap::new();
+
+    // A reasoning item belongs to the adjacent assistant item, even if the
+    // orchestration layer appended a user-like status message afterwards. In
+    // particular, DeepSeek requires the rationale that preceded a tool call
+    // to be sent back on the follow-up request.
+    for (idx, item) in input.iter().enumerate() {
+        let ResponseItem::Reasoning {
+            content: Some(items),
+            ..
+        } = item
+        else {
+            continue;
+        };
+
+        let mut text = String::new();
+        for item in items {
+            match item {
+                ReasoningItemContent::ReasoningText { text: item_text }
+                | ReasoningItemContent::Text { text: item_text } => text.push_str(item_text),
+            }
+        }
+        if text.trim().is_empty() {
+            continue;
+        }
+
+        // A tool-call assistant message has to carry its own rationale for
+        // DeepSeek-compatible APIs. Prefer the immediately following call over
+        // a preceding commentary message from the same response.
+        let anchor = match input.get(idx + 1) {
+            Some(
+                ResponseItem::FunctionCall { .. }
+                | ResponseItem::ToolSearchCall { .. }
+                | ResponseItem::LocalShellCall { .. },
+            ) => Some(idx + 1),
+            _ if idx > 0
+                && matches!(
+                    input[idx - 1],
+                    ResponseItem::Message { ref role, .. } if role == "assistant"
+                ) => Some(idx - 1),
+            Some(ResponseItem::Message { role, .. }) if role == "assistant" => Some(idx + 1),
+            _ => None,
+        };
+        if let Some(anchor) = anchor {
+            reasoning_by_anchor_index
+                .entry(anchor)
+                .and_modify(|existing: &mut String| existing.push_str(&text))
+                .or_insert(text);
+        }
+    }
+
+    reasoning_by_anchor_index
+}
+
 /// Implementation for the classic Chat Completions API.
 #[expect(
     clippy::too_many_arguments,
@@ -223,110 +278,7 @@ pub(crate) async fn stream_chat_completions(
     replace_image_payloads_for_model(&mut input, model_slug);
     let use_deepseek_reasoning_content = provider_uses_deepseek_reasoning_content(provider, model_slug);
 
-    // Pre-scan: map Reasoning blocks to the adjacent assistant anchor after the last user.
-    // - If the last emitted message is a user message, drop all reasoning.
-    // - Otherwise, for each Reasoning item after the last user message, attach it
-    //   to the immediate previous assistant message (stop turns) or the immediate
-    //   next assistant anchor (tool-call turns: function/local shell call, or assistant message).
-    let mut reasoning_by_anchor_index: std::collections::HashMap<usize, String> =
-        std::collections::HashMap::new();
-
-    // Determine the last role that would be emitted to Chat Completions.
-    let mut last_emitted_role: Option<&str> = None;
-    for item in &input {
-        match item {
-            ResponseItem::Message { role, .. } => last_emitted_role = Some(role.as_str()),
-            ResponseItem::FunctionCall { .. }
-            | ResponseItem::ToolSearchCall { .. }
-            | ResponseItem::LocalShellCall { .. } => {
-                last_emitted_role = Some("assistant")
-            }
-            ResponseItem::FunctionCallOutput { .. } | ResponseItem::ToolSearchOutput { .. } => {
-                last_emitted_role = Some("tool")
-            }
-            ResponseItem::CompactionSummary { .. } | ResponseItem::ContextCompaction { .. } => {
-                last_emitted_role = Some("assistant")
-            }
-            ResponseItem::AdditionalTools { .. }
-            | ResponseItem::Reasoning { .. }
-            | ResponseItem::Other => {}
-            ResponseItem::CustomToolCall { .. } => {}
-            ResponseItem::CustomToolCallOutput { .. } => {}
-            ResponseItem::WebSearchCall { .. } => {}
-            ResponseItem::ImageGenerationCall { .. } => {}
-            ResponseItem::GhostSnapshot { .. } => {}
-        }
-    }
-
-    // Find the last user message index in the input.
-    let mut last_user_index: Option<usize> = None;
-    for (idx, item) in input.iter().enumerate() {
-        if let ResponseItem::Message { role, .. } = item
-            && role == "user" {
-                last_user_index = Some(idx);
-            }
-    }
-
-    // Attach reasoning only if the conversation does not end with a user message.
-    if !matches!(last_emitted_role, Some("user")) {
-        for (idx, item) in input.iter().enumerate() {
-            // Only consider reasoning that appears after the last user message.
-            if let Some(u_idx) = last_user_index
-                && idx <= u_idx {
-                    continue;
-                }
-
-            if let ResponseItem::Reasoning {
-                content: Some(items),
-                ..
-            } = item
-            {
-                let mut text = String::new();
-                for c in items {
-                    match c {
-                        ReasoningItemContent::ReasoningText { text: t }
-                        | ReasoningItemContent::Text { text: t } => text.push_str(t),
-                    }
-                }
-                if text.trim().is_empty() {
-                    continue;
-                }
-
-                // Prefer immediate previous assistant message (stop turns)
-                let mut attached = false;
-                if idx > 0
-                    && let ResponseItem::Message { role, .. } = &input[idx - 1]
-                        && role == "assistant" {
-                            reasoning_by_anchor_index
-                                .entry(idx - 1)
-                                .and_modify(|v| v.push_str(&text))
-                                .or_insert(text.clone());
-                            attached = true;
-                        }
-
-                // Otherwise, attach to immediate next assistant anchor (tool-calls or assistant message)
-                if !attached && idx + 1 < input.len() {
-                    match &input[idx + 1] {
-                        ResponseItem::FunctionCall { .. }
-                        | ResponseItem::ToolSearchCall { .. }
-                        | ResponseItem::LocalShellCall { .. } => {
-                            reasoning_by_anchor_index
-                                .entry(idx + 1)
-                                .and_modify(|v| v.push_str(&text))
-                                .or_insert(text.clone());
-                        }
-                        ResponseItem::Message { role, .. } if role == "assistant" => {
-                            reasoning_by_anchor_index
-                                .entry(idx + 1)
-                                .and_modify(|v| v.push_str(&text))
-                                .or_insert(text.clone());
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
+    let reasoning_by_anchor_index = reasoning_by_anchor_index(&input);
 
     // Track last assistant text we emitted to avoid duplicate assistant messages
     // in the outbound Chat Completions payload (can happen if a final
@@ -875,22 +827,6 @@ async fn process_chat_sse<S>(
     ) {
         // Emit any finalized items before closing so downstream consumers receive
         // terminal events for both assistant content and raw reasoning.
-        if !assistant_text.is_empty() {
-            let item = ResponseItem::Message {
-                role: "assistant".to_string(),
-                content: vec![ContentItem::OutputText {
-                    text: std::mem::take(assistant_text),
-                }],
-                id: item_id_or_fallback(context.current_item_id, context.fallback_item_id), end_turn: None, phase: None};
-            let _ = tx_event
-                .send(Ok(ResponseEvent::OutputItemDone {
-                    item,
-                    sequence_number: None,
-                    output_index: None,
-                }))
-                .await;
-        }
-
         if !reasoning_text.is_empty() {
             let item = ResponseItem::Reasoning {
                 id: item_id_or_fallback(context.current_item_id, context.fallback_item_id),
@@ -900,6 +836,22 @@ async fn process_chat_sse<S>(
                 }]),
                 encrypted_content: None,
             };
+            let _ = tx_event
+                .send(Ok(ResponseEvent::OutputItemDone {
+                    item,
+                    sequence_number: None,
+                    output_index: None,
+                }))
+                .await;
+        }
+
+        if !assistant_text.is_empty() {
+            let item = ResponseItem::Message {
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: std::mem::take(assistant_text),
+                }],
+                id: item_id_or_fallback(context.current_item_id, context.fallback_item_id), end_turn: None, phase: None};
             let _ = tx_event
                 .send(Ok(ResponseEvent::OutputItemDone {
                     item,
@@ -1092,6 +1044,14 @@ async fn process_chat_sse<S>(
                 current_item_id = Some(fallback_item_id.clone());
             }
 
+            // A compatible provider can put its final `reasoning_content` in
+            // the same chunk as visible `content`. Collect both kinds first,
+            // then send reasoning before the answer below. The TUI commits
+            // streamed history in delivery order, so forwarding content first
+            // would permanently place the collapsed Thinking row below it.
+            let mut answer_delta = None;
+            let mut reasoning_deltas = Vec::new();
+
             // MiniMax and some compatible providers encode raw thinking in
             // `<think>…</think>` segments inside ordinary content deltas.
             // Split those before they reach the answer stream so the existing
@@ -1106,29 +1066,10 @@ async fn process_chat_sse<S>(
                     reasoning_text.push_str(&tagged_reasoning);
 
                     if !answer.is_empty() {
-                        let _ = tx_event
-                            .send(Ok(ResponseEvent::OutputTextDelta {
-                                delta: answer,
-                                item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
-                                sequence_number: None,
-                                output_index: None,
-                            }))
-                            .await;
+                        answer_delta = Some(answer);
                     }
                     if !tagged_reasoning.is_empty() {
-                        let _ = tx_event
-                            .send(Ok(ResponseEvent::ReasoningContentDelta {
-                                delta: tagged_reasoning,
-                                item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
-                                sequence_number: None,
-                                output_index: None,
-                                // The terminal Reasoning item represents this as its
-                                // first content part (#c0). Keep the live stream on
-                                // the same identity so its status is finalized in
-                                // place instead of creating a second Thinking row.
-                                content_index: Some(0),
-                            }))
-                            .await;
+                        reasoning_deltas.push(tagged_reasoning);
                     }
                 }
 
@@ -1142,15 +1083,7 @@ async fn process_chat_sse<S>(
             {
                 // Accumulate so we can emit a terminal Reasoning item at the end.
                 reasoning_text.push_str(reasoning);
-                let _ = tx_event
-                    .send(Ok(ResponseEvent::ReasoningContentDelta {
-                        delta: reasoning.to_string(),
-                        item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
-                        sequence_number: None,
-                        output_index: None,
-                        content_index: Some(0),
-                    }))
-                    .await;
+                reasoning_deltas.push(reasoning.to_string());
             }
 
             // Some providers only include reasoning on the final message object.
@@ -1160,15 +1093,7 @@ async fn process_chat_sse<S>(
                 .and_then(reasoning_text_from_value)
                 .and_then(|text| append_terminal_reasoning_content(&mut reasoning_text, text))
             {
-                let _ = tx_event
-                    .send(Ok(ResponseEvent::ReasoningContentDelta {
-                        delta,
-                        item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
-                        sequence_number: None,
-                        output_index: None,
-                        content_index: Some(0),
-                    }))
-                    .await;
+                reasoning_deltas.push(delta);
             }
 
             // Some OpenAI-compatible gateways place the terminal reasoning
@@ -1179,13 +1104,30 @@ async fn process_chat_sse<S>(
                 .and_then(reasoning_text_from_value)
                 .and_then(|text| append_terminal_reasoning_content(&mut reasoning_text, text))
             {
+                reasoning_deltas.push(delta);
+            }
+
+            for delta in reasoning_deltas {
                 let _ = tx_event
                     .send(Ok(ResponseEvent::ReasoningContentDelta {
                         delta,
                         item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
                         sequence_number: None,
                         output_index: None,
+                        // The terminal Reasoning item represents this as its
+                        // first content part (#c0). Keep the live stream on the
+                        // same identity so its status finalizes in place.
                         content_index: Some(0),
+                    }))
+                    .await;
+            }
+            if let Some(delta) = answer_delta {
+                let _ = tx_event
+                    .send(Ok(ResponseEvent::OutputTextDelta {
+                        delta,
+                        item_id: item_id_or_fallback(&current_item_id, &fallback_item_id),
+                        sequence_number: None,
+                        output_index: None,
                     }))
                     .await;
             }
@@ -1312,18 +1254,9 @@ async fn process_chat_sse<S>(
                             &mut assistant_text,
                             &mut reasoning_text,
                         );
-                        // Regular turn without tool-call. Emit the final assistant message
-                        // as a single OutputItemDone so non-delta consumers see the result.
-                        if !assistant_text.is_empty() {
-                            let item = ResponseItem::Message {
-                                role: "assistant".to_string(),
-                                content: vec![ContentItem::OutputText {
-                                    text: std::mem::take(&mut assistant_text),
-                                }],
-                                id: item_id_or_fallback(&current_item_id, &fallback_item_id), end_turn: None, phase: None};
-                            let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
-                        }
-                        // Also emit a terminal Reasoning item so UIs can finalize raw reasoning.
+                        // Emit terminal raw reasoning before the visible answer. Compatible
+                        // providers often only reveal it in this final chunk; the TUI cannot
+                        // place a later Thinking row ahead of already committed content.
                         if !reasoning_text.is_empty() {
                             let item = ResponseItem::Reasoning {
                                 id: item_id_or_fallback(&current_item_id, &fallback_item_id),
@@ -1333,6 +1266,17 @@ async fn process_chat_sse<S>(
                                 }]),
                                 encrypted_content: None,
                             };
+                            let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
+                        }
+                        // Emit the final assistant message after reasoning so non-delta
+                        // consumers retain the same visible chronology.
+                        if !assistant_text.is_empty() {
+                            let item = ResponseItem::Message {
+                                role: "assistant".to_string(),
+                                content: vec![ContentItem::OutputText {
+                                    text: std::mem::take(&mut assistant_text),
+                                }],
+                                id: item_id_or_fallback(&current_item_id, &fallback_item_id), end_turn: None, phase: None};
                             let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone { item, sequence_number: None, output_index: None })).await;
                         }
                     }
@@ -1444,9 +1388,11 @@ where
                                 })));
                             }
 
-                            if let Some(answer) = this.take_answer_final() {
-                                return Poll::Ready(Some(Ok(answer)));
-                            }
+                            // In aggregate-only mode wait for `Completed` so a
+                            // terminal reasoning item that arrived immediately
+                            // before this message can stay ahead of it. Emitting
+                            // here also caused the same final message to be
+                            // synthesized twice.
                             continue;
                         }
                         ResponseItem::Reasoning { id, content, .. } => {
@@ -1498,17 +1444,9 @@ where
                                 })));
                             }
 
-                            let answer = this.take_answer_final();
-                            let reasoning = this.take_reasoning_final();
-                            if let Some(reasoning) = reasoning {
-                                this.pending.push_back(reasoning);
-                            }
-                            if let Some(answer) = answer {
-                                return Poll::Ready(Some(Ok(answer)));
-                            }
-                            if let Some(reasoning) = this.pending.pop_front() {
-                                return Poll::Ready(Some(Ok(reasoning)));
-                            }
+                            // See the message arm above: `Completed` flushes
+                            // both terminal kinds in chronology-preserving
+                            // order and avoids a duplicate final answer.
                             continue;
                         }
                         ResponseItem::FunctionCall { .. } => {
@@ -1556,11 +1494,11 @@ where
                     token_usage,
                 }))) => {
                     if matches!(this.mode, AggregateMode::AggregatedOnly) {
-                        if let Some(answer) = this.take_answer_final() {
-                            this.pending.push_back(answer);
-                        }
                         if let Some(reasoning) = this.take_reasoning_final() {
                             this.pending.push_back(reasoning);
+                        }
+                        if let Some(answer) = this.take_answer_final() {
+                            this.pending.push_back(answer);
                         }
                     }
                     this.pending.push_back(ResponseEvent::Completed {
@@ -1770,6 +1708,7 @@ mod tests {
     use super::AggregateMode;
     use super::AggregatedChatStream;
     use super::attach_reasoning_to_assistant_message;
+    use super::reasoning_by_anchor_index;
     use super::process_chat_sse;
     use super::provider_uses_deepseek_reasoning_content;
     use super::push_tool_call_message;
@@ -1949,14 +1888,25 @@ mod tests {
         )
         .await;
 
-        let mut reasoning_deltas = String::new();
+        let mut visible_event_kinds = Vec::new();
         while let Some(event) = rx.recv().await {
-            if let ResponseEvent::ReasoningContentDelta { delta, .. } = event.unwrap() {
-                reasoning_deltas.push_str(&delta);
+            match event.unwrap() {
+                ResponseEvent::ReasoningContentDelta { .. } => {
+                    visible_event_kinds.push("reasoning");
+                }
+                ResponseEvent::OutputTextDelta { .. } => {
+                    visible_event_kinds.push("answer");
+                }
+                _ => {}
             }
         }
 
-        assert_eq!(reasoning_deltas, "private thought");
+        assert_eq!(
+            visible_event_kinds,
+            ["reasoning", "answer"],
+            "when compatible SSE carries a terminal reasoning field with content, \
+             expose the reasoning lifecycle before the visible answer"
+        );
     }
 
     #[tokio::test]
@@ -2164,8 +2114,8 @@ mod tests {
             &events[..],
             [
                 Ok(ResponseEvent::Created { .. }),
-                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Message { content: answer_content, .. }, .. }),
                 Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Reasoning { content: reasoning_content, .. }, .. }),
+                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Message { content: answer_content, .. }, .. }),
                 Ok(ResponseEvent::Completed { .. }),
             ] if matches!(answer_content.as_slice(), [ContentItem::OutputText { text }] if text == "visible answer")
                 && matches!(reasoning_content, Some(items) if matches!(items.as_slice(), [ReasoningItemContent::ReasoningText { text }] if text == "private thought"))
@@ -2201,8 +2151,8 @@ mod tests {
             &events[..],
             [
                 Ok(ResponseEvent::Created { .. }),
-                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Message { content: answer_content, .. }, .. }),
                 Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Reasoning { content: reasoning_content, .. }, .. }),
+                Ok(ResponseEvent::OutputItemDone { item: ResponseItem::Message { content: answer_content, .. }, .. }),
                 Ok(ResponseEvent::Completed { .. }),
             ] if matches!(answer_content.as_slice(), [ContentItem::OutputText { text }] if text == "visible answer")
                 && matches!(reasoning_content, Some(items) if matches!(items.as_slice(), [ReasoningItemContent::ReasoningText { text }] if text == "private thought"))
@@ -2600,6 +2550,60 @@ mod tests {
         assert_eq!(assistant["reasoning_content"], "private tool rationale");
         assert!(assistant.get("reasoning").is_none());
         assert_eq!(assistant["tool_calls"][0]["id"], "call-1");
+    }
+
+    #[test]
+    fn reasoning_before_tool_call_survives_later_system_status_message() {
+        let input = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "Find current AI news".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: Some("item-1".to_string()),
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "I will search a few sources first.".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ResponseItem::Reasoning {
+                id: Some("reasoning-1".to_string()),
+                summary: Vec::new(),
+                content: Some(vec![ReasoningItemContent::ReasoningText {
+                    text: "I need to search several sources.".to_string(),
+                }]),
+                encrypted_content: None,
+            },
+            ResponseItem::FunctionCall {
+                id: Some("item-2".to_string()),
+                name: "browser".to_string(),
+                namespace: None,
+                arguments: r#"{"action":"fetch"}"#.to_string(),
+                call_id: "call-1".to_string(),
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "== System Status ==".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+        ];
+
+        assert_eq!(
+            reasoning_by_anchor_index(&input).get(&3),
+            Some(&"I need to search several sources.".to_string()),
+            "a tool call must retain its rationale even when an assistant preamble and later system-status message surround it"
+        );
     }
 
     #[test]
