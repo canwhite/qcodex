@@ -42,6 +42,7 @@ use code_protocol::models::ResponseItem;
 
 const THINK_OPEN_TAG: &str = "<think>";
 const THINK_CLOSE_TAG: &str = "</think>";
+const CHAT_COMPLETIONS_SOURCE_ITEM_ID: &str = "__code_source_item_id";
 
 /// Routes leading MiniMax-style `<think>…</think>` content into the reasoning stream.
 ///
@@ -295,7 +296,12 @@ pub(crate) async fn stream_chat_completions(
 
     for (idx, item) in input.iter().enumerate() {
         match item {
-            ResponseItem::Message { role, content, .. } => {
+            ResponseItem::Message {
+                id,
+                role,
+                content,
+                ..
+            } => {
                 // If the message contains any images, we must use the
                 // multi-modal array form supported by Chat Completions:
                 //   [{ type: "text", text: "..." }, { type: "image_url", image_url: { url: "data:..." } }]
@@ -325,6 +331,7 @@ pub(crate) async fn stream_chat_completions(
                     }
                     let mut message = json!({"role": role, "content": parts});
                     attach_reasoning_to_assistant_message(&mut message, role, reasoning);
+                    tag_assistant_chat_message(&mut message, role, id.as_deref());
                     messages.push(message);
                 } else {
                     // Text-only messages can be sent as a single string for
@@ -342,6 +349,7 @@ pub(crate) async fn stream_chat_completions(
                     }
                     let mut message = json!({"role": role, "content": text});
                     attach_reasoning_to_assistant_message(&mut message, role, reasoning);
+                    tag_assistant_chat_message(&mut message, role, id.as_deref());
                     messages.push(message);
                 }
             }
@@ -351,6 +359,7 @@ pub(crate) async fn stream_chat_completions(
                 continue;
             }
             ResponseItem::FunctionCall {
+                id,
                 name,
                 arguments,
                 call_id,
@@ -365,9 +374,10 @@ pub(crate) async fn stream_chat_completions(
                         "arguments": arguments,
                     }
                 });
-                push_tool_call_message(&mut messages, tool_call, reasoning);
+                push_tool_call_message(&mut messages, tool_call, reasoning, id.as_deref());
             }
             ResponseItem::ToolSearchCall {
+                id,
                 call_id,
                 status,
                 execution,
@@ -383,7 +393,7 @@ pub(crate) async fn stream_chat_completions(
                     "execution": execution,
                     "arguments": arguments,
                 });
-                push_tool_call_message(&mut messages, tool_call, reasoning);
+                push_tool_call_message(&mut messages, tool_call, reasoning, id.as_deref());
             }
             ResponseItem::LocalShellCall {
                 id,
@@ -399,7 +409,7 @@ pub(crate) async fn stream_chat_completions(
                     "status": status,
                     "action": action,
                 });
-                push_tool_call_message(&mut messages, tool_call, reasoning);
+                push_tool_call_message(&mut messages, tool_call, reasoning, id.as_deref());
             }
             ResponseItem::FunctionCallOutput { call_id, output } => {
                 messages.push(json!({
@@ -442,7 +452,7 @@ pub(crate) async fn stream_chat_completions(
                         "input": input,
                     }
                 });
-                push_tool_call_message(&mut messages, tool_call, reasoning);
+                push_tool_call_message(&mut messages, tool_call, reasoning, id.as_deref());
             }
             ResponseItem::CustomToolCallOutput {
                 call_id,
@@ -466,6 +476,8 @@ pub(crate) async fn stream_chat_completions(
             }
         }
     }
+
+    remove_internal_chat_message_fields(&mut messages);
 
     let tools_json = create_tools_json_for_chat_completions_api(&prompt.tools)?;
     let mut payload = create_chat_completions_payload(
@@ -680,13 +692,32 @@ pub(crate) async fn stream_chat_completions(
     }
 }
 
-fn push_tool_call_message(messages: &mut Vec<Value>, tool_call: Value, reasoning: Option<&str>) {
+fn push_tool_call_message(
+    messages: &mut Vec<Value>,
+    tool_call: Value,
+    reasoning: Option<&str>,
+    source_item_id: Option<&str>,
+) {
     // Chat Completions requires that tool calls are grouped into a single assistant message
     // (with `tool_calls: [...]`) followed by tool role responses. When a compatible
     // provider emitted visible text before its reasoning and calls, all three belong
     // to the same assistant message on replay.
-    if let Some(Value::Object(obj)) = messages.last_mut()
-        && obj.get("role").and_then(Value::as_str) == Some("assistant")
+    let last_assistant_index = messages
+        .iter()
+        .rposition(|message| message.get("role").and_then(Value::as_str) == Some("assistant"));
+    let can_extend_last_assistant = last_assistant_index.is_some_and(|index| {
+        messages[index]
+            .get(CHAT_COMPLETIONS_SOURCE_ITEM_ID)
+            .and_then(Value::as_str)
+            == source_item_id
+            && messages[index + 1..]
+                .iter()
+                .all(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
+    });
+
+    if can_extend_last_assistant
+        && let Some(Value::Object(obj)) =
+            last_assistant_index.and_then(|index| messages.get_mut(index))
     {
         obj.entry("tool_calls".to_string())
             .or_insert_with(|| Value::Array(Vec::new()))
@@ -719,7 +750,28 @@ fn push_tool_call_message(messages: &mut Vec<Value>, tool_call: Value, reasoning
     {
         obj.insert("reasoning".to_string(), json!(reasoning));
     }
+    tag_assistant_chat_message(&mut msg, "assistant", source_item_id);
     messages.push(msg);
+}
+
+fn tag_assistant_chat_message(message: &mut Value, role: &str, source_item_id: Option<&str>) {
+    if role == "assistant"
+        && let Some(source_item_id) = source_item_id.filter(|id| !id.is_empty())
+        && let Some(message) = message.as_object_mut()
+    {
+        message.insert(
+            CHAT_COMPLETIONS_SOURCE_ITEM_ID.to_string(),
+            Value::String(source_item_id.to_string()),
+        );
+    }
+}
+
+fn remove_internal_chat_message_fields(messages: &mut [Value]) {
+    for message in messages {
+        if let Some(message) = message.as_object_mut() {
+            message.remove(CHAT_COMPLETIONS_SOURCE_ITEM_ID);
+        }
+    }
 }
 
 fn attach_reasoning_to_assistant_message(
@@ -1722,7 +1774,9 @@ fn sanitize_message_roles_for_strict_chat_providers(payload: &mut serde_json::Va
 mod tests {
     use super::AggregateMode;
     use super::AggregatedChatStream;
+    use super::CHAT_COMPLETIONS_SOURCE_ITEM_ID;
     use super::attach_reasoning_to_assistant_message;
+    use super::remove_internal_chat_message_fields;
     use super::reasoning_by_anchor_index;
     use super::process_chat_sse;
     use super::provider_uses_deepseek_reasoning_content;
@@ -1730,6 +1784,7 @@ mod tests {
     use super::create_chat_completions_payload;
     use super::rewrite_assistant_reasoning_for_deepseek;
     use super::sanitize_message_roles_for_strict_chat_providers;
+    use super::tag_assistant_chat_message;
     use super::ThinkTagRouter;
     use crate::client_common::ResponseEvent;
     use crate::debug_logger::DebugLogger;
@@ -2555,6 +2610,7 @@ mod tests {
                 "function": { "name": "shell", "arguments": "{}" },
             }),
             Some("private tool rationale"),
+            Some("response-1"),
         );
         let mut payload =
             create_chat_completions_payload("deepseek-reasoner", messages, Vec::new(), None);
@@ -2571,7 +2627,7 @@ mod tests {
     fn deepseek_replays_visible_text_reasoning_and_tool_calls_as_one_turn() {
         let input = vec![
             ResponseItem::Message {
-                id: Some("assistant-1".to_string()),
+                id: Some("response-1".to_string()),
                 role: "assistant".to_string(),
                 content: vec![ContentItem::OutputText {
                     text: "I will search several sources.".to_string(),
@@ -2588,14 +2644,14 @@ mod tests {
                 encrypted_content: None,
             },
             ResponseItem::FunctionCall {
-                id: Some("call-item-1".to_string()),
+                id: Some("response-1".to_string()),
                 name: "browser".to_string(),
                 namespace: None,
                 arguments: r#"{"action":"fetch"}"#.to_string(),
                 call_id: "call-1".to_string(),
             },
             ResponseItem::FunctionCall {
-                id: Some("call-item-2".to_string()),
+                id: Some("response-1".to_string()),
                 name: "shell".to_string(),
                 namespace: None,
                 arguments: r#"{"command":"date"}"#.to_string(),
@@ -2610,6 +2666,7 @@ mod tests {
             "assistant",
             reasoning.get(&0).map(String::as_str),
         );
+        tag_assistant_chat_message(&mut assistant, "assistant", Some("response-1"));
         let mut messages = vec![assistant];
         push_tool_call_message(
             &mut messages,
@@ -2619,7 +2676,13 @@ mod tests {
                 "function": {"name": "browser", "arguments": r#"{"action":"fetch"}"#},
             }),
             reasoning.get(&2).map(String::as_str),
+            Some("response-1"),
         );
+        messages.push(json!({
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "first result",
+        }));
         push_tool_call_message(
             &mut messages,
             json!({
@@ -2628,13 +2691,15 @@ mod tests {
                 "function": {"name": "shell", "arguments": r#"{"command":"date"}"#},
             }),
             None,
+            Some("response-1"),
         );
+        remove_internal_chat_message_fields(&mut messages);
         let mut payload =
             create_chat_completions_payload("deepseek-flash", messages, Vec::new(), None);
         rewrite_assistant_reasoning_for_deepseek(&mut payload);
 
         let assistant = &payload["messages"][0];
-        assert_eq!(payload["messages"].as_array().map(Vec::len), Some(1));
+        assert_eq!(payload["messages"].as_array().map(Vec::len), Some(2));
         assert_eq!(assistant["content"], "I will search several sources.");
         assert_eq!(
             assistant["reasoning_content"],
@@ -2642,6 +2707,8 @@ mod tests {
         );
         assert_eq!(assistant["tool_calls"][0]["id"], "call-1");
         assert_eq!(assistant["tool_calls"][1]["id"], "call-2");
+        assert_eq!(payload["messages"][1]["tool_call_id"], "call-1");
+        assert!(assistant.get(CHAT_COMPLETIONS_SOURCE_ITEM_ID).is_none());
     }
 
     #[test]
